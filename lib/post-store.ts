@@ -113,7 +113,7 @@ function mutate<T>(action: (database: PostDatabase) => T | Promise<T>): Promise<
 
 export function validatePostInput(input: NewPostInput) {
   if (!/^[0-9a-f-]{36}$/i.test(input.clientRequestId)) return "The post request identifier is invalid.";
-  if (!/^(?:seed-[a-z0-9-]+|[0-9a-f-]{36})$/i.test(input.communityId)) return "Choose a valid community.";
+  if (!/^(?:c\/[a-z0-9][a-z0-9-]{1,39}|seed-[a-z0-9-]+|[0-9a-f-]{36})$/i.test(input.communityId)) return "Choose a valid community.";
   if (!input.title.trim() || input.title.trim().length > 160) return "Post titles must be between 1 and 160 characters.";
   if ((input.body || "").length > 10_000) return "Post text must be 10,000 characters or fewer.";
   if ((input.flair || "").length > 40) return "Post flair must be 40 characters or fewer.";

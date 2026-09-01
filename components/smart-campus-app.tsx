@@ -325,7 +325,7 @@ export function SmartCampusApp() {
 
   async function persistCommunityMembership(community: Community) {
     try {
-      const data = await requestJson<{ community: Community }>(`/api/communities/${community.id}/membership`, { method: community.joined ? "DELETE" : "POST" });
+      const data = await requestJson<{ community: Community }>(`/api/communities/${encodeURIComponent(community.id)}/membership`, { method: community.joined ? "DELETE" : "POST" });
       if (!data?.community) throw new Error("The server did not return the updated community.");
       setCommunities((current) => current.map((item) => item.id === community.id ? data.community : item));
       setToast(community.joined ? `Left ${community.name}` : `Joined ${community.name}`);
@@ -659,7 +659,7 @@ function CommunityBrandingModal({ community, close, onUpdated, notify }: { commu
   async function upload(kind: "icon" | "banner", file: File) {
     const form = new FormData();
     form.set(kind, file);
-    const data = await requestJson<{ community: Community; imageUrl: string }>(`/api/communities/${community.id}/${kind}`, { method: "POST", body: form });
+    const data = await requestJson<{ community: Community; imageUrl: string }>(`/api/communities/${encodeURIComponent(community.id)}/${kind}`, { method: "POST", body: form });
     if (!data?.community) throw new Error(`The server did not return the updated community ${kind}.`);
     onUpdated(data.community);
     return data.community;
@@ -878,8 +878,8 @@ function CreateEventModal({ communities, defaultCampus, close, onCreate }: { com
       <label className="field"><span>Venue</span><div className="icon-input"><MapPin size={17} /><input value={location} onChange={event => { setLocation(event.target.value); setError(""); }} placeholder="e.g. Main Auditorium" required /></div></label>
       <label className="field directions-field"><span>Google Maps directions link <em>Optional</em></span><div className="icon-input"><Link2 size={17} /><input type="url" inputMode="url" value={directionsUrl} onChange={event => { setDirectionsUrl(event.target.value); setError(""); }} placeholder="https://maps.app.goo.gl/..." maxLength={2048} /></div><small>In Google Maps, open the venue, tap Share, and paste the link here.</small></label>
       <CampusPicker value={campus} onChange={setCampus} label="Host campus" required />
-      <label className="field"><span>Community</span><select value={community} onChange={event => setCommunity(event.target.value)}><option>None</option>{communities.map(item => <option key={item.id}>{item.name}</option>)}</select></label>
-      <label className="check-field"><input type="checkbox" checked={linkPost} onChange={event => setLinkPost(event.target.checked)} /><span><b>Create an event post</b><small>{community === "None" ? "Share it to the campus feed when published." : `Share it in ${community} when published.`}</small></span></label>
+      <label className="field"><span>Community</span><select value={community} onChange={event => setCommunity(event.target.value)}><option value="None">None</option>{communities.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      <label className="check-field"><input type="checkbox" checked={linkPost} onChange={event => setLinkPost(event.target.checked)} /><span><b>Create an event post</b><small>{community === "None" ? "Share it to the campus feed when published." : `Share it in ${communities.find(item => item.id === community)?.name ?? community} when published.`}</small></span></label>
       <RegistrationFormBuilder fields={customFormFields} onChange={setCustomFormFields} />
       <div className="disclosure"><ShieldCheck size={19} /><p>Attendees will see that their verified email and RSVP details are shared with you as the organizer.</p></div>
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -1096,7 +1096,7 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [draftSaved, setDraftSaved] = useState(false);
-  const activeCommunity = communities.some((item) => item.name === community) ? community : communities[0]?.name || community;
+  const activeCommunity = communities.find((item) => item.name === community || item.id === community)?.name || communities[0]?.name || community;
 
   async function addImages(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files || []);

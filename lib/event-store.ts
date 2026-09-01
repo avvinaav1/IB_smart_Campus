@@ -299,7 +299,7 @@ export function validateEventInput(input: NewEventInput) {
     } catch { return "Paste a valid Google Maps directions link."; }
   }
   if (!input.campus.trim() || input.campus.trim().length > 100) return "Choose a valid campus.";
-  if (input.community && !/^c\/[a-z0-9._-]{2,40}$/i.test(input.community)) return "Choose a valid community.";
+  if (input.community && !/^(?:c\/[a-z0-9._-]{2,40}|seed-[a-z0-9-]+|[0-9a-f-]{36})$/i.test(input.community)) return "Choose a valid community.";
   if (Number.isNaN(startsAt.getTime()) || startsAt.getTime() <= Date.now()) return "Choose a future date and time.";
   if (!Number.isInteger(input.capacity) || input.capacity < 1 || input.capacity > 10_000) return "Capacity must be between 1 and 10,000.";
   const uploaded = /^\/api\/events\/images\/[0-9a-f-]{36}\.(jpg|png|webp)$/.test(input.imageUrl);
