@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
   const isPng = bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
   if ((file.type === "image/jpeg" && !isJpeg) || (file.type === "image/png" && !isPng)) return noStoreJson({ error: "The uploaded file is not a valid image." }, { status: 415 });
   const filename = `${randomUUID()}.${file.type === "image/png" ? "png" : "jpg"}`;
-  const directory = path.join(process.cwd(), ".data", "uploads");
+  const directory = path.join(process.env.VERCEL ? "/tmp" : process.cwd(), ".data", "uploads");
   await mkdir(directory, { recursive: true });
   await writeFile(path.join(directory, filename), bytes, { flag: "wx" });
   const result = await updateAvatar(userId, `/api/profile/avatar/${filename}`);

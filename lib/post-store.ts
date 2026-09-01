@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ensureCommunityForLegacyPost, resolveCommunityForPost, visibleCommunityIds } from "@/lib/community-store";
+import { dataPath } from "@/lib/data-path";
 import { posts as initialPosts } from "@/lib/data";
 import type { Post, PostComment, UserDashboard } from "@/lib/types";
 
@@ -28,7 +29,7 @@ export type NewPostInput = {
   images?: string[];
 };
 
-const databasePath = process.env.POSTS_DATA_FILE || path.join(process.cwd(), ".data", "posts.json");
+const databasePath = process.env.POSTS_DATA_FILE || dataPath(".data", "posts.json");
 let databasePromise: Promise<PostDatabase> | undefined;
 let writeQueue: Promise<unknown> = Promise.resolve();
 

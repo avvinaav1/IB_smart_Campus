@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
     return noStoreJson({ error: "The uploaded file does not match its image type." }, { status: 415 });
   }
   const filename = `${randomUUID()}.${extension}`;
-  const directory = path.join(process.cwd(), ".data", "event-uploads");
+  const directory = path.join(process.env.VERCEL ? "/tmp" : process.cwd(), ".data", "event-uploads");
   await mkdir(directory, { recursive: true });
   await writeFile(path.join(directory, filename), bytes, { flag: "wx" });
   return noStoreJson({ data: { imageUrl: `/api/events/images/${filename}` } }, { status: 201 });

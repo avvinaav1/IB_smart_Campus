@@ -3,6 +3,7 @@ import "server-only";
 import { randomInt, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { dataPath } from "@/lib/data-path";
 import { events as initialEvents } from "@/lib/data";
 import type { CampusEvent, CustomFormAnswers, CustomFormField, CustomFormSchema } from "@/lib/types";
 
@@ -86,7 +87,7 @@ export type NewEventInput = {
 
 const EMPTY_FORM_SCHEMA: CustomFormSchema = { version: 1, fields: [] };
 const CHECK_IN_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-const databasePath = process.env.EVENTS_DATA_FILE || path.join(process.cwd(), ".data", "events.json");
+const databasePath = process.env.EVENTS_DATA_FILE || dataPath(".data", "events.json");
 let databasePromise: Promise<EventDatabase> | undefined;
 let writeQueue: Promise<unknown> = Promise.resolve();
 

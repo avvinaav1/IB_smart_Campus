@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { dataPath } from "@/lib/data-path";
 import type { ChatMessage } from "@/lib/types";
 
 export type FollowStatus = "pending" | "accepted" | "rejected";
@@ -38,7 +39,7 @@ type SocialDatabase = {
   messages: Record<string, ChatMessage & { conversationId: string }>;
 };
 
-const databasePath = process.env.SOCIAL_DATA_FILE || path.join(process.cwd(), ".data", "social.json");
+const databasePath = process.env.SOCIAL_DATA_FILE || dataPath(".data", "social.json");
 const emptyDatabase = (): SocialDatabase => ({ version: 1, follows: {}, chatRequests: {}, conversations: {}, conversationMembers: {}, messages: {} });
 let databasePromise: Promise<SocialDatabase> | undefined;
 let writeQueue: Promise<unknown> = Promise.resolve();

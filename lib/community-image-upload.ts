@@ -27,7 +27,7 @@ function hasMatchingSignature(bytes: Buffer, mimeType: string) {
 async function removePreviousUpload(imageUrl: string) {
   const match = imageUrl.match(/^\/api\/communities\/images\/([0-9a-f-]{36}\.(?:jpg|png|webp))$/);
   if (!match) return;
-  await unlink(path.join(process.cwd(), ".data", "community-uploads", match[1])).catch(() => undefined);
+  await unlink(path.join(process.env.VERCEL ? "/tmp" : process.cwd(), ".data", "community-uploads", match[1])).catch(() => undefined);
 }
 
 export async function uploadCommunityImage(request: NextRequest, communityId: string, kind: ImageKind) {
@@ -50,7 +50,7 @@ export async function uploadCommunityImage(request: NextRequest, communityId: st
   if (!hasMatchingSignature(bytes, file.type)) return noStoreJson({ error: "The uploaded file does not match its image type." }, { status: 415 });
 
   const filename = `${randomUUID()}.${extension}`;
-  const directory = path.join(process.cwd(), ".data", "community-uploads");
+  const directory = path.join(process.env.VERCEL ? "/tmp" : process.cwd(), ".data", "community-uploads");
   const targetPath = path.join(directory, filename);
   await mkdir(directory, { recursive: true });
   await writeFile(targetPath, bytes, { flag: "wx" });

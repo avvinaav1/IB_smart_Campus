@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { communities as initialCommunities } from "@/lib/data";
+import { dataPath } from "@/lib/data-path";
 import type { Community } from "@/lib/types";
 
 export type CommunityRole = "ADMIN" | "MEMBER";
@@ -46,7 +47,7 @@ export type NewCommunityInput = {
   privacy: CommunityPrivacy;
 };
 
-const databasePath = process.env.COMMUNITIES_DATA_FILE || path.join(process.cwd(), ".data", "communities.json");
+const databasePath = process.env.COMMUNITIES_DATA_FILE || dataPath(".data", "communities.json");
 let databasePromise: Promise<CommunityDatabase> | undefined;
 let writeQueue: Promise<unknown> = Promise.resolve();
 

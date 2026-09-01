@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { starterIndianCampuses, type CampusRecord } from "@/lib/indian-campuses";
+import { dataPath } from "@/lib/data-path";
 
 type CampusDatabase = { version: 1; source?: string; generatedAt?: string; campuses: CampusRecord[] };
-const databasePath = process.env.CAMPUSES_DATA_FILE || path.join(process.cwd(), ".data", "campuses.json");
+const databasePath = process.env.CAMPUSES_DATA_FILE || dataPath(".data", "campuses.json");
 let databasePromise: Promise<CampusDatabase> | undefined;
 
 function normalize(value: string) {
