@@ -1,8 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import { Check, Download, ExternalLink, KeyRound, LoaderCircle, MapPin, Pencil, Search, ShieldCheck, TicketCheck, UserPlus, Users, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Check, Download, ExternalLink, KeyRound, LoaderCircle, MapPin, Pencil, ScanLine, Search, ShieldCheck, TicketCheck, UserPlus, Users, X } from "lucide-react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { coverImageStyle, eventWhen } from "@/lib/event-format";
 import type { CampusEvent, CustomFormAnswers, CustomFormField, EventAdmin, EventAttendee, UserSearchResult } from "@/lib/types";
 
@@ -25,14 +25,94 @@ function RegistrationQuestion({ field, value, onChange }: { field: CustomFormFie
   return <label className="field"><span>{field.label}{field.required && <em>Required</em>}</span><input value={typeof value === "string" ? value : ""} onChange={event => onChange(event.target.value)} placeholder={field.placeholder} maxLength={field.maxLength || 500} required={field.required} /></label>;
 }
 
+type DetectedBarcode = { rawValue: string };
+type BarcodeDetectorLike = { detect: (source: CanvasImageSource) => Promise<DetectedBarcode[]> };
+type BarcodeDetectorCtor = new (options?: { formats?: string[] }) => BarcodeDetectorLike;
+
+function qrScanSupported() {
+  return typeof window !== "undefined"
+    && "BarcodeDetector" in window
+    && typeof navigator !== "undefined"
+    && Boolean(navigator.mediaDevices?.getUserMedia);
+}
+
+// Client-only capability check, without a hydration mismatch or setState-in-effect.
+const noopSubscribe = () => () => {};
+function useQrScanSupported() {
+  return useSyncExternalStore(noopSubscribe, qrScanSupported, () => false);
+}
+
+function QrScanner({ onCode, onClose, onError }: { onCode: (code: string) => void; onClose: () => void; onError: (message: string) => void }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const onCodeRef = useRef(onCode);
+  const onCloseRef = useRef(onClose);
+  const onErrorRef = useRef(onError);
+  useEffect(() => {
+    onCodeRef.current = onCode;
+    onCloseRef.current = onClose;
+    onErrorRef.current = onError;
+  });
+
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    let frame = 0;
+    let stopped = false;
+    const Detector = (window as unknown as { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector;
+    if (!Detector) { onErrorRef.current("This browser can’t scan QR codes — type the code instead."); onCloseRef.current(); return; }
+    const detector = new Detector({ formats: ["qr_code"] });
+
+    async function scanLoop() {
+      if (stopped || !videoRef.current) return;
+      try {
+        const found = (await detector.detect(videoRef.current))
+          .map((code) => code.rawValue.toUpperCase().replace(/[^A-Z0-9]/g, ""))
+          .find((value) => value.length >= 6);
+        if (found) { onCodeRef.current(found.slice(0, 6)); return; }
+      } catch { /* a frame that can't be decoded — keep going */ }
+      frame = requestAnimationFrame(scanLoop);
+    }
+
+    (async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        if (stopped) return;
+        const video = videoRef.current;
+        if (!video) return;
+        video.srcObject = stream;
+        await video.play();
+        frame = requestAnimationFrame(scanLoop);
+      } catch (error) {
+        onErrorRef.current(error instanceof DOMException && error.name === "NotAllowedError"
+          ? "Camera access was blocked — allow it or type the code."
+          : "Could not open the camera — type the code instead.");
+        onCloseRef.current();
+      }
+    })();
+
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+      stream?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  return <div className="qr-scanner">
+    <video ref={videoRef} muted playsInline aria-label="QR scanner camera preview" />
+    <div className="qr-scanner-frame" aria-hidden="true" />
+    <button type="button" className="qr-scanner-stop" onClick={onClose}><X size={14} /> Stop scanning</button>
+  </div>;
+}
+
 function EventAdminDashboard({ event, notify }: { event: CampusEvent; notify: (message: string) => void }) {
   const [attendees, setAttendees] = useState<EventAttendee[] | null>(null);
   const [admins, setAdmins] = useState<EventAdmin[]>([]);
   const [checkInCode, setCheckInCode] = useState("");
   const [checkingIn, setCheckingIn] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<UserSearchResult[]>([]);
   const [adminBusy, setAdminBusy] = useState("");
+  const canScan = useQrScanSupported();
 
   useEffect(() => {
     let active = true;
@@ -66,19 +146,25 @@ function EventAdminDashboard({ event, notify }: { event: CampusEvent; notify: (m
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [admins, event.isCreator, query]);
 
-  async function checkIn(submission: React.FormEvent<HTMLFormElement>) {
-    submission.preventDefault();
-    if (checkingIn) return;
+  async function submitCode(rawCode: string) {
+    const code = rawCode.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+    if (checkingIn || code.length !== 6) return;
     setCheckingIn(true);
     try {
-      const data = await requestJson<{ attendee: EventAttendee }>(`/api/events/${event.id}/check-in`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: checkInCode }) });
+      const data = await requestJson<{ attendee: EventAttendee }>(`/api/events/${event.id}/check-in`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
       if (!data?.attendee) throw new Error("The server did not return the checked-in attendee.");
       setAttendees(current => (current || []).map(attendee => attendee.rsvpId === data.attendee.rsvpId ? data.attendee : attendee));
       setCheckInCode("");
+      setScanning(false);
       notify(`${data.attendee.username} checked in`);
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not check in this attendee.");
     } finally { setCheckingIn(false); }
+  }
+
+  function checkIn(submission: React.FormEvent<HTMLFormElement>) {
+    submission.preventDefault();
+    void submitCode(checkInCode);
   }
 
   async function addAdmin(user: UserSearchResult) {
@@ -107,7 +193,15 @@ function EventAdminDashboard({ event, notify }: { event: CampusEvent; notify: (m
   const visibleResults = query.trim().length >= 2 ? results : [];
   return <section className="event-admin-dashboard">
     <header><div><span className="eyebrow cyan">EVENT ADMIN DASHBOARD</span><h3>Run the door</h3><p>{checkedIn} of {attendees?.filter(attendee => attendee.rsvpStatus === "going").length ?? 0} confirmed attendees checked in.</p></div><a href={`/api/events/${event.id}/rsvps/export`} download><Download size={16} /> Export CSV</a></header>
-    <form className="check-in-form" onSubmit={checkIn}><label htmlFor={`check-in-${event.id}`}><KeyRound size={19} /><span><b>Check-in code</b><small>Type or scan the attendee&apos;s six-character code.</small></span></label><div><input id={`check-in-${event.id}`} value={checkInCode} onChange={input => setCheckInCode(input.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6))} placeholder="A7K9PQ" minLength={6} maxLength={6} autoComplete="off" required /><button disabled={checkingIn || checkInCode.length !== 6}>{checkingIn ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />} Check in</button></div></form>
+    <form className="check-in-form" onSubmit={checkIn}>
+      <label htmlFor={`check-in-${event.id}`}><KeyRound size={19} /><span><b>Check-in code</b><small>Scan the attendee&apos;s QR, or type their six-character code.</small></span></label>
+      <div>
+        <input id={`check-in-${event.id}`} value={checkInCode} onChange={input => setCheckInCode(input.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6))} placeholder="A7K9PQ" minLength={6} maxLength={6} autoComplete="off" required />
+        {canScan && <button type="button" className="scan-toggle" onClick={() => setScanning(value => !value)}><ScanLine size={16} /> {scanning ? "Close" : "Scan QR"}</button>}
+        <button disabled={checkingIn || checkInCode.length !== 6}>{checkingIn ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />} Check in</button>
+      </div>
+      {scanning && <QrScanner onCode={(code) => void submitCode(code)} onClose={() => setScanning(false)} onError={notify} />}
+    </form>
     <section className="dashboard-attendees"><header><b>Attendees</b><span>{attendees?.length ?? "…"}</span></header>{attendees === null ? <div className="attendee-loading"><LoaderCircle className="spin" size={20} /> Loading registrations…</div> : attendees.length ? <div className="attendee-list">{attendees.map(attendee => <div key={attendee.rsvpId}><MiniAvatar name={attendee.username} /><span><b>{attendee.username}</b><small>{attendee.email} · <code>{attendee.checkInCode}</code></small></span><em className={attendee.status === "CHECKED_IN" ? "checked" : ""}>{attendee.rsvpStatus === "waitlisted" ? "Waitlisted" : attendee.status === "CHECKED_IN" ? "Checked in" : "Registered"}</em></div>)}</div> : <p className="attendee-empty">No registrations yet.</p>}</section>
     {event.isCreator && <section className="event-admins-manager"><header><div><b>Co-admins</b><small>Add trusted people to export attendees and check people in.</small></div><span>{admins.length}</span></header>{admins.length > 0 && <div className="event-admin-list">{admins.map(admin => <div key={admin.id}><MiniAvatar name={admin.username} image={admin.avatarUrl} /><b>{admin.username}</b><button type="button" disabled={adminBusy === admin.userId} onClick={() => void removeAdmin(admin)} aria-label={`Remove ${admin.username}`}><X size={15} /></button></div>)}</div>}<label className="admin-search"><Search size={17} /><input value={query} onChange={input => setQuery(input.target.value)} placeholder="Search by username" maxLength={50} /></label>{visibleResults.length > 0 && <div className="admin-search-results">{visibleResults.map(user => <button type="button" disabled={Boolean(adminBusy)} onClick={() => void addAdmin(user)} key={user.id}><MiniAvatar name={user.username} image={user.avatarUrl} /><span><b>{user.username}</b><small>{user.about || "Smart Campus member"}</small></span>{adminBusy === user.id ? <LoaderCircle className="spin" size={16} /> : <UserPlus size={16} />}</button>)}</div>}</section>}
   </section>;
@@ -150,7 +244,11 @@ export function EventRegistrationDetail({ event, close, notify, onChange, onEdit
   }
 
   return <div className="overlay" onMouseDown={mouse => mouse.target === mouse.currentTarget && close()}><section className={`event-modal ${adminOpen ? "admin-mode" : ""}`} role="dialog" aria-modal="true" aria-label={event.title}><div className={`event-modal-image ${event.coverFit === "fit" ? "cover-fit" : ""}`}><Image src={event.imageUrl} alt="" fill sizes="760px" unoptimized={event.imageUrl.startsWith("/api/")} style={coverImageStyle(event)} /><button className="icon-button" type="button" onClick={close} aria-label="Close"><X size={20} /></button><span>{event.isCreator ? "YOUR EVENT" : event.isEventAdmin ? "YOU’RE AN ADMIN" : event.category}</span>{event.isCreator && onEdit && <button className="event-edit-button" type="button" onClick={onEdit}><Pencil size={14} /> Edit event</button>}</div><div className="event-modal-copy"><span className="eyebrow pink">{eventWhen(event)}</span><h2>{event.title}</h2><p className="event-location"><MapPin size={18} /><span><b>{event.venueName}</b><small>{event.venueAddress} · {event.campus}</small></span>{event.directionsUrl && <a href={event.directionsUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} /> Directions</a>}</p><p>{event.description || "The details are set. Bring your campus energy and show up for the people making it happen."}</p><div className="capacity-row"><div><Users size={19} /><span><b>{event.going} going</b><small>{Math.max(0, event.capacity - event.going)} spots left{event.waitlisted ? ` · ${event.waitlisted} waitlisted` : ""}</small></span></div><div className="progress"><i style={{ width: `${Math.min(100, event.going / event.capacity * 100)}%` }} /></div></div>
-    {event.viewerRsvpStatus && event.viewerCheckInCode && <section className={`event-ticket ${event.viewerCheckInStatus === "CHECKED_IN" ? "used" : ""}`}><div><span>{event.viewerRsvpStatus === "waitlisted" ? "WAITLIST TICKET" : "ADMIT ONE"}</span><b>{event.title}</b><small>{eventWhen(event)}</small></div><strong>{event.viewerCheckInCode}</strong><em>{event.viewerCheckInStatus === "CHECKED_IN" ? "CHECKED IN" : "SHOW AT ENTRY"}</em></section>}
+    {event.viewerRsvpStatus && event.viewerCheckInCode && <section className={`event-ticket ${event.viewerCheckInStatus === "CHECKED_IN" ? "used" : ""}`}><div><span>{event.viewerRsvpStatus === "waitlisted" ? "WAITLIST TICKET" : "ADMIT ONE"}</span><b>{event.title}</b><small>{eventWhen(event)}</small></div><strong>{event.viewerCheckInCode}</strong><em>{event.viewerCheckInStatus === "CHECKED_IN" ? "CHECKED IN" : "SHOW AT ENTRY"}</em><figure className="event-ticket-qr">
+      {/* eslint-disable-next-line @next/next/no-img-element -- server-rendered SVG from our API, not a static asset for next/image */}
+      <img src={`/api/events/${event.id}/ticket-qr`} width={128} height={128} alt={`Attendance QR code for ${event.viewerCheckInCode}`} />
+      <figcaption>{event.viewerCheckInStatus === "CHECKED_IN" ? "Already scanned" : "Scan to check in"}</figcaption>
+    </figure></section>}
     {registrationOpen && !event.viewerRsvpStatus && <form className="registration-form" onSubmit={submitRegistration}><header><div><span className="eyebrow violet">REGISTRATION</span><h3>A few details before you&apos;re in</h3></div><button type="button" onClick={() => setRegistrationOpen(false)} aria-label="Close registration form"><X size={16} /></button></header>{event.customFormSchema.fields.map(field => <RegistrationQuestion field={field} value={answers[field.id]} onChange={value => setAnswers(current => { const next = { ...current }; if (value === undefined || value === "") delete next[field.id]; else next[field.id] = value; return next; })} key={field.id} />)}<button className="registration-submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <TicketCheck size={18} />} {nearlyFull ? "Join waitlist" : "Confirm registration"}</button></form>}
     <div className="disclosure"><ShieldCheck size={19} /><p>Your verified email and registration answers are shared only with this event&apos;s creator and assigned event admins.</p></div>
     {event.canManageEvent && <div className="creator-event-actions"><button type="button" onClick={() => setAdminOpen(current => !current)}><Users size={17} /> {adminOpen ? "Close dashboard" : "Admin dashboard"}</button><a href={`/api/events/${event.id}/rsvps/export`} download><Download size={17} /> Export CSV</a></div>}

@@ -489,6 +489,31 @@ export async function listEventRsvpsForManager(eventId: string, userId: string) 
   return { event, rsvps, isCreator: event.creatorId === userId } as const;
 }
 
+/** The signed-in viewer's own check-in ticket for an event, or null if they
+ * have no RSVP. Used to render their attendance QR. */
+export async function getViewerCheckIn(eventId: string, userId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  if (!database.events[eventId]) return null;
+  const rsvpId = database.rsvpIndex[rsvpKey(eventId, userId)];
+  const rsvp = rsvpId ? database.rsvps[rsvpId] : undefined;
+  if (!rsvp) return null;
+  return { checkInCode: rsvp.checkInCode, rsvpStatus: rsvp.rsvpStatus, status: rsvp.status } as const;
+}
+
+/** A manager fetching one attendee's check-in code (e.g. to re-show a QR to an
+ * attendee who lost their ticket). */
+export async function getAttendeeCheckIn(eventId: string, managerId: string, rsvpId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const event = database.events[eventId];
+  if (!event) return { error: "Event not found.", status: 404 } as const;
+  if (!canManage(database, event, managerId)) return { error: "You are not allowed to manage this event.", status: 403 } as const;
+  const rsvp = database.rsvps[rsvpId];
+  if (!rsvp || rsvp.eventId !== eventId) return { error: "That attendee was not found for this event.", status: 404 } as const;
+  return { checkInCode: rsvp.checkInCode } as const;
+}
+
 export async function listEventAdminsForManager(eventId: string, userId: string) {
   await writeQueue;
   const database = await loadDatabase();
