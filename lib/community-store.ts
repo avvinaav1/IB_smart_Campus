@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { communities as initialCommunities } from "@/lib/data";
-import { readDocument, writeDocument } from "@/lib/firebase-admin";
+import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import type { Community } from "@/lib/types";
 
 export type CommunityRole = "ADMIN" | "MEMBER";
@@ -46,7 +46,6 @@ export type NewCommunityInput = {
 };
 
 const STORE_DOC = process.env.COMMUNITIES_STORE_DOC || "communities";
-let databasePromise: Promise<CommunityDatabase> | undefined;
 let writeQueue: Promise<unknown> = Promise.resolve();
 
 function normalizeName(value: string) {
@@ -94,39 +93,37 @@ function seededDatabase(): CommunityDatabase {
   };
 }
 
-async function loadDatabase() {
-  if (!databasePromise) {
-    databasePromise = readDocument<Partial<CommunityDatabase>>(STORE_DOC).then((parsed) => {
-      if (!parsed || !parsed.communities) return seededDatabase();
-      const communities = Object.fromEntries(Object.entries(parsed.communities || {}).map(([id, community]) => [id, {
-        ...community,
-        iconUrl: typeof community.iconUrl === "string" ? community.iconUrl : "",
-        bannerUrl: typeof community.bannerUrl === "string" ? community.bannerUrl : "",
-      }])) as Record<string, StoredCommunity>;
-      const database: CommunityDatabase = {
-        version: 2,
-        communities,
-        members: parsed.members || {},
-        memberIndex: parsed.memberIndex || {},
-        nameIndex: parsed.nameIndex || {},
-      };
-      for (const member of Object.values(database.members)) database.memberIndex[membershipKey(member.communityId, member.userId)] = member.id;
-      for (const community of Object.values(database.communities)) database.nameIndex[community.name.toLowerCase()] = community.id;
-      return database;
-    });
-  }
-  return databasePromise;
+function hydrate(parsed: Partial<CommunityDatabase> | null): CommunityDatabase {
+  if (!parsed || !parsed.communities) return seededDatabase();
+  const communities = Object.fromEntries(Object.entries(parsed.communities || {}).map(([id, community]) => [id, {
+    ...community,
+    iconUrl: typeof community.iconUrl === "string" ? community.iconUrl : "",
+    bannerUrl: typeof community.bannerUrl === "string" ? community.bannerUrl : "",
+  }])) as Record<string, StoredCommunity>;
+  const database: CommunityDatabase = {
+    version: 2,
+    communities,
+    members: parsed.members || {},
+    memberIndex: parsed.memberIndex || {},
+    nameIndex: parsed.nameIndex || {},
+  };
+  for (const member of Object.values(database.members)) database.memberIndex[membershipKey(member.communityId, member.userId)] = member.id;
+  for (const community of Object.values(database.communities)) database.nameIndex[community.name.toLowerCase()] = community.id;
+  return database;
 }
 
-async function saveDatabase(database: CommunityDatabase) {
-  await writeDocument(STORE_DOC, database);
+async function loadDatabase() {
+  return hydrate(await readDocument<Partial<CommunityDatabase>>(STORE_DOC));
 }
 
 function mutate<T>(action: (database: CommunityDatabase) => T | Promise<T>): Promise<T> {
   const operation = writeQueue.then(async () => {
-    const database = await loadDatabase();
-    const result = await action(database);
-    await saveDatabase(database);
+    let result!: T;
+    await mutateDocument<Partial<CommunityDatabase>, CommunityDatabase>(STORE_DOC, async (current) => {
+      const database = hydrate(current);
+      result = await action(database);
+      return database;
+    });
     return result;
   });
   writeQueue = operation.then(() => undefined, () => undefined);

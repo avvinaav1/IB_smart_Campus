@@ -1,7 +1,7 @@
 import { createHmac, randomBytes, randomInt, randomUUID, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { isKnownIndianCampus } from "@/lib/campus-store";
-import { readDocument, writeDocument } from "@/lib/firebase-admin";
+import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import type { SessionUser } from "@/lib/types";
 
 export type AuthIntent = "register" | "login";
@@ -40,9 +40,7 @@ const STORE_DOC = process.env.AUTH_STORE_DOC || "auth";
 const scrypt = promisify(scryptCallback);
 const emptyState = (): AuthState => ({ version: 6, users: {}, emailIndex: {}, referralIndex: {}, otps: {}, emailChanges: {}, sessions: {}, rateLimits: {} });
 
-let statePromise: Promise<AuthState> | undefined;
 let mutationQueue: Promise<unknown> = Promise.resolve();
-let memoryState: AuthState | undefined;
 
 function secret() {
   const value = process.env.AUTH_SECRET;
@@ -122,36 +120,13 @@ function normalizeState(value: LegacyState | null): AuthState {
   return state;
 }
 
-async function loadState() {
-  if (!statePromise) {
-    statePromise = readDocument<LegacyState>(STORE_DOC)
-      .then(async (stored) => {
-        const normalized = normalizeState(stored);
-        memoryState = normalized;
-        const needsMigration = !stored
-          || stored.version !== 6
-          || !stored.referralIndex
-          || Object.values(stored.users || {}).some((user) => typeof user.points !== "number" || typeof user.referralCode !== "string" || typeof user.campus !== "string" || typeof user.profileSetupComplete !== "boolean");
-        if (needsMigration) await saveState(normalized);
-        return normalized;
-      })
-      .catch(() => {
-        memoryState = memoryState || emptyState();
-        return memoryState;
-      });
-  }
-  return statePromise;
-}
-
-async function saveState(state: AuthState) {
-  memoryState = state;
-  try {
-    await writeDocument(STORE_DOC, state);
-  } catch (error) {
-    // Keep the active state in memory if the Firestore write fails,
-    // but make the failure visible so a misconfiguration is not silent.
-    console.error("auth-store: failed to persist to Firestore", error);
-  }
+// Reads go through firebase-admin's short TTL cache. Normalisation runs on every
+// load (cheap); the persisted document is upgraded to the current shape on the
+// next mutate rather than by an eager write from a read path. A Firestore read
+// failure propagates — callers must not be told they are logged out because the
+// database was briefly unreachable.
+async function loadState(options?: { fresh?: boolean }): Promise<AuthState> {
+  return normalizeState(await readDocument<LegacyState>(STORE_DOC, options));
 }
 
 function cleanup(state: AuthState, now: number) {
@@ -167,10 +142,13 @@ function cleanup(state: AuthState, now: number) {
 
 function mutate<T>(action: (state: AuthState) => T | Promise<T>): Promise<T> {
   const operation = mutationQueue.then(async () => {
-    const state = await loadState();
-    cleanup(state, Date.now());
-    const result = await action(state);
-    await saveState(state);
+    let result!: T;
+    await mutateDocument<LegacyState, AuthState>(STORE_DOC, async (current) => {
+      const state = normalizeState(current);
+      cleanup(state, Date.now());
+      result = await action(state);
+      return state;
+    });
     return result;
   });
   mutationQueue = operation.then(() => undefined, () => undefined);
@@ -298,22 +276,33 @@ export async function passwordLogin(email: string, password: string, clientId: s
   });
 }
 
+// A session missing from the cached snapshot may just mean this process's read
+// cache predates a login on another process, so confirm against a fresh read
+// before treating the caller as logged out.
+async function resolveSession(token: string) {
+  await mutationQueue;
+  let state = await loadState();
+  let session = state.sessions[sessionKey(token)];
+  if (!session) {
+    state = await loadState({ fresh: true });
+    session = state.sessions[sessionKey(token)];
+  }
+  if (!session || session.expiresAt <= Date.now()) return null;
+  return { state, session };
+}
+
 export async function getSession(token?: string) {
   if (!token) return null;
-  await mutationQueue;
-  const state = await loadState();
-  const session = state.sessions[sessionKey(token)];
-  if (!session || session.expiresAt <= Date.now()) return null;
-  const user = state.users[session.userId];
+  const resolved = await resolveSession(token);
+  if (!resolved) return null;
+  const user = resolved.state.users[resolved.session.userId];
   return user ? publicUser(user) : null;
 }
 
 export async function getSessionUserId(token?: string) {
   if (!token) return null;
-  await mutationQueue;
-  const state = await loadState();
-  const session = state.sessions[sessionKey(token)];
-  return session && session.expiresAt > Date.now() ? session.userId : null;
+  const resolved = await resolveSession(token);
+  return resolved ? resolved.session.userId : null;
 }
 
 export async function revokeSession(token?: string) { if (token) await mutate((state) => { delete state.sessions[sessionKey(token)]; }); }

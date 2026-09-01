@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomInt, randomUUID } from "node:crypto";
-import { readDocument, writeDocument } from "@/lib/firebase-admin";
+import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import { events as initialEvents } from "@/lib/data";
 import type { CampusEvent, CustomFormAnswers, CustomFormField, CustomFormSchema } from "@/lib/types";
 
@@ -86,7 +86,6 @@ export type NewEventInput = {
 const EMPTY_FORM_SCHEMA: CustomFormSchema = { version: 1, fields: [] };
 const CHECK_IN_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const STORE_DOC = process.env.EVENTS_STORE_DOC || "events";
-let databasePromise: Promise<EventDatabase> | undefined;
 let writeQueue: Promise<unknown> = Promise.resolve();
 
 function rsvpKey(eventId: string, userId: string) { return `${eventId}:${userId}`; }
@@ -235,24 +234,25 @@ function normalizeDatabase(stored: LegacyEventDatabase): EventDatabase {
   return database;
 }
 
-async function loadDatabase() {
-  if (!databasePromise) {
-    databasePromise = readDocument<LegacyEventDatabase>(STORE_DOC).then(async (stored) => {
-      if (!stored || !stored.events) return seededDatabase();
-      const database = normalizeDatabase(stored);
-      if (stored.version !== 4) await saveDatabase(database);
-      return database;
-    });
-  }
-  return databasePromise;
+function hydrate(stored: LegacyEventDatabase | null): EventDatabase {
+  if (!stored || !stored.events) return seededDatabase();
+  return normalizeDatabase(stored);
 }
 
-async function saveDatabase(database: EventDatabase) {
-  await writeDocument(STORE_DOC, database);
+async function loadDatabase() {
+  return hydrate(await readDocument<LegacyEventDatabase>(STORE_DOC));
 }
 
 function mutate<T>(action: (database: EventDatabase) => T | Promise<T>): Promise<T> {
-  const operation = writeQueue.then(async () => { const database = await loadDatabase(); const result = await action(database); await saveDatabase(database); return result; });
+  const operation = writeQueue.then(async () => {
+    let result!: T;
+    await mutateDocument<LegacyEventDatabase, EventDatabase>(STORE_DOC, async (current) => {
+      const database = hydrate(current);
+      result = await action(database);
+      return database;
+    });
+    return result;
+  });
   writeQueue = operation.then(() => undefined, () => undefined);
   return operation;
 }

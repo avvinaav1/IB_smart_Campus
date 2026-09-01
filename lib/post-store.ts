@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ensureCommunityForLegacyPost, resolveCommunityForPost, visibleCommunityIds } from "@/lib/community-store";
-import { readDocument, writeDocument } from "@/lib/firebase-admin";
+import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import { posts as initialPosts } from "@/lib/data";
 import type { Post, PostComment, UserDashboard } from "@/lib/types";
 
@@ -28,7 +28,6 @@ export type NewPostInput = {
 };
 
 const STORE_DOC = process.env.POSTS_STORE_DOC || "posts";
-let databasePromise: Promise<PostDatabase> | undefined;
 let writeQueue: Promise<unknown> = Promise.resolve();
 
 function seededDatabase(): PostDatabase {
@@ -78,33 +77,45 @@ function postingStreak(posts: StoredPost[]) {
   return streak;
 }
 
-async function loadDatabase() {
-  if (!databasePromise) {
-    databasePromise = readDocument<Partial<PostDatabase>>(STORE_DOC).then(async (parsed) => {
-      if (!parsed || !parsed.posts) return seededDatabase();
-      return {
-        version: 2 as const,
-        posts: await Promise.all((parsed.posts || []).map(async (post) => ({
-          ...post,
-          communityId: post.communityId || await ensureCommunityForLegacyPost(post.community, post.accent, post.userId || "system"),
-          authorId: post.authorId || post.userId || "system",
-          userId: post.userId || post.authorId || "system",
-        }))) as StoredPost[],
-      };
-    });
-  }
-  return databasePromise;
+// Transaction-safe shaping: never calls another store (a nested Firestore
+// transaction would deadlock). Legacy posts with no communityId keep "" here and
+// are simply filtered out of feeds; the read path below backfills them for
+// display via ensureCommunityForLegacyPost.
+function hydrateForWrite(parsed: Partial<PostDatabase> | null): PostDatabase {
+  if (!parsed || !parsed.posts) return seededDatabase();
+  return {
+    version: 2,
+    posts: (parsed.posts || []).map((post) => ({
+      ...post,
+      communityId: post.communityId || "",
+      authorId: post.authorId || post.userId || "system",
+      userId: post.userId || post.authorId || "system",
+    })) as StoredPost[],
+  };
 }
 
-async function saveDatabase(database: PostDatabase) {
-  await writeDocument(STORE_DOC, database);
+async function loadDatabase(): Promise<PostDatabase> {
+  const parsed = await readDocument<Partial<PostDatabase>>(STORE_DOC);
+  if (!parsed || !parsed.posts) return seededDatabase();
+  return {
+    version: 2,
+    posts: await Promise.all((parsed.posts || []).map(async (post) => ({
+      ...post,
+      communityId: post.communityId || await ensureCommunityForLegacyPost(post.community, post.accent, post.userId || "system"),
+      authorId: post.authorId || post.userId || "system",
+      userId: post.userId || post.authorId || "system",
+    }))) as StoredPost[],
+  };
 }
 
 function mutate<T>(action: (database: PostDatabase) => T | Promise<T>): Promise<T> {
   const operation = writeQueue.then(async () => {
-    const database = await loadDatabase();
-    const result = await action(database);
-    await saveDatabase(database);
+    let result!: T;
+    await mutateDocument<Partial<PostDatabase>, PostDatabase>(STORE_DOC, async (current) => {
+      const database = hydrateForWrite(current);
+      result = await action(database);
+      return database;
+    });
     return result;
   });
   writeQueue = operation.then(() => undefined, () => undefined);

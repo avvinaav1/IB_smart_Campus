@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readDocument, writeDocument } from "@/lib/firebase-admin";
+import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import type { ChatMessage } from "@/lib/types";
 
 export type FollowStatus = "pending" | "accepted" | "rejected";
@@ -39,30 +39,28 @@ type SocialDatabase = {
 
 const STORE_DOC = process.env.SOCIAL_STORE_DOC || "social";
 const emptyDatabase = (): SocialDatabase => ({ version: 1, follows: {}, chatRequests: {}, conversations: {}, conversationMembers: {}, messages: {} });
-let databasePromise: Promise<SocialDatabase> | undefined;
 let writeQueue: Promise<unknown> = Promise.resolve();
 
 function pairKey(firstUserId: string, secondUserId: string) {
   return [firstUserId, secondUserId].sort().join(":");
 }
 
-async function loadDatabase() {
-  if (!databasePromise) {
-    databasePromise = readDocument<SocialDatabase>(STORE_DOC)
-      .then((stored) => (stored ? { ...emptyDatabase(), ...stored } : emptyDatabase()));
-  }
-  return databasePromise;
+function hydrate(stored: Partial<SocialDatabase> | null): SocialDatabase {
+  return stored ? { ...emptyDatabase(), ...stored } : emptyDatabase();
 }
 
-async function saveDatabase(database: SocialDatabase) {
-  await writeDocument(STORE_DOC, database);
+async function loadDatabase() {
+  return hydrate(await readDocument<Partial<SocialDatabase>>(STORE_DOC));
 }
 
 function mutate<T>(action: (database: SocialDatabase) => T | Promise<T>): Promise<T> {
   const operation = writeQueue.then(async () => {
-    const database = await loadDatabase();
-    const result = await action(database);
-    await saveDatabase(database);
+    let result!: T;
+    await mutateDocument<Partial<SocialDatabase>, SocialDatabase>(STORE_DOC, async (current) => {
+      const database = hydrate(current);
+      result = await action(database);
+      return database;
+    });
     return result;
   });
   writeQueue = operation.then(() => undefined, () => undefined);
