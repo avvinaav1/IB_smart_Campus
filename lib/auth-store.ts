@@ -37,12 +37,13 @@ const OTP_RATE_LIMIT = 6;
 const PASSWORD_RATE_LIMIT = 10;
 const MAX_VERIFY_ATTEMPTS = 5;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const statePath = process.env.AUTH_DATA_FILE || path.join(process.cwd(), ".data", "auth.json");
+const statePath = process.env.AUTH_DATA_FILE || (process.env.VERCEL ? path.join("/tmp", "auth.json") : path.join(process.cwd(), ".data", "auth.json"));
 const scrypt = promisify(scryptCallback);
 const emptyState = (): AuthState => ({ version: 6, users: {}, emailIndex: {}, referralIndex: {}, otps: {}, emailChanges: {}, sessions: {}, rateLimits: {} });
 
 let statePromise: Promise<AuthState> | undefined;
 let mutationQueue: Promise<unknown> = Promise.resolve();
+let memoryState: AuthState | undefined;
 
 function secret() {
   const value = process.env.AUTH_SECRET;
@@ -128,6 +129,7 @@ async function loadState() {
       .then(async (raw) => {
         const stored = JSON.parse(raw) as LegacyState;
         const normalized = normalizeState(stored);
+        memoryState = normalized;
         const needsMigration = stored.version !== 6
           || !stored.referralIndex
           || Object.values(stored.users || {}).some((user) => typeof user.points !== "number" || typeof user.referralCode !== "string" || typeof user.campus !== "string" || typeof user.profileSetupComplete !== "boolean");
@@ -135,16 +137,25 @@ async function loadState() {
         return normalized;
       })
       .catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return emptyState();
-        throw error;
+        if (error?.code === "ENOENT" || error?.code === "EACCES" || error?.code === "EPERM") {
+          memoryState = memoryState || emptyState();
+          return memoryState;
+        }
+        memoryState = memoryState || emptyState();
+        return memoryState;
       });
   }
   return statePromise;
 }
 
 async function saveState(state: AuthState) {
-  await mkdir(path.dirname(statePath), { recursive: true });
-  await writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+  memoryState = state;
+  try {
+    await mkdir(path.dirname(statePath), { recursive: true });
+    await writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+  } catch {
+    // Vercel serverless filesystems can be read-only or ephemeral. Keep the active state in memory.
+  }
 }
 
 function cleanup(state: AuthState, now: number) {
