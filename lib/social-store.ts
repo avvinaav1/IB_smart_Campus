@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { dataPath } from "@/lib/data-path";
+import { readDocument, writeDocument } from "@/lib/firebase-admin";
 import type { ChatMessage } from "@/lib/types";
 
 export type FollowStatus = "pending" | "accepted" | "rejected";
@@ -39,7 +37,7 @@ type SocialDatabase = {
   messages: Record<string, ChatMessage & { conversationId: string }>;
 };
 
-const databasePath = process.env.SOCIAL_DATA_FILE || dataPath(".data", "social.json");
+const STORE_DOC = process.env.SOCIAL_STORE_DOC || "social";
 const emptyDatabase = (): SocialDatabase => ({ version: 1, follows: {}, chatRequests: {}, conversations: {}, conversationMembers: {}, messages: {} });
 let databasePromise: Promise<SocialDatabase> | undefined;
 let writeQueue: Promise<unknown> = Promise.resolve();
@@ -50,19 +48,14 @@ function pairKey(firstUserId: string, secondUserId: string) {
 
 async function loadDatabase() {
   if (!databasePromise) {
-    databasePromise = readFile(/* turbopackIgnore: true */ databasePath, "utf8")
-      .then((raw) => ({ ...emptyDatabase(), ...JSON.parse(raw) as SocialDatabase }))
-      .catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return emptyDatabase();
-        throw error;
-      });
+    databasePromise = readDocument<SocialDatabase>(STORE_DOC)
+      .then((stored) => (stored ? { ...emptyDatabase(), ...stored } : emptyDatabase()));
   }
   return databasePromise;
 }
 
 async function saveDatabase(database: SocialDatabase) {
-  await mkdir(path.dirname(databasePath), { recursive: true });
-  await writeFile(databasePath, JSON.stringify(database, null, 2), "utf8");
+  await writeDocument(STORE_DOC, database);
 }
 
 function mutate<T>(action: (database: SocialDatabase) => T | Promise<T>): Promise<T> {

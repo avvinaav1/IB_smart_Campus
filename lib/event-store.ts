@@ -1,9 +1,7 @@
 import "server-only";
 
 import { randomInt, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { dataPath } from "@/lib/data-path";
+import { readDocument, writeDocument } from "@/lib/firebase-admin";
 import { events as initialEvents } from "@/lib/data";
 import type { CampusEvent, CustomFormAnswers, CustomFormField, CustomFormSchema } from "@/lib/types";
 
@@ -87,7 +85,7 @@ export type NewEventInput = {
 
 const EMPTY_FORM_SCHEMA: CustomFormSchema = { version: 1, fields: [] };
 const CHECK_IN_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-const databasePath = process.env.EVENTS_DATA_FILE || dataPath(".data", "events.json");
+const STORE_DOC = process.env.EVENTS_STORE_DOC || "events";
 let databasePromise: Promise<EventDatabase> | undefined;
 let writeQueue: Promise<unknown> = Promise.resolve();
 
@@ -239,24 +237,18 @@ function normalizeDatabase(stored: LegacyEventDatabase): EventDatabase {
 
 async function loadDatabase() {
   if (!databasePromise) {
-    databasePromise = readFile(/* turbopackIgnore: true */ databasePath, "utf8")
-      .then(async (raw) => {
-        const stored = JSON.parse(raw) as LegacyEventDatabase;
-        const database = normalizeDatabase(stored);
-        if (stored.version !== 4) await saveDatabase(database);
-        return database;
-      })
-      .catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return seededDatabase();
-        throw error;
-      });
+    databasePromise = readDocument<LegacyEventDatabase>(STORE_DOC).then(async (stored) => {
+      if (!stored || !stored.events) return seededDatabase();
+      const database = normalizeDatabase(stored);
+      if (stored.version !== 4) await saveDatabase(database);
+      return database;
+    });
   }
   return databasePromise;
 }
 
 async function saveDatabase(database: EventDatabase) {
-  await mkdir(path.dirname(databasePath), { recursive: true });
-  await writeFile(databasePath, JSON.stringify(database, null, 2), "utf8");
+  await writeDocument(STORE_DOC, database);
 }
 
 function mutate<T>(action: (database: EventDatabase) => T | Promise<T>): Promise<T> {

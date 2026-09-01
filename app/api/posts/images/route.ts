@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
   const file = form.get("image");
   if (!(file instanceof File)) return noStoreJson({ error: "Choose a JPG, PNG, or WebP image." }, { status: 400 });
   if (!file.size) return noStoreJson({ error: "The selected image is empty." }, { status: 400 });
-  if (file.size > MAX_SIZE) return noStoreJson({ error: "Event images must be 5 MB or smaller." }, { status: 413 });
+  if (file.size > MAX_SIZE) return noStoreJson({ error: "Post images must be 5 MB or smaller." }, { status: 413 });
   const extension = MIME_TO_EXTENSION.get(file.type);
   if (!extension) return noStoreJson({ error: "Only JPG, PNG, and WebP images are supported." }, { status: 415 });
   const bytes = Buffer.from(await file.arrayBuffer());
@@ -26,6 +26,6 @@ export async function POST(request: NextRequest) {
     return noStoreJson({ error: "The uploaded file does not match its image type." }, { status: 415 });
   }
   const filename = `${randomUUID()}.${extension}`;
-  await putImage(`event-uploads/${filename}`, bytes, file.type);
-  return noStoreJson({ data: { imageUrl: `/api/events/images/${filename}` } }, { status: 201 });
+  await putImage(`post-uploads/${filename}`, bytes, file.type);
+  return noStoreJson({ data: { imageUrl: `/api/posts/images/${filename}` } }, { status: 201 });
 }

@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { communities as initialCommunities } from "@/lib/data";
-import { dataPath } from "@/lib/data-path";
+import { readDocument, writeDocument } from "@/lib/firebase-admin";
 import type { Community } from "@/lib/types";
 
 export type CommunityRole = "ADMIN" | "MEMBER";
@@ -47,7 +45,7 @@ export type NewCommunityInput = {
   privacy: CommunityPrivacy;
 };
 
-const databasePath = process.env.COMMUNITIES_DATA_FILE || dataPath(".data", "communities.json");
+const STORE_DOC = process.env.COMMUNITIES_STORE_DOC || "communities";
 let databasePromise: Promise<CommunityDatabase> | undefined;
 let writeQueue: Promise<unknown> = Promise.resolve();
 
@@ -98,36 +96,30 @@ function seededDatabase(): CommunityDatabase {
 
 async function loadDatabase() {
   if (!databasePromise) {
-    databasePromise = readFile(/* turbopackIgnore: true */ databasePath, "utf8")
-      .then((raw) => {
-        const parsed = JSON.parse(raw) as Partial<CommunityDatabase>;
-        const communities = Object.fromEntries(Object.entries(parsed.communities || {}).map(([id, community]) => [id, {
-          ...community,
-          iconUrl: typeof community.iconUrl === "string" ? community.iconUrl : "",
-          bannerUrl: typeof community.bannerUrl === "string" ? community.bannerUrl : "",
-        }])) as Record<string, StoredCommunity>;
-        const database: CommunityDatabase = {
-          version: 2,
-          communities,
-          members: parsed.members || {},
-          memberIndex: parsed.memberIndex || {},
-          nameIndex: parsed.nameIndex || {},
-        };
-        for (const member of Object.values(database.members)) database.memberIndex[membershipKey(member.communityId, member.userId)] = member.id;
-        for (const community of Object.values(database.communities)) database.nameIndex[community.name.toLowerCase()] = community.id;
-        return database;
-      })
-      .catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return seededDatabase();
-        throw error;
-      });
+    databasePromise = readDocument<Partial<CommunityDatabase>>(STORE_DOC).then((parsed) => {
+      if (!parsed || !parsed.communities) return seededDatabase();
+      const communities = Object.fromEntries(Object.entries(parsed.communities || {}).map(([id, community]) => [id, {
+        ...community,
+        iconUrl: typeof community.iconUrl === "string" ? community.iconUrl : "",
+        bannerUrl: typeof community.bannerUrl === "string" ? community.bannerUrl : "",
+      }])) as Record<string, StoredCommunity>;
+      const database: CommunityDatabase = {
+        version: 2,
+        communities,
+        members: parsed.members || {},
+        memberIndex: parsed.memberIndex || {},
+        nameIndex: parsed.nameIndex || {},
+      };
+      for (const member of Object.values(database.members)) database.memberIndex[membershipKey(member.communityId, member.userId)] = member.id;
+      for (const community of Object.values(database.communities)) database.nameIndex[community.name.toLowerCase()] = community.id;
+      return database;
+    });
   }
   return databasePromise;
 }
 
 async function saveDatabase(database: CommunityDatabase) {
-  await mkdir(path.dirname(databasePath), { recursive: true });
-  await writeFile(databasePath, JSON.stringify(database, null, 2), "utf8");
+  await writeDocument(STORE_DOC, database);
 }
 
 function mutate<T>(action: (database: CommunityDatabase) => T | Promise<T>): Promise<T> {

@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
-import path from "node:path";
 import type { NextRequest } from "next/server";
 import { authenticatedUserId, isSameOrigin, noStoreJson } from "@/lib/auth-http";
 import { canManageCommunityBranding, updateCommunityImage } from "@/lib/community-store";
+import { deleteImage, putImage } from "@/lib/image-storage";
+
+const STORAGE_FOLDER = "community-uploads";
 
 type ImageKind = "icon" | "banner";
 
@@ -27,7 +28,7 @@ function hasMatchingSignature(bytes: Buffer, mimeType: string) {
 async function removePreviousUpload(imageUrl: string) {
   const match = imageUrl.match(/^\/api\/communities\/images\/([0-9a-f-]{36}\.(?:jpg|png|webp))$/);
   if (!match) return;
-  await unlink(path.join(process.env.VERCEL ? "/tmp" : process.cwd(), ".data", "community-uploads", match[1])).catch(() => undefined);
+  await deleteImage(`${STORAGE_FOLDER}/${match[1]}`);
 }
 
 export async function uploadCommunityImage(request: NextRequest, communityId: string, kind: ImageKind) {
@@ -50,15 +51,13 @@ export async function uploadCommunityImage(request: NextRequest, communityId: st
   if (!hasMatchingSignature(bytes, file.type)) return noStoreJson({ error: "The uploaded file does not match its image type." }, { status: 415 });
 
   const filename = `${randomUUID()}.${extension}`;
-  const directory = path.join(process.env.VERCEL ? "/tmp" : process.cwd(), ".data", "community-uploads");
-  const targetPath = path.join(directory, filename);
-  await mkdir(directory, { recursive: true });
-  await writeFile(targetPath, bytes, { flag: "wx" });
+  const objectPath = `${STORAGE_FOLDER}/${filename}`;
+  await putImage(objectPath, bytes, file.type);
 
   const imageUrl = `/api/communities/images/${filename}`;
   const result = await updateCommunityImage(communityId, userId, kind, imageUrl);
   if ("error" in result) {
-    await unlink(targetPath).catch(() => undefined);
+    await deleteImage(objectPath);
     return noStoreJson({ error: result.error }, { status: result.status });
   }
   await removePreviousUpload(result.previousUrl);

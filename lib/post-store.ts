@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { ensureCommunityForLegacyPost, resolveCommunityForPost, visibleCommunityIds } from "@/lib/community-store";
-import { dataPath } from "@/lib/data-path";
+import { readDocument, writeDocument } from "@/lib/firebase-admin";
 import { posts as initialPosts } from "@/lib/data";
 import type { Post, PostComment, UserDashboard } from "@/lib/types";
 
@@ -29,7 +27,7 @@ export type NewPostInput = {
   images?: string[];
 };
 
-const databasePath = process.env.POSTS_DATA_FILE || dataPath(".data", "posts.json");
+const STORE_DOC = process.env.POSTS_STORE_DOC || "posts";
 let databasePromise: Promise<PostDatabase> | undefined;
 let writeQueue: Promise<unknown> = Promise.resolve();
 
@@ -82,30 +80,24 @@ function postingStreak(posts: StoredPost[]) {
 
 async function loadDatabase() {
   if (!databasePromise) {
-    databasePromise = readFile(/* turbopackIgnore: true */ databasePath, "utf8")
-      .then(async (raw) => {
-        const parsed = JSON.parse(raw) as Partial<PostDatabase>;
-        return {
-          version: 2 as const,
-          posts: await Promise.all((parsed.posts || []).map(async (post) => ({
-            ...post,
-            communityId: post.communityId || await ensureCommunityForLegacyPost(post.community, post.accent, post.userId || "system"),
-            authorId: post.authorId || post.userId || "system",
-            userId: post.userId || post.authorId || "system",
-          }))) as StoredPost[],
-        };
-      })
-      .catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return seededDatabase();
-        throw error;
-      });
+    databasePromise = readDocument<Partial<PostDatabase>>(STORE_DOC).then(async (parsed) => {
+      if (!parsed || !parsed.posts) return seededDatabase();
+      return {
+        version: 2 as const,
+        posts: await Promise.all((parsed.posts || []).map(async (post) => ({
+          ...post,
+          communityId: post.communityId || await ensureCommunityForLegacyPost(post.community, post.accent, post.userId || "system"),
+          authorId: post.authorId || post.userId || "system",
+          userId: post.userId || post.authorId || "system",
+        }))) as StoredPost[],
+      };
+    });
   }
   return databasePromise;
 }
 
 async function saveDatabase(database: PostDatabase) {
-  await mkdir(path.dirname(databasePath), { recursive: true });
-  await writeFile(databasePath, JSON.stringify(database, null, 2), "utf8");
+  await writeDocument(STORE_DOC, database);
 }
 
 function mutate<T>(action: (database: PostDatabase) => T | Promise<T>): Promise<T> {
@@ -126,12 +118,8 @@ export function validatePostInput(input: NewPostInput) {
   if ((input.body || "").length > 10_000) return "Post text must be 10,000 characters or fewer.";
   if ((input.flair || "").length > 40) return "Post flair must be 40 characters or fewer.";
   if ((input.images || []).length > 6) return "You can attach up to 6 images.";
-  const invalidImage = (input.images || []).some((image) => {
-    const supported = /^data:image\/(jpeg|png|webp);base64,/i.test(image);
-    const maxEncodedLength = Math.ceil(8 * 1024 * 1024 * 4 / 3) + 128;
-    return !supported || image.length > maxEncodedLength;
-  });
-  if (invalidImage) return "Each image must be a JPG, PNG, or WebP no larger than 8 MB.";
+  const invalidImage = (input.images || []).some((image) => !/^\/api\/posts\/images\/[0-9a-f-]{36}\.(jpg|png|webp)$/.test(image));
+  if (invalidImage) return "Attach images with the uploader before posting.";
   return "";
 }
 

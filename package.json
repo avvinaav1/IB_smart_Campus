@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "seed:campuses": "node scripts/seed-indian-campuses.mjs",
+    "migrate:firebase": "node --env-file=.env.local scripts/migrate-to-firebase.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node --test"
@@ -14,6 +15,7 @@
   "dependencies": {
     "csv-parse": "^7.0.2",
     "csv-writer": "^1.6.0",
+    "firebase-admin": "^14.3.0",
     "lucide-react": "^0.468.0",
     "mysql2": "^3.24.2",
     "next": "^16.3.3",

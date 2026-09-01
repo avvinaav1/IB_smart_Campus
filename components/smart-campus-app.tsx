@@ -499,7 +499,7 @@ function PostCard({ post, index, vote, votePending, save, openComments, notify }
     <div className="post-meta"><Avatar text={post.community.slice(2, 4)} color={post.accent} size={34} /><div><b>{post.community}</b><span>posted by {post.author} · {post.time}</span></div>{post.flair && <em>{post.flair}</em>}<IconButton label="Post options"><Ellipsis size={19} /></IconButton></div>
     <h2>{post.title}</h2>
     {post.body && <p>{post.body}</p>}
-    {postImages.length > 0 && <div className={`post-image gallery-${Math.min(postImages.length, 6)}`}>{postImages.slice(0, 6).map((image, imageIndex) => <span className="gallery-image" key={`${post.id}-${imageIndex}`}><Image src={image} alt={postImages.length > 1 ? `Attachment ${imageIndex + 1} for ${post.title}` : `Attachment for ${post.title}`} fill sizes="(max-width: 900px) 100vw, 650px" unoptimized={image.startsWith("data:")} />{imageIndex === 5 && postImages.length > 6 && <b>+{postImages.length - 6}</b>}</span>)}</div>}
+    {postImages.length > 0 && <div className={`post-image gallery-${Math.min(postImages.length, 6)}`}>{postImages.slice(0, 6).map((image, imageIndex) => <span className="gallery-image" key={`${post.id}-${imageIndex}`}><Image src={image} alt={postImages.length > 1 ? `Attachment ${imageIndex + 1} for ${post.title}` : `Attachment for ${post.title}`} fill sizes="(max-width: 900px) 100vw, 650px" unoptimized={image.startsWith("data:") || image.startsWith("/api/")} />{imageIndex === 5 && postImages.length > 6 && <b>+{postImages.length - 6}</b>}</span>)}</div>}
     {post.poll && <div className="poll">{post.poll.map(item => <button key={item.label} onClick={() => notify(`Voted for ${item.label}`)}><i style={{ width: `${item.percent}%` }} /><span>{item.label}</span><b>{item.percent}%</b></button>)}<small>642 votes · 2 days left</small></div>}
     <div className="post-actions">
       <div className="vote-control"><button disabled={votePending} className={post.voted === 1 ? "up active" : "up"} onClick={() => vote(post.id, 1)} aria-label="Upvote">↑</button><b>{formatNumber(post.votes)}</b><button disabled={votePending} className={post.voted === -1 ? "down active" : "down"} onClick={() => vote(post.id, -1)} aria-label="Downvote">↓</button></div>
@@ -1079,6 +1079,7 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
   const [type, setType] = useState("Text");
   const [community, setCommunity] = useState(initialCommunity);
   const [uploads, setUploads] = useState<{ name: string; url: string }[]>([]);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [draftSaved, setDraftSaved] = useState(false);
   const activeCommunity = communities.some((item) => item.name === community) ? community : communities[0]?.name || community;
@@ -1090,19 +1091,23 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
     if (!files.length) return;
     const invalid = files.find(file => !["image/jpeg", "image/png", "image/webp"].includes(file.type));
     if (invalid) return setError(`${invalid.name} is not a JPG, PNG, or WebP image.`);
-    const oversized = files.find(file => file.size > 8 * 1024 * 1024);
-    if (oversized) return setError(`${oversized.name} is larger than 8 MB.`);
+    const oversized = files.find(file => file.size > 5 * 1024 * 1024);
+    if (oversized) return setError(`${oversized.name} is larger than 5 MB.`);
     if (uploads.length + files.length > 6) return setError("You can attach up to 6 images to one post.");
+    setUploading(true);
     try {
-      const added = await Promise.all(files.map(file => new Promise<{ name: string; url: string }>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve({ name: file.name, url: String(reader.result) });
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-      })));
+      const added = await Promise.all(files.map(async file => {
+        const form = new FormData();
+        form.append("image", file);
+        const result = await requestJson<{ imageUrl: string }>("/api/posts/images", { method: "POST", body: form });
+        if (!result?.imageUrl) throw new Error("The image server did not return a URL.");
+        return { name: file.name, url: result.imageUrl };
+      }));
       setUploads(current => [...current, ...added]);
     } catch {
-      setError("We couldn’t read that image. Please try another file.");
+      setError("We couldn’t upload that image. Please try another file.");
+    } finally {
+      setUploading(false);
     }
   }
 
@@ -1115,7 +1120,7 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
     onCreate({ id: Date.now(), communityId: selectedCommunity.id, community: selectedCommunity.name, accent: selectedCommunity.color, author, time: "now", flair: type === "Image" ? "Photo dump" : type, title: title.trim(), body: body.trim() || undefined, images: uploads.map(upload => upload.url), votes: 0, comments: 0 });
   }
 
-  return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}><form className="composer" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Create a post"><header><div><span className="eyebrow violet">SAY SOMETHING</span><h2>Create a post</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><label className="community-select"><span>Post to</span><div><Avatar text={activeCommunity.slice(2, 4)} color={communities.find(item => item.name === activeCommunity)?.color || "#6C3BFF"} size={28} /><select value={activeCommunity} onChange={event => setCommunity(event.target.value)} aria-label="Post community">{communities.map(item => <option key={item.id}>{item.name}</option>)}</select><ChevronDown size={16} /></div></label><div className="composer-types">{["Text", "Image", "Poll", "Link"].map(item => <button type="button" className={type === item ? "active" : ""} onClick={() => { setType(item); setError(""); }} key={item}>{item}</button>)}</div><input autoFocus value={title} onChange={event => { setTitle(event.target.value); setError(""); setDraftSaved(false); }} maxLength={160} placeholder="An interesting title" /><textarea value={body} onChange={event => { setBody(event.target.value); setDraftSaved(false); }} rows={7} placeholder={type === "Poll" ? "Ask your question..." : type === "Link" ? "Paste a link and add some context..." : "What do you want to share? Markdown is supported."} />{type === "Image" && <><label className="upload-zone"><input className="file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={addImages} /><ImagePlus size={28} /><b>{uploads.length ? "Add more photos" : "Choose photos to upload"}</b><small>Up to 6 JPG, PNG or WebP images · 8 MB each</small></label>{uploads.length > 0 && <div className="upload-previews">{uploads.map((upload, index) => <div key={`${upload.name}-${index}`}><Image src={upload.url} alt={`Preview of ${upload.name}`} fill sizes="160px" unoptimized /><button type="button" aria-label={`Remove ${upload.name}`} onClick={() => setUploads(current => current.filter((_, itemIndex) => itemIndex !== index))}><X size={15} /></button><span>{index + 1}</span></div>)}</div>}</>}{error && <p className="form-error" role="alert">{error}</p>}<footer><span>{draftSaved ? "Draft saved" : `${title.length}/160`}</span><button type="button" className="draft-button" onClick={() => { localStorage.setItem("sc-post-draft", JSON.stringify({ title, body, type, community: activeCommunity })); setDraftSaved(true); }}>Save draft</button><button type="submit" className="post-button" disabled={!title.trim() || !communities.length}>Post <ArrowRight size={17} /></button></footer></form></div>;
+  return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}><form className="composer" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Create a post"><header><div><span className="eyebrow violet">SAY SOMETHING</span><h2>Create a post</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><label className="community-select"><span>Post to</span><div><Avatar text={activeCommunity.slice(2, 4)} color={communities.find(item => item.name === activeCommunity)?.color || "#6C3BFF"} size={28} /><select value={activeCommunity} onChange={event => setCommunity(event.target.value)} aria-label="Post community">{communities.map(item => <option key={item.id}>{item.name}</option>)}</select><ChevronDown size={16} /></div></label><div className="composer-types">{["Text", "Image", "Poll", "Link"].map(item => <button type="button" className={type === item ? "active" : ""} onClick={() => { setType(item); setError(""); }} key={item}>{item}</button>)}</div><input autoFocus value={title} onChange={event => { setTitle(event.target.value); setError(""); setDraftSaved(false); }} maxLength={160} placeholder="An interesting title" /><textarea value={body} onChange={event => { setBody(event.target.value); setDraftSaved(false); }} rows={7} placeholder={type === "Poll" ? "Ask your question..." : type === "Link" ? "Paste a link and add some context..." : "What do you want to share? Markdown is supported."} />{type === "Image" && <><label className="upload-zone"><input className="file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={addImages} /><ImagePlus size={28} /><b>{uploading ? "Uploading…" : uploads.length ? "Add more photos" : "Choose photos to upload"}</b><small>Up to 6 JPG, PNG or WebP images · 5 MB each</small></label>{uploads.length > 0 && <div className="upload-previews">{uploads.map((upload, index) => <div key={`${upload.name}-${index}`}><Image src={upload.url} alt={`Preview of ${upload.name}`} fill sizes="160px" unoptimized /><button type="button" aria-label={`Remove ${upload.name}`} onClick={() => setUploads(current => current.filter((_, itemIndex) => itemIndex !== index))}><X size={15} /></button><span>{index + 1}</span></div>)}</div>}</>}{error && <p className="form-error" role="alert">{error}</p>}<footer><span>{draftSaved ? "Draft saved" : `${title.length}/160`}</span><button type="button" className="draft-button" onClick={() => { localStorage.setItem("sc-post-draft", JSON.stringify({ title, body, type, community: activeCommunity })); setDraftSaved(true); }}>Save draft</button><button type="submit" className="post-button" disabled={!title.trim() || !communities.length || uploading}>Post <ArrowRight size={17} /></button></footer></form></div>;
 }
 
 export function LegacyEventDetail({ event, close, notify, onChange }: { event: CampusEvent; close: () => void; notify: (s: string) => void; onChange: (event: CampusEvent) => void }) {
