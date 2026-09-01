@@ -3,7 +3,9 @@ import "server-only";
 import { randomInt, randomUUID } from "node:crypto";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import { events as initialEvents } from "@/lib/data";
-import type { CampusEvent, CustomFormAnswers, CustomFormField, CustomFormSchema } from "@/lib/types";
+import type { CampusEvent, CoverFit, CustomFormAnswers, CustomFormField, CustomFormSchema } from "@/lib/types";
+
+export type { CoverFit } from "@/lib/types";
 
 export type RsvpStatus = "going" | "waitlisted";
 export type CheckInStatus = "REGISTERED" | "CHECKED_IN";
@@ -21,8 +23,12 @@ type StoredEvent = {
   campus: string;
   community?: string;
   startsAt: string;
+  endsAt?: string;
   capacity: number;
   imageUrl: string;
+  coverFit: CoverFit;
+  coverFocusX: number;
+  coverFocusY: number;
   customFormSchema: CustomFormSchema;
   createdAt: number;
   updatedAt: number;
@@ -78,15 +84,27 @@ export type NewEventInput = {
   campus: string;
   community?: string;
   startsAt: string;
+  endsAt?: string;
   capacity: number;
   imageUrl: string;
+  coverFit: CoverFit;
+  coverFocusX: number;
+  coverFocusY: number;
   customFormSchema: CustomFormSchema;
 };
+
+// Every field optional: the creator edits only what changed. `endsAt: ""` clears
+// a previously set end.
+export type EventUpdateInput = Partial<NewEventInput>;
 
 const EMPTY_FORM_SCHEMA: CustomFormSchema = { version: 1, fields: [] };
 const CHECK_IN_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const STORE_DOC = process.env.EVENTS_STORE_DOC || "events";
 let writeQueue: Promise<unknown> = Promise.resolve();
+
+function clampPercent(value: unknown, fallback = 50) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(100, Math.max(0, Math.round(value))) : fallback;
+}
 
 function rsvpKey(eventId: string, userId: string) { return `${eventId}:${userId}`; }
 function eventAdminKey(eventId: string, userId: string) { return `${eventId}:${userId}`; }
@@ -200,6 +218,10 @@ function normalizeDatabase(stored: LegacyEventDatabase): EventDatabase {
     const legacy = event as StoredEvent & { lat?: unknown; lng?: unknown };
     event.directionsUrl = typeof event.directionsUrl === "string" ? event.directionsUrl : typeof legacy.lat === "number" && typeof legacy.lng === "number" ? `https://www.google.com/maps/dir/?api=1&destination=${legacy.lat},${legacy.lng}` : "";
     event.customFormSchema = normalizeFormSchema(rawEvent.customFormSchema);
+    event.endsAt = typeof rawEvent.endsAt === "string" && !Number.isNaN(new Date(rawEvent.endsAt).getTime()) ? rawEvent.endsAt : undefined;
+    event.coverFit = rawEvent.coverFit === "fit" ? "fit" : "fill";
+    event.coverFocusX = clampPercent(rawEvent.coverFocusX);
+    event.coverFocusY = clampPercent(rawEvent.coverFocusY);
     database.events[id] = event;
   }
   for (const [id, rawRsvp] of Object.entries(stored.rsvps || {})) {
@@ -265,8 +287,15 @@ function publicEvent(database: EventDatabase, event: StoredEvent, viewerId: stri
   const rsvps = Object.values(database.rsvps).filter((rsvp) => rsvp.eventId === event.id);
   const viewerRsvp = rsvps.find((rsvp) => rsvp.userId === viewerId);
   const start = new Date(event.startsAt);
+  const end = event.endsAt ? new Date(event.endsAt) : null;
   const isCreator = event.creatorId === viewerId;
   const isEventAdmin = Boolean(database.eventAdminIndex[eventAdminKey(event.id, viewerId)]);
+  const fmt = (date: Date) => ({
+    month: date.toLocaleString("en", { month: "short", timeZone: "Asia/Kolkata" }).toUpperCase(),
+    day: date.toLocaleString("en", { day: "2-digit", timeZone: "Asia/Kolkata" }),
+    time: date.toLocaleString("en", { hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata" }),
+  });
+  const started = fmt(start);
   return {
     ...event,
     going: rsvps.filter((rsvp) => rsvp.rsvpStatus === "going").length,
@@ -275,13 +304,14 @@ function publicEvent(database: EventDatabase, event: StoredEvent, viewerId: stri
     viewerCheckInCode: viewerRsvp?.checkInCode,
     viewerCheckInStatus: viewerRsvp?.status,
     isCreator, isEventAdmin, canManageEvent: isCreator || isEventAdmin,
-    month: start.toLocaleString("en", { month: "short", timeZone: "Asia/Kolkata" }).toUpperCase(),
-    day: start.toLocaleString("en", { day: "2-digit", timeZone: "Asia/Kolkata" }),
-    time: start.toLocaleString("en", { hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata" }),
+    month: started.month,
+    day: started.day,
+    time: started.time,
+    ...(end ? { endMonth: fmt(end).month, endDay: fmt(end).day, endTime: fmt(end).time } : {}),
   };
 }
 
-export function validateEventInput(input: NewEventInput) {
+export function validateEventInput(input: NewEventInput, options?: { allowPastStart?: boolean }) {
   const startsAt = new Date(input.startsAt);
   if (!input.title.trim() || input.title.trim().length > 90) return "Event titles must be 1–90 characters.";
   if (input.description.length > 2_000) return "Event descriptions must be 2,000 characters or fewer.";
@@ -298,10 +328,23 @@ export function validateEventInput(input: NewEventInput) {
       if (url.protocol !== "https:" || (!googleMapsHost && !googleShortLink)) return "Paste a valid Google Maps directions link.";
     } catch { return "Paste a valid Google Maps directions link."; }
   }
-  if (!input.campus.trim() || input.campus.trim().length > 100) return "Choose a valid campus.";
+  const campus = input.campus.trim();
+  if (campus.length < 2 || campus.length > 100) return "Add a host campus of 2–100 characters.";
+  if (!/^[\p{L}\p{N} .,'&()\/-]+$/u.test(campus)) return "Use only letters, numbers, spaces and basic punctuation for the campus.";
   if (input.community && !/^(?:c\/[a-z0-9._-]{2,40}|seed-[a-z0-9-]+|[0-9a-f-]{36})$/i.test(input.community)) return "Choose a valid community.";
-  if (Number.isNaN(startsAt.getTime()) || startsAt.getTime() <= Date.now()) return "Choose a future date and time.";
+  if (Number.isNaN(startsAt.getTime())) return "Choose a valid date and time.";
+  if (!options?.allowPastStart && startsAt.getTime() <= Date.now()) return "Choose a future date and time.";
+  if (input.endsAt) {
+    const endsAt = new Date(input.endsAt);
+    if (Number.isNaN(endsAt.getTime())) return "Choose a valid end date and time.";
+    if (endsAt.getTime() <= startsAt.getTime()) return "The event must end after it starts.";
+    if (endsAt.getTime() - startsAt.getTime() > 30 * 86_400_000) return "Events can run for at most 30 days.";
+  }
   if (!Number.isInteger(input.capacity) || input.capacity < 1 || input.capacity > 10_000) return "Capacity must be between 1 and 10,000.";
+  if (input.coverFit !== "fill" && input.coverFit !== "fit") return "Choose how the cover image should fit.";
+  for (const focus of [input.coverFocusX, input.coverFocusY]) {
+    if (!Number.isFinite(focus) || focus < 0 || focus > 100) return "The cover focal point is out of range.";
+  }
   const uploaded = /^\/api\/events\/images\/[0-9a-f-]{36}\.(jpg|png|webp)$/.test(input.imageUrl);
   const builtIn = /^\/[a-z0-9-]+\.svg$/.test(input.imageUrl);
   if (!uploaded && !builtIn) return "Choose a valid event image.";
@@ -327,11 +370,74 @@ export async function createEvent(creatorId: string, input: NewEventInput) {
     const event: StoredEvent = {
       id: randomUUID(), creatorId, title: input.title.trim(), description: input.description.trim(), category: input.category.trim(), location: input.location.trim(),
       venueName: input.venueName.trim(), venueAddress: input.venueAddress.trim(), directionsUrl: input.directionsUrl.trim(), campus: input.campus.trim(),
-      ...(input.community ? { community: input.community } : {}), startsAt: new Date(input.startsAt).toISOString(), capacity: input.capacity, imageUrl: input.imageUrl,
+      ...(input.community ? { community: input.community } : {}), startsAt: new Date(input.startsAt).toISOString(),
+      ...(input.endsAt ? { endsAt: new Date(input.endsAt).toISOString() } : {}),
+      capacity: input.capacity, imageUrl: input.imageUrl,
+      coverFit: input.coverFit, coverFocusX: clampPercent(input.coverFocusX), coverFocusY: clampPercent(input.coverFocusY),
       customFormSchema: input.customFormSchema, createdAt: now, updatedAt: now,
     };
     database.events[event.id] = event;
     return publicEvent(database, event, creatorId);
+  });
+}
+
+// Merge the current stored event with the partial patch, then reuse
+// validateEventInput so an edit is held to the same rules as a create.
+function mergedEventInput(event: StoredEvent, patch: EventUpdateInput): NewEventInput {
+  const pick = <K extends keyof NewEventInput>(key: K, current: NewEventInput[K]): NewEventInput[K] =>
+    patch[key] === undefined ? current : (patch[key] as NewEventInput[K]);
+  return {
+    title: pick("title", event.title),
+    description: pick("description", event.description),
+    category: pick("category", event.category),
+    location: pick("location", event.location),
+    venueName: pick("venueName", event.venueName || event.location),
+    venueAddress: pick("venueAddress", event.venueAddress || event.location),
+    directionsUrl: pick("directionsUrl", event.directionsUrl),
+    campus: pick("campus", event.campus),
+    community: pick("community", event.community),
+    startsAt: pick("startsAt", event.startsAt),
+    endsAt: patch.endsAt === undefined ? event.endsAt : (patch.endsAt || undefined),
+    capacity: pick("capacity", event.capacity),
+    imageUrl: pick("imageUrl", event.imageUrl),
+    coverFit: pick("coverFit", event.coverFit),
+    coverFocusX: pick("coverFocusX", event.coverFocusX),
+    coverFocusY: pick("coverFocusY", event.coverFocusY),
+    customFormSchema: pick("customFormSchema", event.customFormSchema),
+  };
+}
+
+export async function updateEvent(eventId: string, userId: string, patch: EventUpdateInput) {
+  return mutate((database) => {
+    const event = database.events[eventId];
+    if (!event) return { error: "Event not found.", status: 404 } as const;
+    if (event.creatorId !== userId) return { error: "Only the event creator can edit this event.", status: 403 } as const;
+    const merged = mergedEventInput(event, patch);
+    const startUnchanged = new Date(merged.startsAt).toISOString() === new Date(event.startsAt).toISOString();
+    const validationError = validateEventInput(merged, { allowPastStart: startUnchanged });
+    if (validationError) return { error: validationError, status: 400 } as const;
+
+    event.title = merged.title.trim();
+    event.description = merged.description.trim();
+    event.category = merged.category.trim();
+    event.location = merged.location.trim();
+    event.venueName = merged.venueName.trim();
+    event.venueAddress = merged.venueAddress.trim();
+    event.directionsUrl = merged.directionsUrl.trim();
+    event.campus = merged.campus.trim();
+    if (merged.community) event.community = merged.community;
+    else delete event.community;
+    event.startsAt = new Date(merged.startsAt).toISOString();
+    if (merged.endsAt) event.endsAt = new Date(merged.endsAt).toISOString();
+    else delete event.endsAt;
+    event.capacity = merged.capacity;
+    event.imageUrl = merged.imageUrl;
+    event.coverFit = merged.coverFit;
+    event.coverFocusX = clampPercent(merged.coverFocusX);
+    event.coverFocusY = clampPercent(merged.coverFocusY);
+    event.customFormSchema = merged.customFormSchema;
+    event.updatedAt = Date.now();
+    return { event: publicEvent(database, event, userId) } as const;
   });
 }
 

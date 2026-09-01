@@ -1,9 +1,16 @@
 import type { NextRequest } from "next/server";
 import { authenticatedUserId, isSameOrigin, noStoreJson, readJson } from "@/lib/auth-http";
-import { isKnownIndianCampus } from "@/lib/campus-store";
-import { createEvent, listEvents, type NewEventInput, validateEventInput } from "@/lib/event-store";
+import { createEvent, listEvents, type CoverFit, type NewEventInput, validateEventInput } from "@/lib/event-store";
 
 export const runtime = "nodejs";
+
+function coverFit(value: unknown): CoverFit {
+  return value === "fit" ? "fit" : "fill";
+}
+
+function focus(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : fallback;
+}
 
 export async function GET(request: NextRequest) {
   const userId = await authenticatedUserId(request);
@@ -28,13 +35,16 @@ export async function POST(request: NextRequest) {
     campus: typeof body.campus === "string" ? body.campus : "",
     community: typeof body.community === "string" && body.community !== "None" ? body.community : undefined,
     startsAt: typeof body.startsAt === "string" ? body.startsAt : "",
+    endsAt: typeof body.endsAt === "string" && body.endsAt ? body.endsAt : undefined,
     capacity: typeof body.capacity === "number" ? body.capacity : Number.NaN,
     imageUrl: typeof body.imageUrl === "string" ? body.imageUrl : "",
+    coverFit: coverFit(body.coverFit),
+    coverFocusX: focus(body.coverFocusX, 50),
+    coverFocusY: focus(body.coverFocusY, 50),
     customFormSchema: body.customFormSchema as NewEventInput["customFormSchema"],
   };
   const validationError = validateEventInput(input);
   if (validationError) return noStoreJson({ error: validationError }, { status: 400 });
-  if (!await isKnownIndianCampus(input.campus)) return noStoreJson({ error: "Select a campus from the Indian campus directory." }, { status: 400 });
   const event = await createEvent(userId, input);
   return noStoreJson({ data: { event } }, { status: 201 });
 }

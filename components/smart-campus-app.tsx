@@ -10,10 +10,12 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthLoading, AuthScreen } from "@/components/auth-screen";
 import { CampusPicker } from "@/components/campus-picker";
+import { defaultCoverFor, EventCoverField } from "@/components/event-cover-field";
 import { EventRegistrationDetail } from "@/components/event-registration-detail";
 import { ProfileEditor } from "@/components/profile-editor";
 import { ProfileSetup } from "@/components/profile-setup";
-import type { CampusEvent, ChatRequestView, Community, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, Post, SessionUser, UserDashboard, UserSearchResult, View } from "@/lib/types";
+import { coverImageStyle, eventWhen } from "@/lib/event-format";
+import type { CampusEvent, ChatRequestView, Community, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, Post, SessionUser, UserDashboard, UserSearchResult, View } from "@/lib/types";
 
 const nav = [
   { id: "home" as View, label: "Home", icon: Home },
@@ -85,6 +87,7 @@ export function SmartCampusApp() {
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerCommunity, setComposerCommunity] = useState("c/campuslife");
   const [eventOpen, setEventOpen] = useState<CampusEvent | null>(null);
+  const [editingEvent, setEditingEvent] = useState<CampusEvent | null>(null);
   const [commentPostId, setCommentPostId] = useState<number | null>(null);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [privacyPending, setPrivacyPending] = useState(false);
@@ -438,7 +441,8 @@ export function SmartCampusApp() {
       {searchOpen && <SearchPanel close={() => setSearchOpen(false)} notify={setToast} />}
       {notificationsOpen && <Notifications close={() => setNotificationsOpen(false)} />}
       {composerOpen && <Composer author={authUser.username} communities={communities} initialCommunity={composerCommunity} close={() => setComposerOpen(false)} onCreate={persistPost} />}
-      {eventOpen && <EventRegistrationDetail event={eventOpen} close={() => setEventOpen(null)} notify={setToast} onChange={(event) => { setEventOpen(event); setEvents((current) => current.map((item) => item.id === event.id ? event : item)); }} />}
+      {eventOpen && <EventRegistrationDetail event={eventOpen} close={() => setEventOpen(null)} notify={setToast} onEdit={() => setEditingEvent(eventOpen)} onChange={(event) => { setEventOpen(event); setEvents((current) => current.map((item) => item.id === event.id ? event : item)); }} />}
+      {editingEvent && <EditEventModal event={editingEvent} communities={communities} close={() => setEditingEvent(null)} onSaved={(event) => { setEditingEvent(null); setEventOpen(event); setEvents((current) => current.map((item) => item.id === event.id ? event : item)); setToast("Event updated"); }} />}
       {activeCommentPost && <CommentThread post={activeCommentPost} user={authUser} close={() => setCommentPostId(null)} onUpdated={(updated) => setPosts((current) => current.map((post) => post.id === updated.id ? updated : post))} notify={setToast} />}
       {profileEditorOpen && <ProfileEditor user={authUser} close={() => setProfileEditorOpen(false)} onUpdated={setAuthUser} notify={setToast} />}
       {toast && <Toast message={toast} />}
@@ -706,7 +710,7 @@ function EventsView({ events, communities, defaultCampus, onEvent, onCreated, no
   return <div className="content-page">
     <section className="page-hero events-hero"><div><span className="eyebrow pink">GET OUT THERE</span><h1>Plans worth leaving your room for.</h1><p>From tiny workshops to very loud nights.</p></div><div className="ticket-doodle"><span>ADMIT<br />ONE</span><b>SC-0826</b></div></section>
     <div className="events-toolbar"><div className="category-chips">{["All", "Music", "Tech", "Culture", "Sports"].map(x => <button className={filter === x ? "active" : ""} onClick={() => setFilter(x)} key={x}>{x}</button>)}</div><div className="toolbar-actions"><button className="outline-button"><CalendarDays size={18} /> This month <ChevronDown size={15} /></button><button className="primary-action" onClick={() => setCreating(true)}><Plus size={18} /> Create event</button></div></div>
-    <div className="event-grid">{filtered.map(event => <article key={event.id} onClick={() => onEvent(event)} tabIndex={0} onKeyDown={e => e.key === "Enter" && onEvent(event)}><div className="event-image"><Image src={event.imageUrl} alt="" fill sizes="(max-width: 700px) 100vw, 420px" unoptimized={event.imageUrl.startsWith("/api/")} /><span>{event.isCreator ? "YOUR EVENT" : event.isEventAdmin ? "ADMIN" : event.category}</span><div><b>{event.day}</b><small>{event.month}</small></div></div><div className="event-copy"><h2>{event.title}</h2><p><Clock3 size={16} /> {event.month} {event.day} · {event.time}</p><p><MapPin size={16} /> {event.location}</p><div><span className="face-stack"><i>KA</i><i>ZO</i><i>MI</i></span><small>{event.going} going{event.waitlisted ? ` · ${event.waitlisted} waitlisted` : ""}</small><button>View event <ArrowRight size={16} /></button></div></div></article>)}</div>
+    <div className="event-grid">{filtered.map(event => <article key={event.id} onClick={() => onEvent(event)} tabIndex={0} onKeyDown={e => e.key === "Enter" && onEvent(event)}><div className={`event-image ${event.coverFit === "fit" ? "cover-fit" : ""}`}><Image src={event.imageUrl} alt="" fill sizes="(max-width: 700px) 100vw, 420px" unoptimized={event.imageUrl.startsWith("/api/")} style={coverImageStyle(event)} /><span>{event.isCreator ? "YOUR EVENT" : event.isEventAdmin ? "ADMIN" : event.category}</span><div><b>{event.day}</b><small>{event.month}</small></div></div><div className="event-copy"><h2>{event.title}</h2><p><Clock3 size={16} /> {eventWhen(event)}</p><p><MapPin size={16} /> {event.location}</p><div><span className="face-stack"><i>KA</i><i>ZO</i><i>MI</i></span><small>{event.going} going{event.waitlisted ? ` · ${event.waitlisted} waitlisted` : ""}</small><button>View event <ArrowRight size={16} /></button></div></div></article>)}</div>
     {!filtered.length && <div className="events-empty"><CalendarDays size={31} /><h2>No events here yet</h2><p>Publish the first event in this category.</p></div>}
     {creating && <CreateEventModal communities={communities} defaultCampus={defaultCampus} close={() => setCreating(false)} onCreate={(event) => { onCreated(event); setCreating(false); setFilter("All"); notify("Event published to the global campus feed"); }} />}
   </div>;
@@ -800,52 +804,103 @@ function RegistrationFormBuilder({ fields, onChange }: { fields: CustomFormField
   </section>;
 }
 
-function CreateEventModal({ communities, defaultCampus, close, onCreate }: { communities: Community[]; defaultCampus: string; close: () => void; onCreate: (event: CampusEvent) => void }) {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [category, setCategory] = useState("Music");
-  const [date, setDate] = useState(() => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
-  const [time, setTime] = useState("18:00");
-  const [location, setLocation] = useState("");
-  const [directionsUrl, setDirectionsUrl] = useState("");
-  const [capacity, setCapacity] = useState("100");
-  const [community, setCommunity] = useState("None");
-  const [campus, setCampus] = useState(defaultCampus);
-  const [linkPost, setLinkPost] = useState(true);
-  const [customFormFields, setCustomFormFields] = useState<CustomFormField[]>([]);
+const pad2 = (value: number) => String(value).padStart(2, "0");
+const localDateInput = (iso: string) => { const d = new Date(iso); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+const localTimeInput = (iso: string) => { const d = new Date(iso); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+
+type EventFormInitial = {
+  title: string; description: string; category: string;
+  date: string; time: string; endDate: string; endTime: string;
+  location: string; directionsUrl: string; capacity: string;
+  community: string; campus: string;
+  coverFit: CoverFit; coverFocusX: number; coverFocusY: number;
+  imageUrl: string; customFormFields: CustomFormField[];
+};
+
+function eventToFormInitial(event: CampusEvent): EventFormInitial {
+  return {
+    title: event.title, description: event.description, category: event.category,
+    date: localDateInput(event.startsAt), time: localTimeInput(event.startsAt),
+    endDate: event.endsAt ? localDateInput(event.endsAt) : "", endTime: event.endsAt ? localTimeInput(event.endsAt) : "",
+    location: event.location, directionsUrl: event.directionsUrl, capacity: String(event.capacity),
+    community: event.community || "None", campus: event.campus,
+    coverFit: event.coverFit, coverFocusX: event.coverFocusX, coverFocusY: event.coverFocusY,
+    imageUrl: event.imageUrl, customFormFields: event.customFormSchema.fields,
+  };
+}
+
+function blankEventFormInitial(defaultCampus: string): EventFormInitial {
+  return {
+    title: "", description: "", category: "Music",
+    date: new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10), time: "18:00",
+    endDate: "", endTime: "",
+    location: "", directionsUrl: "", capacity: "100",
+    community: "None", campus: defaultCampus,
+    coverFit: "fill", coverFocusX: 50, coverFocusY: 50,
+    imageUrl: "", customFormFields: [],
+  };
+}
+
+function EventForm({ mode, communities, initial, close, onSubmit }: {
+  mode: "create" | "edit";
+  communities: Community[];
+  initial: EventFormInitial;
+  close: () => void;
+  onSubmit: (payload: Record<string, unknown>) => Promise<void>;
+}) {
+  const [title, setTitle] = useState(initial.title);
+  const [description, setDescription] = useState(initial.description);
+  const [category, setCategory] = useState(initial.category);
+  const [date, setDate] = useState(initial.date);
+  const [time, setTime] = useState(initial.time);
+  const [endDate, setEndDate] = useState(initial.endDate);
+  const [endTime, setEndTime] = useState(initial.endTime);
+  const [location, setLocation] = useState(initial.location);
+  const [directionsUrl, setDirectionsUrl] = useState(initial.directionsUrl);
+  const [capacity, setCapacity] = useState(initial.capacity);
+  const [community, setCommunity] = useState(initial.community);
+  const [campus, setCampus] = useState(initial.campus);
+  const [coverFit, setCoverFit] = useState<CoverFit>(initial.coverFit);
+  const [coverFocusX, setCoverFocusX] = useState(initial.coverFocusX);
+  const [coverFocusY, setCoverFocusY] = useState(initial.coverFocusY);
+  const [customFormFields, setCustomFormFields] = useState<CustomFormField[]>(initial.customFormFields);
   const [cover, setCover] = useState<File | null>(null);
   const [coverPreview, setCoverPreview] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const coverInput = useRef<HTMLInputElement>(null);
-  const defaultImages: Record<string, string> = { Music: "/indie-night.svg", Tech: "/build-weird.svg", Culture: "/thrift-market.svg", Sports: "/run-club.svg", Other: "/campus-rain.svg" };
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const minimumDate = tomorrow.toISOString().slice(0, 10);
+  const [minimumDate] = useState(() => new Date(Date.now() + 86_400_000).toISOString().slice(0, 10));
 
   useEffect(() => () => { if (coverPreview) URL.revokeObjectURL(coverPreview); }, [coverPreview]);
 
-  function chooseCover(file?: File) {
-    if (!file) return;
+  function chooseCover(file: File) {
     if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(file.type)) return setError("Choose a JPG, PNG, or WebP image.");
     if (file.size > 5 * 1024 * 1024) return setError("Event images must be 5 MB or smaller.");
-    if (coverPreview) URL.revokeObjectURL(coverPreview);
+    setCoverPreview((previous) => { if (previous) URL.revokeObjectURL(previous); return URL.createObjectURL(file); });
     setCover(file);
-    setCoverPreview(URL.createObjectURL(file));
     setError("");
   }
 
-  async function submit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submit(formEvent: React.FormEvent<HTMLFormElement>) {
+    formEvent.preventDefault();
     const start = new Date(`${date}T${time}`);
     const eventCapacity = Number(capacity);
-    if (!title.trim() || !location.trim() || !date) return setError("Add a title, date, and venue before publishing.");
-    if (Number.isNaN(start.getTime()) || start.getTime() <= Date.now()) return setError("Choose a future date and time.");
+    if (!title.trim() || !location.trim() || !date || !time) return setError("Add a title, date, and venue first.");
+    if (Number.isNaN(start.getTime())) return setError("Choose a valid start date and time.");
+    if (mode === "create" && start.getTime() <= Date.now()) return setError("Choose a future date and time.");
+    if (Boolean(endDate) !== Boolean(endTime)) return setError("Set both an end date and an end time, or leave both blank.");
+    let endsAt = "";
+    if (endDate && endTime) {
+      const end = new Date(`${endDate}T${endTime}`);
+      if (Number.isNaN(end.getTime())) return setError("Choose a valid end date and time.");
+      if (end.getTime() <= start.getTime()) return setError("The event must end after it starts.");
+      endsAt = end.toISOString();
+    }
     if (!Number.isInteger(eventCapacity) || eventCapacity < 1) return setError("Capacity must be a positive whole number.");
+    if (!campus.trim()) return setError("Add a host campus.");
     setBusy(true);
     setError("");
     try {
-      let imageUrl = defaultImages[category] || "/campus-rain.svg";
+      let imageUrl = cover ? "" : initial.imageUrl || defaultCoverFor(category);
       if (cover) {
         const form = new FormData();
         form.append("image", cover);
@@ -853,39 +908,81 @@ function CreateEventModal({ communities, defaultCampus, close, onCreate }: { com
         if (!uploaded?.imageUrl) throw new Error("The image server did not return a URL.");
         imageUrl = uploaded.imageUrl;
       }
-      const data = await requestJson<{ event: CampusEvent }>("/api/events", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: title.trim(), description: description.trim(), category, location: location.trim(), venueName: location.trim(), venueAddress: location.trim(), directionsUrl: directionsUrl.trim(), campus, community, startsAt: start.toISOString(), capacity: eventCapacity, imageUrl, customFormSchema: { version: 1, fields: customFormFields } }),
+      await onSubmit({
+        title: title.trim(), description: description.trim(), category,
+        location: location.trim(), venueName: location.trim(), venueAddress: location.trim(),
+        directionsUrl: directionsUrl.trim(), campus: campus.trim(), community,
+        startsAt: start.toISOString(), endsAt,
+        capacity: eventCapacity, imageUrl,
+        coverFit, coverFocusX, coverFocusY,
+        customFormSchema: { version: 1, fields: customFormFields },
       });
-      if (!data?.event) throw new Error("The event server did not return the published event.");
-      onCreate(data.event);
-    } catch (publishError) {
-      setError(publishError instanceof Error ? publishError.message : "Could not publish this event.");
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Could not save this event.");
     } finally {
       setBusy(false);
     }
   }
 
-  return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}>
-    <form className="creation-modal event-creation" onSubmit={submit} aria-label="Create an event">
-      <header><div><span className="eyebrow pink">MAKE PLANS HAPPEN</span><h2>Create an event</h2><p>Publish it to campus and manage RSVPs from one place.</p></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header>
-      <div className="event-form-banner"><Image src={coverPreview || defaultImages[category] || "/campus-rain.svg"} alt="Event cover preview" fill sizes="640px" unoptimized={Boolean(coverPreview)} /><span>{category}</span><input ref={coverInput} className="file-input" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => chooseCover(event.target.files?.[0])} /><button type="button" onClick={() => coverInput.current?.click()}><ImagePlus size={17} /> {cover ? "Change cover" : "Upload cover"}</button></div>
-      <label className="field"><span>Event title</span><input autoFocus value={title} onChange={event => { setTitle(event.target.value); setError(""); }} maxLength={90} placeholder="Give people a reason to show up" required /></label>
-      <label className="field"><span>Description</span><textarea value={description} onChange={event => { setDescription(event.target.value); setError(""); }} rows={3} maxLength={2000} placeholder="Tell campus what to expect" /><small>{description.length}/2000</small></label>
-      <div className="form-row"><label className="field"><span>Category</span><select value={category} onChange={event => setCategory(event.target.value)}>{["Music", "Tech", "Culture", "Sports", "Other"].map(item => <option key={item}>{item}</option>)}</select></label><label className="field"><span>Capacity</span><input type="number" min="1" max="10000" value={capacity} onChange={event => setCapacity(event.target.value)} required /></label></div>
-      <div className="form-row"><label className="field"><span>Date</span><input type="date" min={minimumDate} value={date} onChange={event => { setDate(event.target.value); setError(""); }} required /></label><label className="field"><span>Start time</span><input type="time" value={time} onChange={event => setTime(event.target.value)} required /></label></div>
-      <label className="field"><span>Venue</span><div className="icon-input"><MapPin size={17} /><input value={location} onChange={event => { setLocation(event.target.value); setError(""); }} placeholder="e.g. Main Auditorium" required /></div></label>
-      <label className="field directions-field"><span>Google Maps directions link <em>Optional</em></span><div className="icon-input"><Link2 size={17} /><input type="url" inputMode="url" value={directionsUrl} onChange={event => { setDirectionsUrl(event.target.value); setError(""); }} placeholder="https://maps.app.goo.gl/..." maxLength={2048} /></div><small>In Google Maps, open the venue, tap Share, and paste the link here.</small></label>
-      <CampusPicker value={campus} onChange={setCampus} label="Host campus" required />
-      <label className="field"><span>Community</span><select value={community} onChange={event => setCommunity(event.target.value)}><option value="None">None</option>{communities.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-      <label className="check-field"><input type="checkbox" checked={linkPost} onChange={event => setLinkPost(event.target.checked)} /><span><b>Create an event post</b><small>{community === "None" ? "Share it to the campus feed when published." : `Share it in ${communities.find(item => item.id === community)?.name ?? community} when published.`}</small></span></label>
+  const isEdit = mode === "edit";
+  return <div className="overlay" onMouseDown={overlay => overlay.target === overlay.currentTarget && close()}>
+    <form className="creation-modal event-creation" onSubmit={submit} aria-label={isEdit ? "Edit event" : "Create an event"}>
+      <header><div><span className="eyebrow pink">{isEdit ? "UPDATE YOUR EVENT" : "MAKE PLANS HAPPEN"}</span><h2>{isEdit ? "Edit event" : "Create an event"}</h2><p>{isEdit ? "Changes go live immediately. Existing RSVPs are kept." : "Publish it to campus and manage RSVPs from one place."}</p></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header>
+      <EventCoverField
+        category={category}
+        imageUrl={initial.imageUrl}
+        previewUrl={coverPreview}
+        fit={coverFit}
+        focusX={coverFocusX}
+        focusY={coverFocusY}
+        onPickFile={chooseCover}
+        onFitChange={setCoverFit}
+        onFocusChange={(x, y) => { setCoverFocusX(x); setCoverFocusY(y); }}
+      />
+      <label className="field"><span>Event title</span><input autoFocus value={title} onChange={fieldEvent => { setTitle(fieldEvent.target.value); setError(""); }} maxLength={90} placeholder="Give people a reason to show up" required /></label>
+      <label className="field"><span>Description</span><textarea value={description} onChange={fieldEvent => { setDescription(fieldEvent.target.value); setError(""); }} rows={3} maxLength={2000} placeholder="Tell campus what to expect" /><small>{description.length}/2000</small></label>
+      <div className="form-row"><label className="field"><span>Category</span><select value={category} onChange={fieldEvent => setCategory(fieldEvent.target.value)}>{["Music", "Tech", "Culture", "Sports", "Other"].map(item => <option key={item}>{item}</option>)}</select></label><label className="field"><span>Capacity</span><input type="number" min="1" max="10000" value={capacity} onChange={fieldEvent => setCapacity(fieldEvent.target.value)} required /></label></div>
+      <div className="form-row"><label className="field"><span>Start date</span><input type="date" min={isEdit ? undefined : minimumDate} value={date} onChange={fieldEvent => { setDate(fieldEvent.target.value); setError(""); }} required /></label><label className="field"><span>Start time</span><input type="time" value={time} onChange={fieldEvent => { setTime(fieldEvent.target.value); setError(""); }} required /></label></div>
+      <div className="form-row"><label className="field"><span>End date <em>Optional</em></span><input type="date" min={date || undefined} value={endDate} onChange={fieldEvent => { setEndDate(fieldEvent.target.value); setError(""); }} /></label><label className="field"><span>End time <em>Optional</em></span><input type="time" value={endTime} onChange={fieldEvent => { setEndTime(fieldEvent.target.value); setError(""); }} /></label></div>
+      {(endDate || endTime) && <button type="button" className="link-button" onClick={() => { setEndDate(""); setEndTime(""); setError(""); }}>Clear end time</button>}
+      <label className="field"><span>Venue</span><div className="icon-input"><MapPin size={17} /><input value={location} onChange={fieldEvent => { setLocation(fieldEvent.target.value); setError(""); }} placeholder="e.g. Main Auditorium" required /></div></label>
+      <label className="field directions-field"><span>Google Maps directions link <em>Optional</em></span><div className="icon-input"><Link2 size={17} /><input type="url" inputMode="url" value={directionsUrl} onChange={fieldEvent => { setDirectionsUrl(fieldEvent.target.value); setError(""); }} placeholder="https://maps.app.goo.gl/..." maxLength={2048} /></div><small>In Google Maps, open the venue, tap Share, and paste the link here.</small></label>
+      <CampusPicker value={campus} onChange={setCampus} label="Host campus" required allowCustom />
+      <label className="field"><span>Community</span><select value={community} onChange={fieldEvent => setCommunity(fieldEvent.target.value)}><option value="None">None</option>{communities.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <RegistrationFormBuilder fields={customFormFields} onChange={setCustomFormFields} />
       <div className="disclosure"><ShieldCheck size={19} /><p>Attendees will see that their verified email and RSVP details are shared with you as the organizer.</p></div>
       {error && <p className="form-error" role="alert">{error}</p>}
-      <footer><button type="button" className="draft-button" onClick={close} disabled={busy}>Cancel</button><button className="post-button" type="submit" disabled={busy}>{busy ? <><LoaderCircle className="spin" size={17} /> Publishing…</> : <>Publish event <ArrowRight size={17} /></>}</button></footer>
+      <footer><button type="button" className="draft-button" onClick={close} disabled={busy}>Cancel</button><button className="post-button" type="submit" disabled={busy}>{busy ? <><LoaderCircle className="spin" size={17} /> {isEdit ? "Saving…" : "Publishing…"}</> : <>{isEdit ? "Save changes" : "Publish event"} <ArrowRight size={17} /></>}</button></footer>
     </form>
   </div>;
+}
+
+function CreateEventModal({ communities, defaultCampus, close, onCreate }: { communities: Community[]; defaultCampus: string; close: () => void; onCreate: (event: CampusEvent) => void }) {
+  return <EventForm
+    mode="create"
+    communities={communities}
+    initial={blankEventFormInitial(defaultCampus)}
+    close={close}
+    onSubmit={async (payload) => {
+      const data = await requestJson<{ event: CampusEvent }>("/api/events", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!data?.event) throw new Error("The event server did not return the published event.");
+      onCreate(data.event);
+    }}
+  />;
+}
+
+function EditEventModal({ event, communities, close, onSaved }: { event: CampusEvent; communities: Community[]; close: () => void; onSaved: (event: CampusEvent) => void }) {
+  return <EventForm
+    mode="edit"
+    communities={communities}
+    initial={eventToFormInitial(event)}
+    close={close}
+    onSubmit={async (payload) => {
+      const data = await requestJson<{ event: CampusEvent }>(`/api/events/${event.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!data?.event) throw new Error("The event server did not return the updated event.");
+      onSaved(data.event);
+    }}
+  />;
 }
 
 function RewardsView({ user, notify }: { user: SessionUser; notify: (s: string) => void }) {

@@ -33,4 +33,5 @@ export const starterIndianCampuses: CampusRecord[] = [
   { id: "TS-U-IITH", name: "Indian Institute of Technology Hyderabad", city: "Hyderabad", state: "Telangana", type: "Institute of National Importance", aliases: ["IIT Hyderabad"] },
   { id: "TS-U-UOH", name: "University of Hyderabad", city: "Hyderabad", state: "Telangana", type: "Central University", aliases: ["Hyderabad Central University", "UoH"] },
   { id: "RJ-U-BITS", name: "Birla Institute of Technology and Science — Pilani", city: "Pilani", state: "Rajasthan", type: "Deemed University", aliases: ["BITS Pilani"] },
+  { id: "TN-U-JEU", name: "Jeppiaar University", city: "Chennai", state: "Tamil Nadu", type: "Private University", aliases: ["Jeppiaar University Chennai", "JU Chennai", "Jeppiaar"] },
 ];

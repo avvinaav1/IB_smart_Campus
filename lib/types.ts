@@ -128,6 +128,8 @@ export type CustomFormSchema = { version: 1; fields: CustomFormField[] };
 export type CustomFormAnswer = string | number | boolean;
 export type CustomFormAnswers = Record<string, CustomFormAnswer>;
 
+export type CoverFit = "fill" | "fit";
+
 export type CampusEvent = {
   id: string;
   creatorId: string;
@@ -141,8 +143,12 @@ export type CampusEvent = {
   campus: string;
   community?: string;
   startsAt: string;
+  endsAt?: string;
   capacity: number;
   imageUrl: string;
+  coverFit: CoverFit;
+  coverFocusX: number;
+  coverFocusY: number;
   customFormSchema: CustomFormSchema;
   going: number;
   waitlisted: number;
@@ -157,6 +163,9 @@ export type CampusEvent = {
   month: string;
   day: string;
   time: string;
+  endMonth?: string;
+  endDay?: string;
+  endTime?: string;
 };
 
 export type EventAttendee = {
