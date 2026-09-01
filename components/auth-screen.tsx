@@ -14,7 +14,18 @@ async function postJson(url: string, body: object) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const result = await response.json() as ApiResult;
+
+  const text = await response.text();
+  let result: ApiResult = {};
+
+  if (text) {
+    try {
+      result = JSON.parse(text) as ApiResult;
+    } catch {
+      result = { error: "The server returned an invalid response." };
+    }
+  }
+
   if (!response.ok) throw new Error(result.error || "Something went wrong. Please try again.");
   return result;
 }
