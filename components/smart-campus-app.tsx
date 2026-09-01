@@ -448,6 +448,11 @@ export function SmartCampusApp() {
 
 function HomeView({ user, posts, events, communities, setPosts, vote, votePending, onExplore, onEvents, onEvent, openComments, notify }: { user: SessionUser; posts: Post[]; events: CampusEvent[]; communities: Community[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; onExplore: () => void; onEvents: () => void; onEvent: (e: CampusEvent) => void; openComments: (id: number) => void; notify: (s: string) => void }) {
   const [feed, setFeed] = useState("Home");
+  const [today, setToday] = useState(todayLabel);
+  useEffect(() => {
+    const id = window.setInterval(() => setToday(todayLabel()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
   const premiumRemaining = Math.max(0, 60 - user.points);
   const invitesRemaining = Math.ceil(premiumRemaining / 10);
   const rewardProgress = Math.min(100, user.points / 60 * 100);
@@ -460,7 +465,7 @@ function HomeView({ user, posts, events, communities, setPosts, vote, votePendin
   return <div className="home-layout">
     <section className="feed-column">
       <div className="hero-strip">
-        <div><span className="eyebrow violet">WEDNESDAY, 26 AUG</span><h1>What&apos;s good, {user.username}? <span>✦</span></h1><p>Your campus has been busy. Here&apos;s the good stuff.</p></div>
+        <div><span className="eyebrow violet" suppressHydrationWarning>{today}</span><h1>What&apos;s good, {user.username}? <span>✦</span></h1><p>Your campus has been busy. Here&apos;s the good stuff.</p></div>
         <div className="hero-doodle" aria-hidden="true"><span>SC</span><i>✦</i></div>
       </div>
       <div className="feed-tabs" role="tablist">
@@ -574,6 +579,10 @@ function relativeTime(createdAt: number) {
 function monthYear(timestamp: number) {
   if (!timestamp) return "—";
   return new Date(timestamp).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+
+function todayLabel() {
+  return new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" }).toUpperCase();
 }
 
 function ExploreView({ items, setItems, posts, setPosts, vote, votePending, notify, onMembership, onEvents, openComments, openComposer }: { items: Community[]; setItems: React.Dispatch<React.SetStateAction<Community[]>>; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; notify: (s: string) => void; onMembership: (community: Community) => Promise<void>; onEvents: () => void; openComments: (id: number) => void; openComposer: (community?: string) => void }) {
