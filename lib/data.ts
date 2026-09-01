@@ -54,30 +54,5 @@ export const communities: Community[] = [
 export const events: CampusEvent[] = [];
 
 export const posts: Post[] = [
-  {
-    id: 1001,
-    communityId: "c/campuslife",
-    community: "Campus Life",
-    accent: "#4F46E5",
-    author: "Ari",
-    time: "2h ago",
-    title: "Welcome week volunteer signups are live",
-    body: "We are looking for student volunteers to help with orientation booths, campus tours, and event setup. If you are free this Friday, sign up in the portal.",
-    votes: 128,
-    comments: 14,
-    createdAt: Date.now() - 1000 * 60 * 60 * 2,
-  },
-  {
-    id: 1002,
-    communityId: "c/tech-club",
-    community: "Tech Club",
-    accent: "#0EA5E9",
-    author: "Nia",
-    time: "5h ago",
-    title: "Project showcase call for student demos",
-    body: "We are collecting demo submissions for the end-of-month showcase. Share a prototype, a research project, or a small app build you are proud of.",
-    votes: 94,
-    comments: 9,
-    createdAt: Date.now() - 1000 * 60 * 60 * 5,
-  },
+ {}
 ];
