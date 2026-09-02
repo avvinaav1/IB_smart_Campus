@@ -453,13 +453,15 @@ export function SmartCampusApp() {
 function HomeView({ user, posts, events, communities, setPosts, vote, votePending, onExplore, onEvents, onEvent, openComments, notify }: { user: SessionUser; posts: Post[]; events: CampusEvent[]; communities: Community[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; onExplore: () => void; onEvents: () => void; onEvent: (e: CampusEvent) => void; openComments: (id: number) => void; notify: (s: string) => void }) {
   const [feed, setFeed] = useState("Home");
   const [today, setToday] = useState(todayLabel);
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const id = window.setInterval(() => setToday(todayLabel()), 60_000);
+    const id = window.setInterval(() => { setToday(todayLabel()); setNow(Date.now()); }, 60_000);
     return () => window.clearInterval(id);
   }, []);
   const premiumRemaining = Math.max(0, 60 - user.points);
   const invitesRemaining = Math.ceil(premiumRemaining / 10);
   const rewardProgress = Math.min(100, user.points / 60 * 100);
+  const featuredEvent = events.find(event => new Date(event.endsAt || event.startsAt).getTime() >= now) || events[0];
 
   function save(id: number) {
     setPosts(current => current.map(post => post.id === id ? { ...post, saved: !post.saved } : post));
@@ -472,6 +474,16 @@ function HomeView({ user, posts, events, communities, setPosts, vote, votePendin
         <div><span className="eyebrow violet" suppressHydrationWarning>{today}</span><h1>What&apos;s good, {user.username}? <span>✦</span></h1><p>Your campus has been busy. Here&apos;s the good stuff.</p></div>
         <div className="hero-doodle" aria-hidden="true"><span>SC</span><i>✦</i></div>
       </div>
+      {featuredEvent && <button type="button" className="feed-featured-event" onClick={() => onEvent(featuredEvent)}>
+        <Image src={featuredEvent.imageUrl} alt="" fill sizes="(max-width: 980px) 100vw, 700px" unoptimized={featuredEvent.imageUrl.startsWith("/api/")} style={coverImageStyle(featuredEvent)} />
+        <span className="feed-featured-tag">NEXT UP</span>
+        <span className="feed-featured-date"><b>{featuredEvent.day}</b><small>{featuredEvent.month}</small></span>
+        <span className="feed-featured-copy">
+          <b>{featuredEvent.title}</b>
+          <small><Clock3 size={13} /> {eventWhen(featuredEvent)}</small>
+          <small><MapPin size={13} /> {featuredEvent.location}</small>
+        </span>
+      </button>}
       <div className="feed-tabs" role="tablist">
         {["Home", "Popular", "New", "Rising", "Top"].map(item => <button role="tab" aria-selected={feed === item} className={feed === item ? "active" : ""} key={item} onClick={() => setFeed(item)}>{item}</button>)}
       </div>
