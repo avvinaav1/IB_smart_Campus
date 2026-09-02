@@ -53,6 +53,4 @@ export const communities: Community[] = [
 
 export const events: CampusEvent[] = [];
 
-export const posts: Post[] = [
- {}
-];
+export const posts: Post[] = [];
