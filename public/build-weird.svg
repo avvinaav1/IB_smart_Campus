@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520">
+  <rect width="900" height="520" fill="#22d3ee"/><path d="M0 390 170 80l170 310L520 20l210 370 170-220v350H0Z" fill="#6c3bff" opacity=".8"/><rect x="210" y="100" width="480" height="300" rx="20" fill="#17151f" stroke="#14121a" stroke-width="12"/><rect x="250" y="145" width="400" height="205" fill="#fffdf4"/>
+  <g fill="none" stroke-width="13" stroke-linecap="round"><path d="m340 208-55 42 55 42" stroke="#ff5c8a"/><path d="m555 208 55 42-55 42" stroke="#6c3bff"/><path d="m480 190-70 125" stroke="#14121a"/></g><path d="M165 430h570l80 70H85z" fill="#c7ff32" stroke="#14121a" stroke-width="10"/><text x="277" y="475" fill="#14121a" font-family="monospace" font-size="24" font-weight="900">BUILD // BREAK // REPEAT</text>
+</svg>

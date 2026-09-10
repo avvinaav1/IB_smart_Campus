@@ -1,0 +1,51 @@
+{
+  "name": "smart-campus",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "seed:campuses": "node scripts/seed-indian-campuses.mjs",
+    "migrate:firebase": "node --env-file=.env.local scripts/migrate-to-firebase.mjs",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
+    "certificates:worker": "node --conditions=react-server --import tsx scripts/certificate-worker.ts",
+    "test:certificates": "node --conditions=react-server --import tsx --test tests/certificate*.test.ts"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.8",
+    "csv-parse": "^7.0.2",
+    "csv-writer": "^1.6.0",
+    "exceljs": "^4.4.0",
+    "firebase-admin": "^14.3.0",
+    "jszip": "^3.10.1",
+    "konva": "^10.3.2",
+    "lucide-react": "^0.468.0",
+    "mysql2": "^3.24.2",
+    "nanoid": "^6.0.1",
+    "next": "^16.3.3",
+    "nodemailer": "^9.1.0",
+    "papaparse": "^5.7.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-konva": "^19.2.5",
+    "server-only": "^0.0.1",
+    "sharp": "^0.35.4",
+    "tsx": "^4.23.13",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/nodemailer": "^8.0.1",
+    "@types/papaparse": "^5.5.2",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.0.3",
+    "@types/react-dom": "^19.0.2",
+    "eslint": "^9.17.0",
+    "eslint-config-next": "^16.3.3",
+    "typescript": "^5.7.2"
+  }
+}

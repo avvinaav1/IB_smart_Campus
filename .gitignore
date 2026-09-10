@@ -1,0 +1,13 @@
+node_modules/
+.next/
+.npm-cache/
+*.tsbuildinfo
+.env*
+!.env.example
+# Firebase service account keys — never commit these
+**/*firebase*service*account*.json
+firebase-service-account*.json
+.secrets/
+.local-data/
+.data/
+.certificate-test/

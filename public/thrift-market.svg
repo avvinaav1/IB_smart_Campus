@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520">
+  <rect width="900" height="520" fill="#ffb629"/><path d="M0 70h900M0 145h900M0 220h900M0 295h900M0 370h900M0 445h900" stroke="#ff5c8a" stroke-width="8" opacity=".6"/><path d="M80 0v520M205 0v520M330 0v520M455 0v520M580 0v520M705 0v520M830 0v520" stroke="#ff5c8a" stroke-width="8" opacity=".6"/>
+  <path d="M330 90h240l80 100-75 240H325l-75-240z" fill="#fffdf4" stroke="#14121a" stroke-width="12"/><path d="M390 92q0 75 60 75t60-75" fill="none" stroke="#14121a" stroke-width="12"/><circle cx="450" cy="285" r="70" fill="#6c3bff"/><path d="m450 215 16 49h52l-42 30 16 50-42-31-42 31 16-50-42-30h52z" fill="#c7ff32"/><text x="90" y="475" fill="#14121a" font-family="monospace" font-size="29" font-weight="900">OLD CLOTHES / NEW STORIES</text>
+</svg>
