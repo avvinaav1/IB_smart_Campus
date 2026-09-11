@@ -7,16 +7,27 @@ import JSZip from "jszip";
 import { firestore } from "@/lib/firebase-admin";
 import { certificateRecipientDirectory } from "@/lib/auth-store";
 import { assetBytes, getAsset, saveAsset } from "./assets";
-import { jobs, leaseJob, guardedJobWrite, internalAward, finishRow } from "./store";
+import { jobs, leaseJob, guardedJobWrite, internalAward, finishRow, releaseJobToQueue } from "./store";
 import { renderPng } from "./node-render";
 import { certificateMail, certificateTransport } from "./email";
 import { matchRecipient } from "./matching";
 import type { JobRecord, JobRow, Layout } from "./model";
 import { reserveVerification, activateVerification } from "./verification-store";
 
-export async function processJob(job: JobRecord) {
+/**
+ * Processes a job's rows. With no `deadline`, runs to completion (the
+ * standalone worker's usage). Passed a `deadline` (a `Date.now()`-comparable
+ * timestamp), it stops cleanly between rows once time is up, hands the job
+ * back to the queue via `releaseJobToQueue` so the next chunk can claim it
+ * immediately, and returns `"partial"` instead of finalizing — this is what
+ * lets request-scoped callers (an API route bounded by a serverless timeout)
+ * make bounded forward progress across repeated calls instead of owning the
+ * whole batch in one invocation.
+ */
+export async function processJob(job: JobRecord, deadline = Infinity): Promise<"completed" | "partial" | "failed"> {
   const dir = await mkdtemp(join(tmpdir(), "smart-campus-certificates-"));
   let heartbeatError = false;
+  let timeUp = false;
   const heartbeat = setInterval(() => { void guardedJobWrite(job, { leaseExpiresAt: Date.now() + 120_000 }).catch(() => { heartbeatError = true; }); }, 25_000);
   let mailer: ReturnType<typeof certificateTransport> | null = null;
   try {
@@ -37,6 +48,7 @@ export async function processJob(job: JobRecord) {
       const page = await query.get();
       for (const doc of page.docs) {
         if (heartbeatError) throw new Error("Job lease lost");
+        if (Date.now() >= deadline) { timeUp = true; break; }
         await guardedJobWrite(job, { leaseExpiresAt: Date.now() + 120_000 });
         const row = { ...doc.data(), id: doc.id } as JobRow; cursor = row.id;
         const update = async (patch: Partial<JobRow>) => { await guardedJobWrite(job, {}, row.id, patch); Object.assign(row, patch); };
@@ -98,8 +110,9 @@ export async function processJob(job: JobRecord) {
           }
         }
       }
-      if (page.size < 20) break;
+      if (timeUp || page.size < 20) break;
     }
+    if (timeUp) { await releaseJobToQueue(job); return "partial"; }
     if (job.requestedActions.archive) {
       await guardedJobWrite(job, { archiveStatus: "running" });
       archive.file("delivery-report.json", JSON.stringify(manifest, null, 2));
@@ -110,11 +123,13 @@ export async function processJob(job: JobRecord) {
     }
     const fresh = await jobs().doc(job.id).get();
     await guardedJobWrite(job, { status: fresh.get("failedRows") ? "completed_with_errors" : "completed", leaseExpiresAt: 0, completedAt: Date.now() });
+    return "completed";
   } catch (error) {
     if (!heartbeatError) {
       const message = error instanceof Error && error.message.includes("500 MB") ? error.message : "Processing interrupted. Check worker configuration and retry the job.";
       await guardedJobWrite(job, { status: "failed", lastError: message, leaseExpiresAt: 0, ...(job.requestedActions.archive ? { archiveStatus: "failed" } : {}) }).catch(() => undefined);
     }
+    return "failed";
   } finally { clearInterval(heartbeat); mailer?.close(); await rm(dir, { recursive: true, force: true }); }
 }
 

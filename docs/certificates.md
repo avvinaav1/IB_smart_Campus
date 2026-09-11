@@ -40,19 +40,17 @@ npx firebase-tools deploy --only firestore:indexes --project YOUR_PROJECT_ID
 
 If an existing deployment already has an index file, merge these indexes into it first. No project is selected or cloud deployment performed by this implementation. Rules snippets for the server-only collections are in `docs/certificate-security-rules.txt`; merge them with existing rules and avoid broad client-access grants on these collections. This application authenticates API requests with its own session cookie, not Firebase browser authentication.
 
-Run two processes from the project root:
+`npm run dev` alone is enough — no separate worker process is required. The certificate API itself drives queued jobs forward: job creation, a retry, and every status poll from the Batch history tab (every 5s while that tab is open) each claim the job via a transactional lease (`leaseJobById` in `lib/certificates/store.ts`) and run one bounded chunk of processing (`processJob` in `lib/certificates/worker.ts`, capped by `JOB_CHUNK_BUDGET_MS` in `lib/certificates/api.ts`, currently 45s) before handing it back to the queue for the next request to continue. This is what lets it run inside a normal serverless request instead of needing an always-on process — see `export const maxDuration` in `app/api/certificates/[[...path]]/route.ts` (60s, the ceiling on Vercel's Hobby plan; raise it if your plan allows more). A batch only advances while a browser tab is actively polling its status (the Batch history view, or the request that just created/retried it); closing that tab pauses it, and reopening the job resumes it from wherever it left off — nothing is lost, rows already processed are skipped on resume.
 
-```powershell
-npm run dev
-```
+For very large batches on a host with a short `maxDuration`, more chunks are needed and each one redoes a fresh Firestore read of already-finished rows before reaching new work, so more polls elapse before completion; this is a throughput/cost trade-off against not needing infrastructure beyond the web app itself.
+
+If you deploy somewhere that can run a long-lived process (a VM, container, etc.) instead of serverless functions, you can still run a standalone worker as an alternative or supplement — it will happily share the same queue via transactional leases:
 
 ```powershell
 npm run certificates:worker
 ```
 
-For a single queue poll, use `npm run certificates:worker -- --once`. The worker loads `.env.local`, uses the bundled fonts, and requires Node.js plus this repository's runtime dependencies. Its `react-server` condition permits the existing server-only storage modules to be imported outside Next.js; it does not run React or bypass authentication. A production worker needs `tsx` available too (included as a runtime dependency).
-
-Production hosting must keep a worker process alive separately from the web server. A serverless route cannot own this loop. A process manager/container should restart the worker on infrastructure failure. It leases one job at a time and processes rows sequentially, which bounds renderer memory. Multiple worker processes can share the queue; transactional leases prevent two active workers committing the same job. A heartbeat renews each lease and an expired lease can be reclaimed.
+For a single queue poll, use `npm run certificates:worker -- --once`. The worker loads `.env.local`, uses the bundled fonts, and requires Node.js plus this repository's runtime dependencies. Its `react-server` condition permits the existing server-only storage modules to be imported outside Next.js; it does not run React or bypass authentication. A production worker needs `tsx` available too (included as a runtime dependency). It processes rows to completion in one call (no deadline), leasing one job at a time; multiple worker processes — or a worker running alongside the API's own inline chunks — can share the queue safely, since transactional leases prevent two callers from committing the same job at once, and a heartbeat renews each lease so an interrupted one can be reclaimed (by either mechanism) after it expires.
 
 ## Workflow and semantics
 

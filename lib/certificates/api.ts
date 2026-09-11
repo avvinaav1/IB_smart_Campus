@@ -7,12 +7,30 @@ import { firestore } from "@/lib/firebase-admin";
 import { getSession, certificateRecipientDirectory, getDirectoryUser } from "@/lib/auth-store";
 import { isSameOrigin, SESSION_COOKIE } from "@/lib/auth-http";
 import { assetBytes, assetChunks, getAsset, saveAsset } from "./assets";
-import { addExternal, canViewProfile, changeCertificate, createJob, getCertificate, jobForOwner, jobs, listCertificates, mayViewCertificate, statsFor } from "./store";
+import { addExternal, canViewProfile, changeCertificate, createJob, getCertificate, jobForOwner, jobs, leaseJobById, listCertificates, mayViewCertificate, statsFor } from "./store";
 import { jobInputSchema, layoutSchema, MAX_UPLOAD, type JobRow } from "./model";
 import { matchRecipient } from "./matching";
 import { smtpConfigured } from "./email";
+import { processJob } from "./worker";
 
 class ApiError extends Error { constructor(message: string, public status = 400) { super(message); } }
+// There's no standalone worker process to rely on in a serverless deployment,
+// so requests themselves drive a queued job forward: whichever request gets
+// here first (creation, a retry, or the next status poll) claims the job and
+// processes rows until either it finishes or this budget runs out, then hands
+// the job back to the queue for the next request to continue. Keep this well
+// under the route's `maxDuration` so a chunk always gets to finalize cleanly.
+const JOB_CHUNK_BUDGET_MS = 45_000;
+async function advanceJob(jobId: string, organizerId: string) {
+  try {
+    const leased = await leaseJobById(jobId, organizerId);
+    if (!leased) return; // already being processed by another request, or not resumable right now
+    await processJob(leased, Date.now() + JOB_CHUNK_BUDGET_MS);
+  } catch {
+    // processJob persists any failure onto the job itself; a request that
+    // merely triggered a chunk must not fail because that chunk hit trouble.
+  }
+}
 const json = (data: unknown, status = 200) => Response.json({ data }, { status, headers: { "Cache-Control": "no-store" } });
 const keySchema = z.string().min(8).max(100).regex(/^[a-zA-Z0-9_-]+$/);
 async function boundedBody(request: Request, max: number) {
@@ -88,7 +106,9 @@ export async function handleCertificates(request: NextRequest, path: string[]) {
         }
       }
       const key = keySchema.parse(request.headers.get("idempotency-key"));
-      return json({ jobId: await createJob(input, user.id, user.username, key) }, 202);
+      const jobId = await createJob(input, user.id, user.username, key);
+      await advanceJob(jobId, user.id);
+      return json({ jobId }, 202);
     }
     if (path[0] === "jobs" && path.length === 1 && method === "GET") {
       const page = await jobs().where("organizerId", "==", user.id).orderBy("createdAt", "desc").limit(20).get();
@@ -98,10 +118,15 @@ export async function handleCertificates(request: NextRequest, path: string[]) {
       const job = await jobForOwner(path[1], user.id);
       if (method === "GET" && path[2] === "download") { if (job.archiveStatus !== "ready" || !job.archiveAssetId) throw new ApiError("Archive is not ready", 409); return assetResponse(job.archiveAssetId, "certificates.zip"); }
       if (method === "GET" && path.length === 2) {
+        // Each status poll is also this job's chance to make progress: claim
+        // and run one bounded chunk (a no-op if another request already holds
+        // the lease) before reading back the rows below, so the client sees
+        // this call's own progress rather than waiting for the next poll.
+        const current = ["queued", "running"].includes(job.status) ? await (async () => { await advanceJob(job.id, user.id); return jobForOwner(job.id, user.id); })() : job;
         let query = jobs().doc(job.id).collection("rows").orderBy("__name__").limit(50);
         const cursor = request.nextUrl.searchParams.get("cursor"); if (cursor) query = query.startAfter(safeId(cursor));
         const page = await query.get();
-        return json({ job: { id: job.id, title: job.title, status: job.status, processedRows: job.processedRows, failedRows: job.failedRows, totalRows: job.totalRows, archiveStatus: job.archiveStatus, lastError: job.lastError }, rows: page.docs.map(d => { const r = d.data() as JobRow; return { id: d.id, rowNumber: r.rowNumber, matchStatus: r.matchStatus, matchReason: r.matchReason, renderStatus: r.renderStatus, emailStatus: r.emailStatus, internalStatus: r.internalStatus, lastError: r.lastError, imageUrl: r.assetId ? `/api/certificates/assets/${r.assetId}` : undefined }; }), nextCursor: page.size === 50 ? page.docs.at(-1)!.id : null });
+        return json({ job: { id: current.id, title: current.title, status: current.status, processedRows: current.processedRows, failedRows: current.failedRows, totalRows: current.totalRows, archiveStatus: current.archiveStatus, lastError: current.lastError }, rows: page.docs.map(d => { const r = d.data() as JobRow; return { id: d.id, rowNumber: r.rowNumber, matchStatus: r.matchStatus, matchReason: r.matchReason, renderStatus: r.renderStatus, emailStatus: r.emailStatus, internalStatus: r.internalStatus, lastError: r.lastError, imageUrl: r.assetId ? `/api/certificates/assets/${r.assetId}` : undefined }; }), nextCursor: page.size === 50 ? page.docs.at(-1)!.id : null });
       }
       if (method === "PATCH" && path.length === 2) {
         const data = z.object({ action: z.enum(["cancel", "retry"]), retryUnknownEmail: z.boolean().default(false) }).parse(await bodyJson(request));
@@ -113,7 +138,8 @@ export async function handleCertificates(request: NextRequest, path: string[]) {
             const snapshot = await ref.get(), source = await getAsset(snapshot.get("importAssetId"));
             if (!source) throw new ApiError("Original batch data is unavailable. Submit the design again.", 409);
             const input = jobInputSchema.parse(JSON.parse((await assetBytes(source)).toString("utf8")));
-            await createJob(input, user.id, user.username, snapshot.get("requestKey"));
+            const newJobId = await createJob(input, user.id, user.username, snapshot.get("requestKey"));
+            await advanceJob(newJobId, user.id);
             return json({ ok: true });
           }
           // Keep the job unclaimable while retryable row states are reset.
@@ -134,6 +160,7 @@ export async function handleCertificates(request: NextRequest, path: string[]) {
             await Promise.all([writer.close(), Promise.all(writes)]);
             await ref.update({ status: "queued", processedRows: processed, failedRows: failed, nextAttemptAt: 0, leaseExpiresAt: 0, updatedAt: Date.now(), lastError: "" });
           } catch (error) { await ref.update({ status: "failed", lastError: "Retry preparation failed; try again." }); throw error; }
+          await advanceJob(job.id, user.id);
         }
         return json({ ok: true });
       }
