@@ -1,11 +1,32 @@
 import "server-only";
 
 import { readFileSync } from "node:fs";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { cert, getApps, initializeApp, type App, type ServiceAccount } from "firebase-admin/app";
 import { getFirestore, type DocumentSnapshot, type Firestore } from "firebase-admin/firestore";
 
 let cachedApp: App | undefined;
 let cachedDb: Firestore | undefined;
+const localWrites = new Map<string, Promise<unknown>>();
+function localStoreEnabled() { return process.env.NODE_ENV === "development" && process.env.LOCAL_DATA_STORE === "true"; }
+function localPath(name: string) { return resolve(process.cwd(), ".local-data", `${createHash("sha256").update(name).digest("hex")}.json`); }
+async function readLocal<T>(name: string): Promise<T | null> {
+  try { return JSON.parse(await readFile(localPath(name), "utf8")) as T; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+}
+async function writeLocal(name: string, value: unknown) {
+  const file = localPath(name), temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  await mkdir(resolve(process.cwd(), ".local-data"), { recursive: true });
+  await writeFile(temporary, JSON.stringify(value), { encoding: "utf8", mode: 0o600 });
+  await rename(temporary, file);
+}
+function serializeLocal<T>(name: string, action: () => Promise<T>): Promise<T> {
+  const current = (localWrites.get(name) || Promise.resolve()).then(action, action);
+  localWrites.set(name, current.then(() => undefined, () => undefined));
+  return current;
+}
 
 function loadServiceAccount(): ServiceAccount {
   const inline = process.env.FIREBASE_SERVICE_ACCOUNT?.trim();
@@ -88,6 +109,7 @@ function primeCache(name: string, value: unknown) {
  * `STORE_READ_TTL_MS` (default 3s); it is refreshed on every successful write.
  */
 export async function readDocument<T>(name: string, options?: { fresh?: boolean }): Promise<T | null> {
+  if (localStoreEnabled()) return readLocal<T>(name);
   if (!options?.fresh && READ_TTL_MS > 0) {
     const hit = readCache.get(name);
     if (hit && Date.now() - hit.at < READ_TTL_MS) return hit.value as T | null;
@@ -109,6 +131,7 @@ export async function readDocument<T>(name: string, options?: { fresh?: boolean 
 /** Overwrite a store document wholesale. Prefer `mutateDocument` — this is a
  * last-write-wins blind write, kept only for one-shot seeding/imports. */
 export async function writeDocument(name: string, value: unknown): Promise<void> {
+  if (localStoreEnabled()) { await serializeLocal(name, () => writeLocal(name, value)); return; }
   await firestore().collection(STORES_COLLECTION).doc(name).set({ json: JSON.stringify(value), updatedAt: Date.now() });
   primeCache(name, value);
 }
@@ -124,6 +147,7 @@ export async function mutateDocument<Current, Next>(
   name: string,
   mutator: (current: Current | null) => Next | Promise<Next>,
 ): Promise<Next> {
+  if (localStoreEnabled()) return serializeLocal(name, async () => { const next = await mutator(await readLocal<Current>(name)); await writeLocal(name, next); return next; });
   const ref = firestore().collection(STORES_COLLECTION).doc(name);
   const committed = await firestore().runTransaction(async (tx) => {
     const snapshot = await tx.get(ref);

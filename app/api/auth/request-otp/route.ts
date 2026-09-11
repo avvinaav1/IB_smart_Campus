@@ -13,7 +13,9 @@ export async function POST(request: NextRequest) {
   const referralCode = typeof body?.referralCode === "string" ? body.referralCode : "";
   if (!isValidEmail(email) || !isAuthIntent(intent)) return noStoreJson({ error: "Enter a valid email address." }, { status: 400 });
 
-  const issued = await issueOtp(email, intent, getClientId(request), referralCode);
+  let issued: Awaited<ReturnType<typeof issueOtp>>;
+  try { issued = await issueOtp(email, intent, getClientId(request), referralCode); }
+  catch (error) { console.error("Authentication storage failed", { code: (error as NodeJS.ErrnoException).code || "unavailable" }); return noStoreJson({ error: "Account storage is unavailable. Check the server configuration." }, { status: 503 }); }
   if ("error" in issued) {
     const status = "retryAfter" in issued ? 429 : 409;
     const response = noStoreJson({ error: issued.error, retryAfter: "retryAfter" in issued ? issued.retryAfter : undefined }, { status });

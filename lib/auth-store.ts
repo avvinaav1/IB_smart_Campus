@@ -355,6 +355,13 @@ export async function getDirectoryUsers(userIds: string[]) {
 
 export type EventAttendeeUser = Pick<SessionUser, "id" | "username" | "email">;
 
+// Server-side exact matching for certificate issuance. Never return this list
+// from a public route; routes expose only per-row match status.
+export async function certificateRecipientDirectory(): Promise<EventAttendeeUser[]> {
+  const state = await loadState({ fresh: true });
+  return Object.values(state.users).map(({ id, username, email }) => ({ id, username, email }));
+}
+
 export async function getEventAttendeeUsers(userIds: string[]) {
   await mutationQueue;
   const state = await loadState();

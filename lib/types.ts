@@ -1,4 +1,4 @@
-export type View = "home" | "explore" | "events" | "rewards" | "chat" | "profile";
+export type View = "home" | "explore" | "events" | "rewards" | "chat" | "profile" | "certificates";
 
 export type SessionUser = {
   id: string;

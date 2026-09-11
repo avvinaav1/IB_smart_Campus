@@ -10,8 +10,9 @@ export async function POST(request: NextRequest) {
   const email = normalizeEmail(typeof body?.email === "string" ? body.email : "");
   const password = typeof body?.password === "string" ? body.password : "";
   if (!email || !password) return noStoreJson({ error: "Enter your email and password." }, { status: 400 });
-  const result = await passwordLogin(email, password, getClientId(request));
+  let result: Awaited<ReturnType<typeof passwordLogin>>;
+  try { result = await passwordLogin(email, password, getClientId(request)); }
+  catch (error) { console.error("Authentication storage failed", { code: (error as NodeJS.ErrnoException).code || "unavailable" }); return noStoreJson({ error: "Account storage is unavailable. Check the server configuration." }, { status: 503 }); }
   if ("error" in result) return noStoreJson({ error: result.error }, { status: "retryAfter" in result ? 429 : 401 });
   return setSessionCookie(noStoreJson({ data: { user: result.user } }), result.token, result.maxAge);
 }
-

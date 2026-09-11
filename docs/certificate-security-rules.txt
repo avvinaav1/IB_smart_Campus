@@ -1,0 +1,14 @@
+// Merge these into your existing Firestore rules. Do not replace unrelated rules.
+// The app's Admin SDK bypasses rules; authenticated API handlers enforce access.
+// A broad pre-existing allow rule can override these denials and must be removed
+// or narrowed for these paths before production use.
+match /certificates/{document=**} { allow read, write: if false; }
+match /certificateAssets/{document=**} { allow read, write: if false; }
+match /certificateTemplates/{document=**} { allow read, write: if false; }
+match /certificateJobs/{document=**} { allow read, write: if false; }
+match /certificateInboxes/{document=**} { allow read, write: if false; }
+match /certificateProfiles/{document=**} { allow read, write: if false; }
+match /certificateVerificationCodes/{document=**} { allow read, write: if false; }
+match /certificateVerificationLimits/{document=**} { allow read, write: if false; }
+// The existing image collection contains private certificate binary chunks too.
+match /smartCampusImages/{document=**} { allow read, write: if false; }

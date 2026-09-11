@@ -1,8 +1,11 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
+import dynamic from "next/dynamic";
+import { CertificateGallery, CertificateInbox } from "@/components/certificates/certificate-gallery";
 import {
-  ArrowRight, Bell, Bookmark, CalendarDays, Check, ChevronDown, CircleUserRound,
+  Award, ArrowRight, Bell, Bookmark, CalendarDays, Check, ChevronDown, CircleUserRound,
   Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Link2, LoaderCircle, LockKeyhole, MapPin,
   LogOut, Menu, MessageCircle, MessageSquare, Moon, Plus, Search, Send, Settings, Share2,
   Download, ExternalLink, ShieldCheck, Star, Sun, TicketCheck, TrendingUp, Trophy, UserCheck, UserPlus, Users, X,
@@ -17,12 +20,15 @@ import { ProfileSetup } from "@/components/profile-setup";
 import { coverImageStyle, eventWhen } from "@/lib/event-format";
 import type { CampusEvent, ChatRequestView, Community, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, Post, SessionUser, UserDashboard, UserSearchResult, View } from "@/lib/types";
 
+const CertificateBuilder = dynamic(() => import("@/components/certificates/certificate-builder"), { ssr: false });
+
 const nav = [
   { id: "home" as View, label: "Home", icon: Home },
   { id: "explore" as View, label: "Communities", icon: Compass },
   { id: "events" as View, label: "Events", icon: CalendarDays },
   { id: "rewards" as View, label: "Rewards", icon: Gift },
   { id: "chat" as View, label: "Chat", icon: MessageSquare },
+  { id: "certificates" as View, label: "Certificates", icon: Award },
 ];
 
 const mobileNav = [
@@ -74,9 +80,10 @@ function Toast({ message }: { message: string }) {
   return <div className="toast" role="status"><Check size={17} strokeWidth={3} />{message}</div>;
 }
 
-export function SmartCampusApp() {
-  const [authUser, setAuthUser] = useState<SessionUser | null | undefined>(undefined);
-  const [view, setView] = useState<View>("home");
+export function SmartCampusApp({ previewUser, initialView = "home" }: { previewUser?: SessionUser; initialView?: View }) {
+  const [authUser, setAuthUser] = useState<SessionUser | null | undefined>(previewUser);
+  const previewMode = Boolean(previewUser && authUser?.id === previewUser.id);
+  const [view, setView] = useState<View>(initialView);
   const [posts, setPosts] = useState<Post[]>([]);
   const [events, setEvents] = useState<CampusEvent[]>([]);
   const [dashboard, setDashboard] = useState<UserDashboard | null>(null);
@@ -96,13 +103,14 @@ export function SmartCampusApp() {
   const voteRequests = useRef(new Set<number>());
 
   useEffect(() => {
+    if (previewUser) return;
     let active = true;
     fetch("/api/auth/session", { cache: "no-store" })
       .then((response) => response.json())
       .then((result) => { if (active) setAuthUser(result.data?.authenticated ? result.data.user : null); })
       .catch(() => { if (active) setAuthUser(null); });
     return () => { active = false; };
-  }, []);
+  }, [previewUser]);
 
   useEffect(() => {
     const current = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
@@ -117,7 +125,7 @@ export function SmartCampusApp() {
   }, [toast]);
 
   useEffect(() => {
-    if (!authUser?.profileSetupComplete) return;
+    if (previewMode || !authUser?.profileSetupComplete) return;
     let active = true;
     async function refreshGlobalFeed() {
       try {
@@ -148,10 +156,10 @@ export function SmartCampusApp() {
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshGlobalFeed);
     };
-  }, [authUser]);
+  }, [authUser, previewMode]);
 
   useEffect(() => {
-    if (!authUser?.profileSetupComplete) return;
+    if (previewMode || !authUser?.profileSetupComplete) return;
     let active = true;
     async function refreshCommunities() {
       try {
@@ -169,10 +177,10 @@ export function SmartCampusApp() {
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshCommunities);
     };
-  }, [authUser]);
+  }, [authUser, previewMode]);
 
   useEffect(() => {
-    if (!authUser?.profileSetupComplete) return;
+    if (previewMode || !authUser?.profileSetupComplete) return;
     let active = true;
     async function refreshGlobalEvents() {
       try {
@@ -193,10 +201,10 @@ export function SmartCampusApp() {
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshGlobalEvents);
     };
-  }, [authUser]);
+  }, [authUser, previewMode]);
 
   useEffect(() => {
-    if (!authUser?.profileSetupComplete) return;
+    if (previewMode || !authUser?.profileSetupComplete) return;
     let active = true;
     async function refreshDashboard() {
       try {
@@ -214,7 +222,7 @@ export function SmartCampusApp() {
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshDashboard);
     };
-  }, [authUser]);
+  }, [authUser, previewMode]);
 
   function toggleTheme() {
     const next = theme === "light" ? "dark" : "light";
@@ -228,7 +236,7 @@ export function SmartCampusApp() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  const viewTitle: Record<View, string> = { home: "Your campus", explore: "Explore", events: "Events", rewards: "Rewards", chat: "Messages", profile: "Profile" };
+  const viewTitle: Record<View, string> = { home: "Your campus", explore: "Explore", events: "Events", rewards: "Rewards", chat: "Messages", profile: "Profile", certificates: "Certificate studio" };
 
   function resetUserState() {
     setPosts([]);
@@ -249,7 +257,7 @@ export function SmartCampusApp() {
 
   function completeAuthentication(user: SessionUser) {
     resetUserState();
-    setView("home");
+    setView(initialView);
     setAuthUser(user);
   }
 
@@ -419,12 +427,14 @@ export function SmartCampusApp() {
         </header>
 
         <main>
+          {view === "certificates" && <CertificateBuilder preview={previewMode} events={events} />}
           {view === "home" && <HomeView user={authUser} posts={posts} events={events} communities={communities} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} />}
           {view === "explore" && <ExploreView items={communities} setItems={setCommunities} posts={posts} setPosts={setPosts} vote={persistVote} votePending={votePending} notify={setToast} onMembership={persistCommunityMembership} onEvents={() => go("events")} openComments={setCommentPostId} openComposer={(community = "c/campuslife") => { setComposerCommunity(community); setComposerOpen(true); }} />}
           {view === "events" && <EventsView events={events} communities={communities} defaultCampus={authUser.campus || ""} onEvent={setEventOpen} onCreated={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setEventOpen(event); }} notify={setToast} />}
           {view === "rewards" && <RewardsView user={authUser} notify={setToast} />}
           {view === "chat" && <ChatView user={authUser} notify={setToast} onDiscover={() => setSearchOpen(true)} />}
           {view === "profile" && <ProfileView user={authUser} dashboard={dashboard} theme={theme} toggleTheme={toggleTheme} privacyPending={privacyPending} onPrivacyChange={changePrivacy} onRewards={() => go("rewards")} onEdit={() => setProfileEditorOpen(true)} onLogout={logout} />}
+          {view === "profile" && <CertificateGallery userId={authUser.id} preview={previewMode} onBuild={() => go("certificates")} />}
         </main>
       </div>
 
@@ -610,6 +620,7 @@ function ExploreView({ items, setItems, posts, setPosts, vote, votePending, noti
   if (selectedCommunity) return <CommunityDetail key={selectedCommunity.id} posts={posts} setPosts={setPosts} vote={vote} votePending={votePending} community={selectedCommunity} notify={notify} openComments={openComments} openComposer={() => openComposer(selectedCommunity.name)} goBack={() => setSelectedName(null)} toggleMembership={() => void onMembership(selectedCommunity)} onUpdated={(updated) => setItems((current) => current.map((item) => item.id === updated.id ? updated : item))} />;
   return <div className="content-page">
     <section className="page-hero explore-hero"><div><span className="eyebrow lime">FIND YOUR PEOPLE</span><h1>Campus is better together.</h1><p>Clubs, obsessions, niche questions and the people who get it.</p></div><span className="hero-sticker">COME<br />HANG<br />OUT <i>→</i></span></section>
+    <section className="explore-verification" aria-labelledby="explore-verification-title"><span className="explore-verification-icon"><ShieldCheck size={28} aria-hidden="true" /></span><div><span className="eyebrow violet">CERTIFICATE VERIFICATION</span><h2 id="explore-verification-title">Check an achievement.</h2><p>Enter a certificate’s unique code to confirm its recipient, event, issue date and issuer. No account needed.</p></div><Link href="/verify" className="explore-verification-link">Verify a certificate<ArrowRight size={18} aria-hidden="true" /></Link></section>
     <div className="explore-toolbar"><label><Search size={20} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search communities" /></label><div className="toolbar-actions"><button className="outline-button" onClick={onEvents}><CalendarDays size={19} /> Browse events</button><button className="primary-action" onClick={() => setCreating(true)}><Plus size={19} /> Create community</button></div></div>
     <div className="category-chips">{["All", "Campus life", "Creative", "Tech", "Sports", "Culture", "Food"].map((x, i) => <button className={i === 0 ? "active" : ""} key={x}>{x}</button>)}</div>
     <div className="community-grid">{filtered.map((item, index) => <article key={item.id} style={{ "--accent": item.color } as React.CSSProperties}>
@@ -1015,7 +1026,7 @@ function RewardsView({ user, notify }: { user: SessionUser; notify: (s: string) 
 }
 
 function ChatView({ user, notify, onDiscover }: { user: SessionUser; notify: (s: string) => void; onDiscover: () => void }) {
-  const [mode, setMode] = useState<"chats" | "requests">("chats");
+  const [mode, setMode] = useState<"chats" | "requests" | "certificates">("chats");
   const [inbox, setInbox] = useState<DirectConversation[]>([]);
   const [chatRequests, setChatRequests] = useState<ChatRequestView[]>([]);
   const [followRequests, setFollowRequests] = useState<FollowRequestView[]>([]);
@@ -1027,6 +1038,7 @@ function ChatView({ user, notify, onDiscover }: { user: SessionUser; notify: (s:
   const endRef = useRef<HTMLDivElement>(null);
 
   const refreshInbox = useCallback(async () => {
+    if (user.id === "local-preview") { setLoading(false); return; }
     try {
       const [conversationData, chatData, followData] = await Promise.all([
         requestJson<{ conversations: DirectConversation[] }>("/api/conversations", { cache: "no-store" }),
@@ -1043,7 +1055,7 @@ function ChatView({ user, notify, onDiscover }: { user: SessionUser; notify: (s:
     } finally {
       setLoading(false);
     }
-  }, [notify]);
+  }, [notify, user.id]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void refreshInbox(), 0);
@@ -1090,14 +1102,19 @@ function ChatView({ user, notify, onDiscover }: { user: SessionUser; notify: (s:
   }
 
   return <div className={`chat-page ${mode === "requests" ? "requests-mode" : ""}`}>
+    <nav className="mobile-inbox-tabs" aria-label="Mobile message inbox">
+      <button className={mode === "chats" ? "active" : ""} onClick={() => setMode("chats")}><MessageCircle size={16} />Chats</button>
+      <button className={mode === "certificates" ? "active" : ""} onClick={() => setMode("certificates")}><Award size={16} />Certificates</button>
+      <button className={mode === "requests" ? "active" : ""} onClick={() => setMode("requests")}><Inbox size={16} />Requests</button>
+    </nav>
     <aside className="conversation-list">
       <div className="chat-list-head"><div><span className="eyebrow cyan">STAY CLOSE</span><h1>Messages</h1></div><IconButton label="Find people" onClick={onDiscover}><UserPlus size={21} /></IconButton></div>
-      <nav className="inbox-tabs" aria-label="Message inbox"><button className={mode === "chats" ? "active" : ""} onClick={() => setMode("chats")}><MessageCircle size={15} /> Chats</button><button className={mode === "requests" ? "active" : ""} onClick={() => setMode("requests")}><Inbox size={15} /> Requests {requestCount > 0 && <i>{requestCount}</i>}</button></nav>
+      <nav className="inbox-tabs" aria-label="Message inbox"><button className={mode === "certificates" ? "active" : ""} onClick={() => setMode("certificates")}><Award size={15} /> Certificates</button><button className={mode === "chats" ? "active" : ""} onClick={() => setMode("chats")}><MessageCircle size={15} /> Chats</button><button className={mode === "requests" ? "active" : ""} onClick={() => setMode("requests")}><Inbox size={15} /> Requests {requestCount > 0 && <i>{requestCount}</i>}</button></nav>
       {mode === "chats" && <><label><Search size={18} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search messages" /></label>{visibleInbox.map((item) => { const last = item.messages.at(-1); return <button className={selectedId === item.id ? "active" : ""} onClick={() => setSelectedId(item.id)} key={item.id}><Avatar text={item.otherUser.username} image={item.otherUser.avatarUrl} color="#6C3BFF" size={45} /><span><b>{item.otherUser.username}</b><small>{last?.body || "Conversation started"}</small></span><em>{relativeTime(item.updatedAt)}</em></button>; })}{!loading && !visibleInbox.length && <div className="conversation-empty"><MessageCircle size={24} /><b>No conversations yet</b><small>Find someone and send one thoughtful request.</small></div>}</>}
       {mode === "requests" && <div className="request-sidebar-summary"><Inbox size={26} /><b>{requestCount} pending</b><small>Review requests in the main panel.</small></div>}
     </aside>
 
-    {mode === "requests" ? <section className="thread request-thread"><header><button className="mobile-back-to-chats" onClick={() => setMode("chats")}><ArrowRight size={17} /> Chats</button><div><b>Requests</b><small>Only you can accept or reject these</small></div></header><div className="request-inbox">
+    {mode === "certificates" ? <CertificateInbox preview={user.id === "local-preview"} /> : mode === "requests" ? <section className="thread request-thread"><header><button className="mobile-back-to-chats" onClick={() => setMode("chats")}><ArrowRight size={17} /> Chats</button><div><b>Requests</b><small>Only you can accept or reject these</small></div></header><div className="request-inbox">
       <div className="request-section-heading"><div><span className="eyebrow violet">MESSAGE REQUESTS</span><h2>New conversations</h2></div><b>{chatRequests.length}</b></div>
       {chatRequests.map((request) => <article className="request-card" key={request.id}><Avatar text={request.sender.username} image={request.sender.avatarUrl} color="#6C3BFF" size={48} /><div><header><b>{request.sender.username}</b><span>{request.sender.isPrivate ? <><LockKeyhole size={12} /> Private</> : <><Globe2 size={12} /> Public</>}</span></header><p>{request.initialMessage}</p><small>{relativeTime(request.createdAt)}</small></div><footer><button disabled={busyIds.has(request.id)} onClick={() => resolveRequest("chat", request.id, "rejected")}>Reject</button><button disabled={busyIds.has(request.id)} onClick={() => resolveRequest("chat", request.id, "accepted")}><Check size={15} /> Accept</button></footer></article>)}
       {!loading && !chatRequests.length && <div className="request-empty"><MessageSquare size={27} /><b>No message requests</b><p>New requests and their one initial message will appear here.</p></div>}
@@ -1164,7 +1181,7 @@ function SearchPanel({ close, notify }: { close: () => void; notify: (message: s
     return "Chat request";
   }
 
-  return <><div className="overlay search-overlay" onMouseDown={(event) => event.target === event.currentTarget && close()}><section className="search-panel people-search-panel" role="dialog" aria-modal="true" aria-label="Find people"><label><Search size={22} /><input autoFocus value={query} onChange={(event) => { const value = event.target.value; setQuery(value); if (!value.trim()) { setResults([]); setLoading(false); } }} maxLength={50} placeholder="Search people by username" /><kbd>ESC</kbd></label>{query.trim() ? <div className="search-results people-results"><span className="eyebrow violet">PEOPLE</span>{results.map((user) => <article className="user-search-result" key={user.id}><Avatar text={user.username} image={user.avatarUrl} color={user.isPrivate ? "#FF5C8A" : "#6C3BFF"} size={48} /><div className="user-result-copy"><header><b>{user.username}</b><span>{user.isPrivate ? <><LockKeyhole size={12} /> Private</> : <><Globe2 size={12} /> Public</>}</span></header><p>{user.about || "New to Smart Campus."}</p></div><div className="user-result-actions"><button disabled={actionId === user.id || user.followStatus !== "none"} onClick={() => void follow(user)}>{user.followStatus === "accepted" ? <UserCheck size={15} /> : <UserPlus size={15} />}{user.followStatus === "none" ? "Follow" : user.followStatus === "pending" ? "Requested" : user.followStatus === "accepted" ? "Following" : "Declined"}</button><button disabled={user.chatStatus !== "none"} onClick={() => setChatTarget(user)}><MessageCircle size={15} />{chatLabel(user.chatStatus)}</button></div></article>)}{loading && <div className="search-status"><LoaderCircle className="spin" size={20} /> Searching campus…</div>}{!loading && !results.length && <div className="search-status"><Users size={25} /><b>No matching users</b><small>Try the beginning of their username.</small></div>}</div> : <div className="search-empty people-search-empty"><Users size={30} /><b>Find your people</b><span>Search by username to follow someone or send one chat request.</span></div>}<button className="close-search" onClick={close}><X size={20} /></button></section></div>{chatTarget && <ChatRequestModal target={chatTarget} close={() => setChatTarget(null)} sent={() => { setResults((current) => current.map((item) => item.id === chatTarget.id ? { ...item, chatStatus: "pending_sent" } : item)); setChatTarget(null); notify(`Chat request sent to ${chatTarget.username}`); }} />}</>;
+  return <><div className="overlay search-overlay" onMouseDown={(event) => event.target === event.currentTarget && close()}><section className="search-panel people-search-panel" role="dialog" aria-modal="true" aria-label="Find people"><label><Search size={22} /><input autoFocus value={query} onChange={(event) => { const value = event.target.value; setQuery(value); if (!value.trim()) { setResults([]); setLoading(false); } }} maxLength={50} placeholder="Search people by username" /><kbd>ESC</kbd></label>{query.trim() ? <div className="search-results people-results"><span className="eyebrow violet">PEOPLE</span>{results.map((user) => <article className="user-search-result" key={user.id}><Avatar text={user.username} image={user.avatarUrl} color={user.isPrivate ? "#FF5C8A" : "#6C3BFF"} size={48} /><div className="user-result-copy"><header><a href={`/members/${user.id}`}><b>{user.username}</b></a><span>{user.isPrivate ? <><LockKeyhole size={12} /> Private</> : <><Globe2 size={12} /> Public</>}</span></header><p>{user.about || "New to Smart Campus."}</p></div><div className="user-result-actions"><button disabled={actionId === user.id || user.followStatus !== "none"} onClick={() => void follow(user)}>{user.followStatus === "accepted" ? <UserCheck size={15} /> : <UserPlus size={15} />}{user.followStatus === "none" ? "Follow" : user.followStatus === "pending" ? "Requested" : user.followStatus === "accepted" ? "Following" : "Declined"}</button><button disabled={user.chatStatus !== "none"} onClick={() => setChatTarget(user)}><MessageCircle size={15} />{chatLabel(user.chatStatus)}</button></div></article>)}{loading && <div className="search-status"><LoaderCircle className="spin" size={20} /> Searching campus…</div>}{!loading && !results.length && <div className="search-status"><Users size={25} /><b>No matching users</b><small>Try the beginning of their username.</small></div>}</div> : <div className="search-empty people-search-empty"><Users size={30} /><b>Find your people</b><span>Search by username to follow someone or send one chat request.</span></div>}<button className="close-search" onClick={close}><X size={20} /></button></section></div>{chatTarget && <ChatRequestModal target={chatTarget} close={() => setChatTarget(null)} sent={() => { setResults((current) => current.map((item) => item.id === chatTarget.id ? { ...item, chatStatus: "pending_sent" } : item)); setChatTarget(null); notify(`Chat request sent to ${chatTarget.username}`); }} />}</>;
 }
 
 function ChatRequestModal({ target, close, sent }: { target: UserSearchResult; close: () => void; sent: () => void }) {
