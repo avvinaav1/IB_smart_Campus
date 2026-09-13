@@ -11,6 +11,9 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
+    "test:moderation": "node --test --test-concurrency=1 tests/moderation.test.ts",
+    "test:communities": "node --test --test-concurrency=1 tests/community-hierarchy.test.ts",
+    "test:activity": "node --test --test-concurrency=1 tests/streak-policy.test.ts",
     "certificates:worker": "node --conditions=react-server --import tsx scripts/certificate-worker.ts",
     "test:certificates": "node --conditions=react-server --import tsx --test tests/certificate*.test.ts"
   },

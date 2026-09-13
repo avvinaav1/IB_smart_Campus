@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { getDirectoryUser } from "@/lib/auth-store";
 import { authenticatedUserId, isSameOrigin, noStoreJson, readJson } from "@/lib/auth-http";
 import { followUser } from "@/lib/social-store";
+import { createNotification } from "@/lib/notification-store";
 
 export const runtime = "nodejs";
 
@@ -14,6 +15,21 @@ export async function POST(request: NextRequest) {
   const target = await getDirectoryUser(targetUserId);
   if (!target) return noStoreJson({ error: "User not found." }, { status: 404 });
   const result = await followUser(userId, target.id, target.isPrivate);
+  if (!("error" in result) && !result.alreadyExisted && result.follow.status === "pending") {
+    try {
+      const sender = await getDirectoryUser(userId);
+      await createNotification({
+        recipientId: target.id,
+        senderId: userId,
+        type: "FOLLOW_REQUEST",
+        content: `${sender?.username || "A campus user"} requested to follow you.`,
+        link: "/?view=chat&requests=follow",
+        dedupeKey: `follow-request:${result.follow.id}`,
+      });
+    } catch (error) {
+      console.error("Follow-request notification failed", error);
+    }
+  }
   return "error" in result
     ? noStoreJson({ error: result.error }, { status: result.status })
     : noStoreJson({ data: result }, { status: result.alreadyExisted ? 200 : 201 });

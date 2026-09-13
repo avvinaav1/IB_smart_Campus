@@ -1,7 +1,9 @@
 import type { NextRequest } from "next/server";
-import { getSession } from "@/lib/auth-store";
+import { getSession, incrementUserStreak } from "@/lib/auth-store";
 import { isSameOrigin, noStoreJson, readJson, SESSION_COOKIE } from "@/lib/auth-http";
 import { createPost, listPosts, type NewPostInput, validatePostInput } from "@/lib/post-store";
+import { getCommunitySummary, listEffectiveCommunityMemberIds } from "@/lib/community-store";
+import { createNotifications } from "@/lib/notification-store";
 
 export const runtime = "nodejs";
 
@@ -36,5 +38,26 @@ export async function POST(request: NextRequest) {
   if (validationError) return noStoreJson({ error: validationError }, { status: 400 });
   const result = await createPost(user.id, user.username, input);
   if ("error" in result) return noStoreJson({ error: result.error }, { status: 400 });
+  if (result.created) {
+    try {
+      const [community, memberIds] = await Promise.all([
+        getCommunitySummary(result.post.communityId),
+        listEffectiveCommunityMemberIds(result.post.communityId),
+      ]);
+      await Promise.all([
+        incrementUserStreak(user.id, "POST_CREATE", String(result.post.id)),
+        createNotifications(memberIds.filter((recipientId) => recipientId !== user.id).map((recipientId) => ({
+          recipientId,
+          senderId: user.id,
+          type: "POST" as const,
+          content: `${user.username} posted “${result.post.title}” in ${community?.name || result.post.community}.`,
+          link: `/?view=explore&community=${encodeURIComponent(result.post.communityId)}`,
+          dedupeKey: `post-created:${result.post.id}`,
+        }))),
+      ]);
+    } catch (error) {
+      console.error("Post activity side effects failed", error);
+    }
+  }
   return noStoreJson({ data: result }, { status: 201 });
 }

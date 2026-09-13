@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { authenticatedUserId, isSameOrigin, noStoreJson, readJson } from "@/lib/auth-http";
+import { incrementUserStreak } from "@/lib/auth-store";
 import { sendConversationMessage } from "@/lib/social-store";
 
 export const runtime = "nodejs";
@@ -12,5 +13,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   const message = typeof body?.message === "string" ? body.message : "";
   const { id } = await context.params;
   const result = await sendConversationMessage(id, userId, message);
+  if (!("error" in result)) {
+    try { await incrementUserStreak(userId, "CHAT_MESSAGE", result.message.id); }
+    catch (error) { console.error("Chat-message streak update failed", error); }
+  }
   return "error" in result ? noStoreJson({ error: result.error }, { status: result.status }) : noStoreJson({ data: result }, { status: 201 });
 }

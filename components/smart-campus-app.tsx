@@ -17,8 +17,9 @@ import { defaultCoverFor, EventCoverField } from "@/components/event-cover-field
 import { EventRegistrationDetail } from "@/components/event-registration-detail";
 import { ProfileEditor } from "@/components/profile-editor";
 import { ProfileSetup } from "@/components/profile-setup";
+import { CommunityModerationPanel, GlobalAdminDashboard } from "@/components/moderation-dashboard";
 import { coverImageStyle, eventWhen } from "@/lib/event-format";
-import type { CampusEvent, ChatRequestView, Community, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, Post, SessionUser, UserDashboard, UserSearchResult, View } from "@/lib/types";
+import type { CampusEvent, ChatRequestView, Community, CommunityType, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, Post, SessionUser, UserDashboard, UserNotification, UserSearchResult, View } from "@/lib/types";
 
 const CertificateBuilder = dynamic(() => import("@/components/certificates/certificate-builder"), { ssr: false });
 
@@ -30,6 +31,8 @@ const nav = [
   { id: "chat" as View, label: "Chat", icon: MessageSquare },
   { id: "certificates" as View, label: "Certificates", icon: Award },
 ];
+
+const adminNav = { id: "admin" as View, label: "Admin", icon: ShieldCheck };
 
 const mobileNav = [
   { id: "home" as View, label: "Home", icon: Home },
@@ -52,6 +55,10 @@ async function requestUserDashboard() {
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "Could not load your dashboard.");
   return result.data.dashboard as UserDashboard;
+}
+
+async function requestNotifications() {
+  return requestJson<{ notifications: UserNotification[]; unreadCount: number }>("/api/notifications", { cache: "no-store" });
 }
 
 async function requestJson<T>(url: string, init?: RequestInit) {
@@ -80,7 +87,7 @@ function Toast({ message }: { message: string }) {
   return <div className="toast" role="status"><Check size={17} strokeWidth={3} />{message}</div>;
 }
 
-export function SmartCampusApp({ previewUser, initialView = "home" }: { previewUser?: SessionUser; initialView?: View }) {
+export function SmartCampusApp({ previewUser, initialView = "home", initialCommunityId = "", initialChatRequests = false }: { previewUser?: SessionUser; initialView?: View; initialCommunityId?: string; initialChatRequests?: boolean }) {
   const [authUser, setAuthUser] = useState<SessionUser | null | undefined>(previewUser);
   const previewMode = Boolean(previewUser && authUser?.id === previewUser.id);
   const [view, setView] = useState<View>(initialView);
@@ -91,6 +98,8 @@ export function SmartCampusApp({ previewUser, initialView = "home" }: { previewU
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [searchOpen, setSearchOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState<UserNotification[]>([]);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerCommunity, setComposerCommunity] = useState("c/campuslife");
   const [eventOpen, setEventOpen] = useState<CampusEvent | null>(null);
@@ -101,6 +110,7 @@ export function SmartCampusApp({ previewUser, initialView = "home" }: { previewU
   const [votePending, setVotePending] = useState<Set<number>>(() => new Set());
   const [toast, setToast] = useState("");
   const voteRequests = useRef(new Set<number>());
+  const unreadNotifications = notifications.filter((notification) => !notification.isRead).length;
 
   useEffect(() => {
     if (previewUser) return;
@@ -157,6 +167,30 @@ export function SmartCampusApp({ previewUser, initialView = "home" }: { previewU
       window.removeEventListener("focus", refreshGlobalFeed);
     };
   }, [authUser, previewMode]);
+
+  useEffect(() => {
+    if (previewMode || !authUser?.profileSetupComplete) return;
+    let active = true;
+    async function refreshNotifications() {
+      setNotificationsLoading(true);
+      try {
+        const data = await requestNotifications();
+        if (active) setNotifications(data?.notifications || []);
+      } catch {
+        if (active && notificationsOpen) setToast("Could not refresh notifications.");
+      } finally {
+        if (active) setNotificationsLoading(false);
+      }
+    }
+    void refreshNotifications();
+    const interval = window.setInterval(refreshNotifications, 20_000);
+    window.addEventListener("focus", refreshNotifications);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshNotifications);
+    };
+  }, [authUser, notificationsOpen, previewMode]);
 
   useEffect(() => {
     if (previewMode || !authUser?.profileSetupComplete) return;
@@ -236,7 +270,7 @@ export function SmartCampusApp({ previewUser, initialView = "home" }: { previewU
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  const viewTitle: Record<View, string> = { home: "Your campus", explore: "Explore", events: "Events", rewards: "Rewards", chat: "Messages", profile: "Profile", certificates: "Certificate studio" };
+  const viewTitle: Record<View, string> = { home: "Your campus", explore: "Explore", events: "Events", rewards: "Rewards", chat: "Messages", profile: "Profile", certificates: "Certificate studio", admin: "Global administration" };
 
   function resetUserState() {
     setPosts([]);
@@ -245,6 +279,7 @@ export function SmartCampusApp({ previewUser, initialView = "home" }: { previewU
     setCommunities([]);
     setSearchOpen(false);
     setNotificationsOpen(false);
+    setNotifications([]);
     setComposerOpen(false);
     setEventOpen(null);
     setCommentPostId(null);
@@ -339,9 +374,36 @@ export function SmartCampusApp({ previewUser, initialView = "home" }: { previewU
       const data = await requestJson<{ community: Community }>(`/api/communities/${encodeURIComponent(community.id)}/membership`, { method: community.joined ? "DELETE" : "POST" });
       if (!data?.community) throw new Error("The server did not return the updated community.");
       setCommunities((current) => current.map((item) => item.id === community.id ? data.community : item));
+      void requestUserDashboard().then(setDashboard).catch(() => undefined);
       setToast(community.joined ? `Left ${community.name}` : `Joined ${community.name}`);
     } catch (membershipError) {
       setToast(membershipError instanceof Error ? membershipError.message : "Could not update your community membership.");
+    }
+  }
+
+  async function readNotification(notification: UserNotification) {
+    if (!notification.isRead) {
+      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, isRead: true } : item));
+      try {
+        await requestJson(`/api/notifications`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: notification.id }) });
+      } catch (error) {
+        setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, isRead: false } : item));
+        setToast(error instanceof Error ? error.message : "Could not update the notification.");
+        return;
+      }
+    }
+    window.location.assign(notification.link);
+  }
+
+  async function readAllNotifications() {
+    const unreadIds = new Set(notifications.filter((item) => !item.isRead).map((item) => item.id));
+    if (!unreadIds.size) return;
+    setNotifications((current) => current.map((item) => ({ ...item, isRead: true })));
+    try {
+      await requestJson(`/api/notifications`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ markAll: true }) });
+    } catch (error) {
+      setNotifications((current) => current.map((item) => unreadIds.has(item.id) ? { ...item, isRead: false } : item));
+      setToast(error instanceof Error ? error.message : "Could not mark notifications as read.");
     }
   }
 
@@ -395,7 +457,7 @@ export function SmartCampusApp({ previewUser, initialView = "home" }: { previewU
           <span><b>smart</b>campus</span>
         </button>
         <nav aria-label="Primary navigation">
-          {nav.map(({ id, label, icon: Icon }) => (
+          {[...nav, ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : [])].map(({ id, label, icon: Icon }) => (
             <button key={id} className={view === id ? "selected" : ""} onClick={() => go(id)}>
               <Icon size={21} strokeWidth={view === id ? 2.8 : 2.2} /><span>{label}</span>
             </button>
@@ -403,9 +465,9 @@ export function SmartCampusApp({ previewUser, initialView = "home" }: { previewU
         </nav>
         <button className="create-button" onClick={() => { setComposerCommunity("c/campuslife"); setComposerOpen(true); }}><Plus size={20} strokeWidth={3} />Create post</button>
         <div className="side-card">
-          <span className="eyebrow lime">YOUR STREAK</span>
+          <span className="eyebrow lime">24-HOUR STREAK</span>
           <div className="streak"><span>🔥</span><b>{dashboard?.streak ?? 0}</b><small>days</small></div>
-          <p>Show up tomorrow to keep it alive.</p>
+          <p>Stay active within 24 hours to keep it alive.</p>
         </div>
         <button className="user-pill" onClick={() => go("profile")}>
           <Avatar text={authUser.username} image={authUser.avatarUrl} color="#FF5C8A" />
@@ -421,25 +483,26 @@ export function SmartCampusApp({ previewUser, initialView = "home" }: { previewU
           <button className="search-trigger" onClick={() => setSearchOpen(true)}><Search size={19} /><span>Search campus</span><kbd>⌘ K</kbd></button>
           <div className="top-actions">
             <IconButton label="Switch theme" onClick={toggleTheme}>{theme === "light" ? <Moon size={20} /> : <Sun size={20} />}</IconButton>
-            <IconButton label="Notifications" onClick={() => setNotificationsOpen(true)}><Bell size={20} /><span className="notify-dot" /></IconButton>
+            <IconButton label={unreadNotifications ? `Notifications, ${unreadNotifications} unread` : "Notifications"} onClick={() => setNotificationsOpen(true)}><Bell size={20} />{unreadNotifications > 0 && <span className="notify-dot">{unreadNotifications > 9 ? "9+" : unreadNotifications}</span>}</IconButton>
             <button className="mini-avatar" onClick={() => go("profile")}><Avatar text={authUser.username} image={authUser.avatarUrl} color="#FF5C8A" size={36} /></button>
           </div>
         </header>
 
         <main>
           {view === "certificates" && <CertificateBuilder preview={previewMode} events={events} />}
-          {view === "home" && <HomeView user={authUser} posts={posts} events={events} communities={communities} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} />}
-          {view === "explore" && <ExploreView items={communities} setItems={setCommunities} posts={posts} setPosts={setPosts} vote={persistVote} votePending={votePending} notify={setToast} onMembership={persistCommunityMembership} onEvents={() => go("events")} openComments={setCommentPostId} openComposer={(community = "c/campuslife") => { setComposerCommunity(community); setComposerOpen(true); }} />}
+          {view === "home" && <HomeView user={authUser} posts={posts} events={events.filter((event) => event.status === "APPROVED")} communities={communities} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} />}
+          {view === "explore" && <ExploreView user={authUser} items={communities} setItems={setCommunities} posts={posts} setPosts={setPosts} vote={persistVote} votePending={votePending} notify={setToast} onMembership={persistCommunityMembership} onEvents={() => go("events")} openComments={setCommentPostId} openComposer={(community = "c/campuslife") => { setComposerCommunity(community); setComposerOpen(true); }} initialCommunityId={initialCommunityId} />}
           {view === "events" && <EventsView events={events} communities={communities} defaultCampus={authUser.campus || ""} onEvent={setEventOpen} onCreated={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setEventOpen(event); }} notify={setToast} />}
           {view === "rewards" && <RewardsView user={authUser} notify={setToast} />}
-          {view === "chat" && <ChatView user={authUser} notify={setToast} onDiscover={() => setSearchOpen(true)} />}
+          {view === "chat" && <ChatView user={authUser} notify={setToast} onDiscover={() => setSearchOpen(true)} initialRequests={initialChatRequests} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
           {view === "profile" && <ProfileView user={authUser} dashboard={dashboard} theme={theme} toggleTheme={toggleTheme} privacyPending={privacyPending} onPrivacyChange={changePrivacy} onRewards={() => go("rewards")} onEdit={() => setProfileEditorOpen(true)} onLogout={logout} />}
           {view === "profile" && <CertificateGallery userId={authUser.id} preview={previewMode} onBuild={() => go("certificates")} />}
+          {view === "admin" && (authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN") && <GlobalAdminDashboard user={authUser} notify={setToast} />}
         </main>
       </div>
 
       <nav className="mobile-nav" aria-label="Mobile navigation">
-        {mobileNav.map(({ id, label, icon: Icon }) => id === "create" ? (
+        {[...mobileNav, ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : [])].map(({ id, label, icon: Icon }) => id === "create" ? (
           <button key={id} className="mobile-create" aria-label="Create post" onClick={() => { setComposerCommunity("c/campuslife"); setComposerOpen(true); }}><Icon size={25} strokeWidth={3} /></button>
         ) : (
           <button key={id} className={view === id ? "selected" : ""} onClick={() => go(id as View)}>
@@ -448,12 +511,12 @@ export function SmartCampusApp({ previewUser, initialView = "home" }: { previewU
         ))}
       </nav>
 
-      {searchOpen && <SearchPanel close={() => setSearchOpen(false)} notify={setToast} />}
-      {notificationsOpen && <Notifications close={() => setNotificationsOpen(false)} />}
+      {searchOpen && <SearchPanel close={() => setSearchOpen(false)} notify={setToast} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
+      {notificationsOpen && <Notifications close={() => setNotificationsOpen(false)} items={notifications} loading={notificationsLoading} onRead={readNotification} onReadAll={readAllNotifications} />}
       {composerOpen && <Composer author={authUser.username} communities={communities} initialCommunity={composerCommunity} close={() => setComposerOpen(false)} onCreate={persistPost} />}
       {eventOpen && <EventRegistrationDetail event={eventOpen} close={() => setEventOpen(null)} notify={setToast} onEdit={() => setEditingEvent(eventOpen)} onChange={(event) => { setEventOpen(event); setEvents((current) => current.map((item) => item.id === event.id ? event : item)); }} />}
       {editingEvent && <EditEventModal event={editingEvent} communities={communities} close={() => setEditingEvent(null)} onSaved={(event) => { setEditingEvent(null); setEventOpen(event); setEvents((current) => current.map((item) => item.id === event.id ? event : item)); setToast("Event updated"); }} />}
-      {activeCommentPost && <CommentThread post={activeCommentPost} user={authUser} close={() => setCommentPostId(null)} onUpdated={(updated) => setPosts((current) => current.map((post) => post.id === updated.id ? updated : post))} notify={setToast} />}
+      {activeCommentPost && <CommentThread post={activeCommentPost} user={authUser} close={() => setCommentPostId(null)} onUpdated={(updated) => setPosts((current) => current.map((post) => post.id === updated.id ? updated : post))} notify={setToast} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
       {profileEditorOpen && <ProfileEditor user={authUser} close={() => setProfileEditorOpen(false)} onUpdated={setAuthUser} notify={setToast} />}
       {toast && <Toast message={toast} />}
     </div>
@@ -541,7 +604,7 @@ function PostCard({ post, index, vote, votePending, save, openComments, notify }
   </article>;
 }
 
-function CommentThread({ post, user, close, onUpdated, notify }: { post: Post; user: SessionUser; close: () => void; onUpdated: (post: Post) => void; notify: (message: string) => void }) {
+function CommentThread({ post, user, close, onUpdated, notify, onActivity }: { post: Post; user: SessionUser; close: () => void; onUpdated: (post: Post) => void; notify: (message: string) => void; onActivity: () => void }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -571,6 +634,7 @@ function CommentThread({ post, user, close, onUpdated, notify }: { post: Post; u
       if (!response.ok) throw new Error(result.error || "Your reply could not be posted.");
       onUpdated(result.data.post as Post);
       setDraft("");
+      onActivity();
       notify("Reply posted");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Your reply could not be posted.");
@@ -611,32 +675,53 @@ function todayLabel() {
   return new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" }).toUpperCase();
 }
 
-function ExploreView({ items, setItems, posts, setPosts, vote, votePending, notify, onMembership, onEvents, openComments, openComposer }: { items: Community[]; setItems: React.Dispatch<React.SetStateAction<Community[]>>; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; notify: (s: string) => void; onMembership: (community: Community) => Promise<void>; onEvents: () => void; openComments: (id: number) => void; openComposer: (community?: string) => void }) {
+function communityTypeLabel(type: CommunityType) {
+  return type.charAt(0) + type.slice(1).toLowerCase();
+}
+
+function CommunityCard({ item, index, communities, onOpen, onMembership }: { item: Community; index: number; communities: Community[]; onOpen: (id: string) => void; onMembership: (community: Community) => Promise<void> }) {
+  const parent = item.parentId ? communities.find((community) => community.id === item.parentId) : undefined;
+  return <article key={item.id} style={{ "--accent": item.color } as React.CSSProperties}>
+    <button className="community-card-link" aria-label={`Open ${item.name}`} onClick={() => onOpen(item.id)} />
+    <div className="community-art">{item.bannerUrl ? <Image src={item.bannerUrl} alt={`${item.name} banner`} fill sizes="370px" unoptimized /> : <><span>{item.emoji}</span><i>{index % 2 ? "✦ ✦" : "〰 〰"}</i></>}</div><Avatar text={item.emoji} image={item.iconUrl} color={item.color} size={54} />
+    <div className="community-card-badges"><span>{communityTypeLabel(item.type)}</span><span className={item.parentId ? "child" : "parent"}>{item.parentId ? `Sub-community of ${parent?.name || "parent"}` : "Top-level community"}</span></div>
+    <h2>{item.name}</h2><p>{item.description}</p>
+    <div><span><Users size={16} /> {item.members}</span>{item.membershipSource === "PARENT" ? <button type="button" className="joined inherited-admin" disabled><ShieldCheck size={15} /> Inherited admin</button> : <button className={item.joined ? "joined" : ""} onClick={() => void onMembership(item)}>{item.joined ? <><Check size={16} /> Joined</> : "Join"}</button>}</div>
+  </article>;
+}
+
+function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending, notify, onMembership, onEvents, openComments, openComposer, initialCommunityId }: { user: SessionUser; items: Community[]; setItems: React.Dispatch<React.SetStateAction<Community[]>>; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; notify: (s: string) => void; onMembership: (community: Community) => Promise<void>; onEvents: () => void; openComments: (id: number) => void; openComposer: (community?: string) => void; initialCommunityId: string }) {
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
-  const [selectedName, setSelectedName] = useState<string | null>(null);
-  const filtered = items.filter(item => item.name.includes(query.toLowerCase()));
-  const selectedCommunity = items.find(item => item.name === selectedName);
-  if (selectedCommunity) return <CommunityDetail key={selectedCommunity.id} posts={posts} setPosts={setPosts} vote={vote} votePending={votePending} community={selectedCommunity} notify={notify} openComments={openComments} openComposer={() => openComposer(selectedCommunity.name)} goBack={() => setSelectedName(null)} toggleMembership={() => void onMembership(selectedCommunity)} onUpdated={(updated) => setItems((current) => current.map((item) => item.id === updated.id ? updated : item))} />;
+  const [selectedId, setSelectedId] = useState<string | null>(initialCommunityId || null);
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = items.filter((item) => {
+    const parent = item.parentId ? items.find((community) => community.id === item.parentId) : undefined;
+    return !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery) || item.type.toLowerCase().includes(normalizedQuery) || parent?.name.toLowerCase().includes(normalizedQuery);
+  });
+  const selectedCommunity = items.find(item => item.id === selectedId);
+  if (selectedCommunity) return <CommunityDetail key={selectedCommunity.id} user={user} communities={items} posts={posts} setPosts={setPosts} vote={vote} votePending={votePending} community={selectedCommunity} notify={notify} openComments={openComments} openComposer={() => openComposer(selectedCommunity.name)} goBack={() => setSelectedId(null)} onOpenCommunity={setSelectedId} onMembership={onMembership} toggleMembership={() => void onMembership(selectedCommunity)} onUpdated={(updated) => setItems((current) => current.map((item) => item.id === updated.id ? updated : item))} onCommunityCreated={(created) => setItems((current) => [created, ...current])} />;
   return <div className="content-page">
     <section className="page-hero explore-hero"><div><span className="eyebrow lime">FIND YOUR PEOPLE</span><h1>Campus is better together.</h1><p>Clubs, obsessions, niche questions and the people who get it.</p></div><span className="hero-sticker">COME<br />HANG<br />OUT <i>→</i></span></section>
     <section className="explore-verification" aria-labelledby="explore-verification-title"><span className="explore-verification-icon"><ShieldCheck size={28} aria-hidden="true" /></span><div><span className="eyebrow violet">CERTIFICATE VERIFICATION</span><h2 id="explore-verification-title">Check an achievement.</h2><p>Enter a certificate’s unique code to confirm its recipient, event, issue date and issuer. No account needed.</p></div><Link href="/verify" className="explore-verification-link">Verify a certificate<ArrowRight size={18} aria-hidden="true" /></Link></section>
     <div className="explore-toolbar"><label><Search size={20} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search communities" /></label><div className="toolbar-actions"><button className="outline-button" onClick={onEvents}><CalendarDays size={19} /> Browse events</button><button className="primary-action" onClick={() => setCreating(true)}><Plus size={19} /> Create community</button></div></div>
     <div className="category-chips">{["All", "Campus life", "Creative", "Tech", "Sports", "Culture", "Food"].map((x, i) => <button className={i === 0 ? "active" : ""} key={x}>{x}</button>)}</div>
-    <div className="community-grid">{filtered.map((item, index) => <article key={item.id} style={{ "--accent": item.color } as React.CSSProperties}>
-      <button className="community-card-link" aria-label={`Open ${item.name}`} onClick={() => setSelectedName(item.name)} />
-      <div className="community-art">{item.bannerUrl ? <Image src={item.bannerUrl} alt={`${item.name} banner`} fill sizes="370px" unoptimized /> : <><span>{item.emoji}</span><i>{index % 2 ? "✦ ✦" : "〰 〰"}</i></>}</div><Avatar text={item.emoji} image={item.iconUrl} color={item.color} size={54} />
-      <h2>{item.name}</h2><p>{item.description}</p>
-      <div><span><Users size={16} /> {item.members}</span><button className={item.joined ? "joined" : ""} onClick={() => void onMembership(item)}>{item.joined ? <><Check size={16} /> Joined</> : "Join"}</button></div>
-    </article>)}</div>
+    <div className="community-grid">{filtered.map((item, index) => <CommunityCard key={item.id} item={item} index={index} communities={items} onOpen={setSelectedId} onMembership={onMembership} />)}</div>
     {creating && <CreateCommunityModal existingNames={items.map(item => item.name)} close={() => setCreating(false)} onCreate={(community) => { setItems(current => [community, ...current]); setCreating(false); setQuery(""); notify(`${community.name} is live — you’re the first member!`); }} />}
   </div>;
 }
 
-function CommunityDetail({ community, posts, setPosts, vote, votePending, goBack, toggleMembership, notify, openComments, openComposer, onUpdated }: { community: Community; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; goBack: () => void; toggleMembership: () => void; notify: (message: string) => void; openComments: (id: number) => void; openComposer: () => void; onUpdated: (community: Community) => void }) {
+function CommunityDetail({ user, community, communities, posts, setPosts, vote, votePending, goBack, onOpenCommunity, onMembership, toggleMembership, notify, openComments, openComposer, onUpdated, onCommunityCreated }: { user: SessionUser; community: Community; communities: Community[]; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; goBack: () => void; onOpenCommunity: (id: string) => void; onMembership: (community: Community) => Promise<void>; toggleMembership: () => void; notify: (message: string) => void; openComments: (id: number) => void; openComposer: () => void; onUpdated: (community: Community) => void; onCommunityCreated: (community: Community) => void }) {
   const [sort, setSort] = useState("Hot");
+  const [activeTab, setActiveTab] = useState<"feed" | "children">("feed");
   const [brandingOpen, setBrandingOpen] = useState(false);
+  const [moderationOpen, setModerationOpen] = useState(false);
+  const [creatingChild, setCreatingChild] = useState(false);
   const communityPosts = posts.filter(post => post.communityId === community.id);
+  const parent = community.parentId ? communities.find((item) => item.id === community.parentId) : undefined;
+  const children = communities.filter((item) => item.parentId === community.id);
+  const canCreateChildren = !community.parentId && community.role === "COMMUNITY_ADMIN";
+  const canModerate = community.role === "COMMUNITY_ADMIN" || community.role === "COMMUNITY_MODERATOR" || user.appRole === "APP_MODERATOR" || user.appRole === "SUPER_ADMIN";
 
   function save(id: number) {
     setPosts(current => current.map(post => post.id === id ? { ...post, saved: !post.saved } : post));
@@ -644,14 +729,17 @@ function CommunityDetail({ community, posts, setPosts, vote, votePending, goBack
   }
 
   return <div className="content-page community-detail-page">
-    <button className="back-button" onClick={goBack}><ArrowRight size={17} /> Back to communities</button>
+    <button className="back-button" onClick={() => parent ? onOpenCommunity(parent.id) : goBack()}><ArrowRight size={17} /> {parent ? `Back to ${parent.name}` : "Back to communities"}</button>
     <section className="community-detail-hero" style={{ "--community-color": community.color } as React.CSSProperties}>
       <div className={`community-detail-pattern ${community.bannerUrl ? "has-image" : ""}`}>{community.bannerUrl ? <Image src={community.bannerUrl} alt={`${community.name} banner`} fill sizes="1120px" unoptimized /> : <>〰 &nbsp; ✦ &nbsp; 〰 &nbsp; ✦</>}</div>
-      <div className="community-detail-identity"><Avatar text={community.emoji} image={community.iconUrl} color={community.color} size={84} /><div><span className="eyebrow lime">{community.privacy || "public"} community</span><h1>{community.name}</h1><p>{community.description}</p></div><div className="community-detail-actions">{community.role === "ADMIN" && <button className="branding-button" onClick={() => setBrandingOpen(true)}><Settings size={17} /> Branding</button>}<button className={community.joined ? "joined" : ""} onClick={toggleMembership}>{community.joined ? <><Check size={17} /> Joined</> : <><Plus size={17} /> Join community</>}</button><button onClick={openComposer}><Plus size={17} /> Create post</button></div></div>
+      <div className="community-detail-identity"><Avatar text={community.emoji} image={community.iconUrl} color={community.color} size={84} /><div>{parent && <div className="community-breadcrumb"><button type="button" onClick={() => onOpenCommunity(parent.id)}>{parent.name}</button><span>›</span><b>{community.name}</b></div>}<div className="community-header-badges"><span>{communityTypeLabel(community.type)}</span><span>{community.parentId ? "Sub-community" : "Top-level community"}</span><span>{community.privacy || "public"}</span></div><h1>{community.name}</h1><p>{community.description}</p></div><div className="community-detail-actions">{community.role === "COMMUNITY_ADMIN" && <button className="branding-button" onClick={() => setBrandingOpen(true)}><Settings size={17} /> Branding</button>}{canCreateChildren && <button className="branding-button" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}{canModerate && <button className="branding-button" onClick={() => setModerationOpen((current) => !current)}><ShieldCheck size={17} /> {moderationOpen ? "Close moderation" : "Moderation"}</button>}{community.membershipSource === "PARENT" ? <button type="button" className="joined inherited-admin" disabled><ShieldCheck size={16} /> Inherited admin</button> : <button className={community.joined ? "joined" : ""} onClick={toggleMembership}>{community.joined ? <><Check size={17} /> Joined</> : <><Plus size={17} /> Join community</>}</button>}<button onClick={openComposer}><Plus size={17} /> Create post</button></div></div>
     </section>
+    {moderationOpen && <CommunityModerationPanel community={community} posts={communityPosts} onPostDeleted={(id) => setPosts((current) => current.filter((post) => post.id !== id))} onCommentDeleted={(postId, commentId) => setPosts((current) => current.map((post) => post.id === postId ? { ...post, commentItems: (post.commentItems || []).filter((comment) => comment.id !== commentId), comments: Math.max(0, post.comments - 1) } : post))} notify={notify} />}
     <div className="community-stats"><span><b>{community.members}</b><small>Members</small></span><span><b>{communityPosts.length}</b><small>Posts</small></span><span><b>{communityPosts.reduce((total, post) => total + post.votes, 0).toLocaleString()}</b><small>Community karma</small></span></div>
-    <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div>
+    {!community.parentId && <nav className="community-detail-tabs" role="tablist" aria-label={`${community.name} sections`}><button role="tab" aria-selected={activeTab === "feed"} className={activeTab === "feed" ? "active" : ""} onClick={() => setActiveTab("feed")}>Feed</button><button role="tab" aria-selected={activeTab === "children"} className={activeTab === "children" ? "active" : ""} onClick={() => setActiveTab("children")}>Sub-Communities <b>{children.length}</b></button></nav>}
+    {activeTab === "feed" || community.parentId ? <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div> : <section className="subcommunity-section"><header><div><span className="eyebrow violet">SUB-COMMUNITIES</span><h2>Spaces inside {community.name}</h2><p>Focused communities managed under this parent.</p></div>{canCreateChildren && <button className="primary-action" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</header>{children.length ? <div className="community-grid">{children.map((child, index) => <CommunityCard key={child.id} item={child} index={index} communities={communities} onOpen={onOpenCommunity} onMembership={onMembership} />)}</div> : <div className="community-empty"><span>🪆</span><h3>No sub-communities yet.</h3><p>Create a focused space inside {community.name}.</p>{canCreateChildren && <button onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</div>}</section>}
     {brandingOpen && <CommunityBrandingModal community={community} close={() => setBrandingOpen(false)} onUpdated={onUpdated} notify={notify} />}
+    {creatingChild && <CreateCommunityModal parent={community} existingNames={communities.map((item) => item.name)} close={() => setCreatingChild(false)} onCreate={(created) => { onCommunityCreated(created); setCreatingChild(false); setActiveTab("children"); notify(`${created.name} is now part of ${community.name}`); }} />}
   </div>;
 }
 
@@ -729,21 +817,25 @@ function CommunityBrandingModal({ community, close, onUpdated, notify }: { commu
 function EventsView({ events, communities, defaultCampus, onEvent, onCreated, notify }: { events: CampusEvent[]; communities: Community[]; defaultCampus: string; onEvent: (e: CampusEvent) => void; onCreated: (event: CampusEvent) => void; notify: (message: string) => void }) {
   const [filter, setFilter] = useState("All");
   const [creating, setCreating] = useState(false);
-  const filtered = filter === "All" ? events : events.filter(event => event.category === filter);
+  const liveEvents = events.filter((event) => event.status === "APPROVED");
+  const submissions = events.filter((event) => event.isCreator && event.status !== "APPROVED");
+  const filtered = filter === "All" ? liveEvents : liveEvents.filter(event => event.category === filter);
   return <div className="content-page">
     <section className="page-hero events-hero"><div><span className="eyebrow pink">GET OUT THERE</span><h1>Plans worth leaving your room for.</h1><p>From tiny workshops to very loud nights.</p></div><div className="ticket-doodle"><span>ADMIT<br />ONE</span><b>SC-0826</b></div></section>
     <div className="events-toolbar"><div className="category-chips">{["All", "Music", "Tech", "Culture", "Sports"].map(x => <button className={filter === x ? "active" : ""} onClick={() => setFilter(x)} key={x}>{x}</button>)}</div><div className="toolbar-actions"><button className="outline-button"><CalendarDays size={18} /> This month <ChevronDown size={15} /></button><button className="primary-action" onClick={() => setCreating(true)}><Plus size={18} /> Create event</button></div></div>
+    {submissions.length > 0 && <section className="event-submissions"><header><div><span className="eyebrow violet">MY SUBMISSIONS</span><h2>Waiting on community review</h2></div><b>{submissions.length}</b></header><div>{submissions.map((event) => <button key={event.id} onClick={() => onEvent(event)}><span><b>{event.title}</b><small>{event.community} · {eventWhen(event)}</small></span><em className={event.status.toLowerCase()}>{event.status}</em><ArrowRight size={16} /></button>)}</div></section>}
     <div className="event-grid">{filtered.map(event => <article key={event.id} onClick={() => onEvent(event)} tabIndex={0} onKeyDown={e => e.key === "Enter" && onEvent(event)}><div className={`event-image ${event.coverFit === "fit" ? "cover-fit" : ""}`}><Image src={event.imageUrl} alt="" fill sizes="(max-width: 700px) 100vw, 420px" unoptimized={event.imageUrl.startsWith("/api/")} style={coverImageStyle(event)} /><span>{event.isCreator ? "YOUR EVENT" : event.isEventAdmin ? "ADMIN" : event.category}</span><div><b>{event.day}</b><small>{event.month}</small></div></div><div className="event-copy"><h2>{event.title}</h2><p><Clock3 size={16} /> {eventWhen(event)}</p><p><MapPin size={16} /> {event.location}</p><div><span className="face-stack"><i>KA</i><i>ZO</i><i>MI</i></span><small>{event.going} going{event.waitlisted ? ` · ${event.waitlisted} waitlisted` : ""}</small><button>View event <ArrowRight size={16} /></button></div></div></article>)}</div>
     {!filtered.length && <div className="events-empty"><CalendarDays size={31} /><h2>No events here yet</h2><p>Publish the first event in this category.</p></div>}
-    {creating && <CreateEventModal communities={communities} defaultCampus={defaultCampus} close={() => setCreating(false)} onCreate={(event) => { onCreated(event); setCreating(false); setFilter("All"); notify("Event published to the global campus feed"); }} />}
+    {creating && <CreateEventModal communities={communities} defaultCampus={defaultCampus} close={() => setCreating(false)} onCreate={(event) => { onCreated(event); setCreating(false); setFilter("All"); notify(event.status === "PENDING" ? "Event submitted for community review" : "Event published to the global campus feed"); }} />}
   </div>;
 }
 
-function CreateCommunityModal({ close, onCreate, existingNames }: { close: () => void; onCreate: (community: Community) => void; existingNames: string[] }) {
+function CreateCommunityModal({ close, onCreate, existingNames, parent }: { close: () => void; onCreate: (community: Community) => void; existingNames: string[]; parent?: Community }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [emoji, setEmoji] = useState("✨");
   const [color, setColor] = useState("#6C3BFF");
+  const [communityType, setCommunityType] = useState<CommunityType | "">("");
   const [privacy, setPrivacy] = useState<"public" | "restricted" | "private">("public");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -753,6 +845,7 @@ function CreateCommunityModal({ close, onCreate, existingNames }: { close: () =>
     event.preventDefault();
     if (slug.length < 3) return setError("Community names need at least 3 letters or numbers.");
     if (description.trim().length < 12) return setError("Add a short description so people know what this community is about.");
+    if (!communityType) return setError("Choose whether this is a college, individual, or company community.");
     if (existingNames.includes(`c/${slug}`)) return setError("That community name is already taken.");
     setBusy(true);
     setError("");
@@ -760,7 +853,7 @@ function CreateCommunityModal({ close, onCreate, existingNames }: { close: () =>
       const data = await requestJson<{ community: Community }>("/api/communities", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: slug, description: description.trim(), emoji: emoji.trim() || "✨", color, privacy }),
+        body: JSON.stringify({ name: slug, description: description.trim(), emoji: emoji.trim() || "✨", color, privacy, type: communityType, parentId: parent?.id || null }),
       });
       if (!data?.community) throw new Error("The server did not return the new community.");
       onCreate(data.community);
@@ -772,11 +865,13 @@ function CreateCommunityModal({ close, onCreate, existingNames }: { close: () =>
   }
 
   return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}>
-    <form className="creation-modal community-creation" onSubmit={submit} aria-label="Create a community">
-      <header><div><span className="eyebrow cyan">BUILD YOUR CORNER</span><h2>Create a community</h2><p>Start a space for the people, ideas, or oddly specific thing you care about.</p></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header>
-      <div className="community-preview" style={{ "--preview-color": color } as React.CSSProperties}><span>{emoji || "✨"}</span><div><small>YOUR NEW COMMUNITY</small><b>c/{slug || "community-name"}</b></div><i>✦</i></div>
+    <form className="creation-modal community-creation" onSubmit={submit} aria-label={parent ? `Create a sub-community in ${parent.name}` : "Create a community"}>
+      <header><div><span className="eyebrow cyan">{parent ? "BUILD INSIDE YOUR COMMUNITY" : "BUILD YOUR CORNER"}</span><h2>{parent ? "Create a Sub-Community" : "Create a community"}</h2><p>{parent ? `Start a focused space inside ${parent.name}.` : "Start a space for the people, ideas, or oddly specific thing you care about."}</p></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header>
+      {parent && <div className="fixed-parent"><span>Parent community</span><b>{parent.emoji} {parent.name}</b><small>This relationship is fixed after creation.</small></div>}
+      <div className="community-preview" style={{ "--preview-color": color } as React.CSSProperties}><span>{emoji || "✨"}</span><div><small>{parent ? `SUB-COMMUNITY OF ${parent.name}` : "YOUR NEW COMMUNITY"}</small><b>c/{slug || "community-name"}</b></div><i>✦</i></div>
       <label className="field"><span>Community name</span><div className="slug-input"><b>c/</b><input autoFocus value={name} onChange={event => { setName(event.target.value); setError(""); }} placeholder="design-nerds" maxLength={30} required /></div><small>Letters, numbers, and hyphens. This can&apos;t be changed later.</small></label>
       <label className="field"><span>Description</span><textarea value={description} onChange={event => { setDescription(event.target.value); setError(""); }} rows={3} maxLength={180} placeholder="What will people find here?" required /><small>{description.length}/180</small></label>
+      <fieldset className="community-type-options"><legend>Community type</legend>{([['COLLEGE', 'College', 'A campus, department, or student institution.'], ['INDIVIDUAL', 'Individual', 'A community organized independently by a person.'], ['COMPANY', 'Company', 'A business, studio, startup, or organization.']] as const).map(([value, title, copy]) => <button type="button" className={communityType === value ? "selected" : ""} aria-pressed={communityType === value} onClick={() => { setCommunityType(value); setError(""); }} key={value}><i>{communityType === value && <Check size={13} />}</i><span><b>{title}</b><small>{copy}</small></span></button>)}</fieldset>
       <div className="form-row"><label className="field emoji-field"><span>Icon</span><input value={emoji} onChange={event => setEmoji(event.target.value)} maxLength={3} aria-label="Community emoji" /></label><fieldset className="field color-field"><legend>Sticker color</legend><div>{["#6C3BFF", "#22D3EE", "#FF5C8A", "#C7FF32", "#FFB629"].map(item => <button type="button" aria-label={`Use ${item}`} aria-pressed={color === item} className={color === item ? "selected" : ""} style={{ background: item }} onClick={() => setColor(item)} key={item}>{color === item && <Check size={15} />}</button>)}</div></fieldset></div>
       <fieldset className="privacy-options"><legend>Who can join?</legend>{([
         ["public", "Public", "Anyone can view, post, and join."],
@@ -784,7 +879,7 @@ function CreateCommunityModal({ close, onCreate, existingNames }: { close: () =>
         ["private", "Private", "Only invited members can view and participate."],
       ] as const).map(([value, title, copy]) => <button type="button" className={privacy === value ? "selected" : ""} onClick={() => setPrivacy(value)} key={value}><i>{privacy === value && <Check size={13} />}</i><span><b>{title}</b><small>{copy}</small></span></button>)}</fieldset>
       {error && <p className="form-error" role="alert">{error}</p>}
-      <footer><button type="button" className="draft-button" onClick={close} disabled={busy}>Cancel</button><button className="post-button" type="submit" disabled={busy}>{busy ? <><LoaderCircle className="spin" size={17} /> Creating…</> : <>Create community <ArrowRight size={17} /></>}</button></footer>
+      <footer><button type="button" className="draft-button" onClick={close} disabled={busy}>Cancel</button><button className="post-button" type="submit" disabled={busy}>{busy ? <><LoaderCircle className="spin" size={17} /> Creating…</> : <>{parent ? "Create Sub-Community" : "Create community"} <ArrowRight size={17} /></>}</button></footer>
     </form>
   </div>;
 }
@@ -971,7 +1066,7 @@ function EventForm({ mode, communities, initial, close, onSubmit }: {
       <label className="field"><span>Venue</span><div className="icon-input"><MapPin size={17} /><input value={location} onChange={fieldEvent => { setLocation(fieldEvent.target.value); setError(""); }} placeholder="e.g. Main Auditorium" required /></div></label>
       <label className="field directions-field"><span>Google Maps directions link <em>Optional</em></span><div className="icon-input"><Link2 size={17} /><input type="url" inputMode="url" value={directionsUrl} onChange={fieldEvent => { setDirectionsUrl(fieldEvent.target.value); setError(""); }} placeholder="https://maps.app.goo.gl/..." maxLength={2048} /></div><small>In Google Maps, open the venue, tap Share, and paste the link here.</small></label>
       <CampusPicker value={campus} onChange={setCampus} label="Host campus" required allowCustom />
-      <label className="field"><span>Community</span><select value={community} onChange={fieldEvent => setCommunity(fieldEvent.target.value)}><option value="None">None</option>{communities.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      <label className="field"><span>Community</span><select value={community} onChange={fieldEvent => setCommunity(fieldEvent.target.value)}><option value="None">None</option>{communities.filter((item) => item.joined || item.id === community).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><small>Join a community before submitting an event to its review queue.</small></label>
       <RegistrationFormBuilder fields={customFormFields} onChange={setCustomFormFields} />
       <div className="disclosure"><ShieldCheck size={19} /><p>Attendees will see that their verified email and RSVP details are shared with you as the organizer.</p></div>
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -1025,8 +1120,8 @@ function RewardsView({ user, notify }: { user: SessionUser; notify: (s: string) 
   </div>;
 }
 
-function ChatView({ user, notify, onDiscover }: { user: SessionUser; notify: (s: string) => void; onDiscover: () => void }) {
-  const [mode, setMode] = useState<"chats" | "requests" | "certificates">("chats");
+function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { user: SessionUser; notify: (s: string) => void; onDiscover: () => void; initialRequests: boolean; onActivity: () => void }) {
+  const [mode, setMode] = useState<"chats" | "requests" | "certificates">(initialRequests ? "requests" : "chats");
   const [inbox, setInbox] = useState<DirectConversation[]>([]);
   const [chatRequests, setChatRequests] = useState<ChatRequestView[]>([]);
   const [followRequests, setFollowRequests] = useState<FollowRequestView[]>([]);
@@ -1077,6 +1172,7 @@ function ChatView({ user, notify, onDiscover }: { user: SessionUser; notify: (s:
       if (!data?.message) throw new Error("The server did not return your message.");
       setInbox((current) => current.map((conversation) => conversation.id === selected.id ? { ...conversation, messages: [...conversation.messages, data.message], updatedAt: data.message.createdAt } : conversation));
       setDraft("");
+      onActivity();
       window.setTimeout(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), 30);
     } catch (sendError) {
       notify(sendError instanceof Error ? sendError.message : "Could not send your message.");
@@ -1129,12 +1225,12 @@ function ProfileView({ user, dashboard, theme, toggleTheme, privacyPending, onPr
   const metric = (value?: number) => value === undefined ? "—" : value.toLocaleString();
   return <div className="content-page profile-page">
     <section className="profile-banner"><div className="profile-pattern">✦ &nbsp; 〰 &nbsp; ★ &nbsp; 〰 &nbsp; ✦</div><div className="profile-identity"><Avatar text={user.username} image={user.avatarUrl} color="#FF5C8A" size={92} /><div><span className="eyebrow lime">CAMPUS CONNECTOR</span><h1>{user.username} <ShieldCheck size={24} fill="#22D3EE" /></h1><p>{user.email} · {user.campus || `ID ${user.id.slice(0, 8)}`}</p></div><button onClick={onEdit}><Settings size={18} /> Edit profile</button></div></section>
-    <div className="profile-stats"><div><b>{metric(dashboard?.karma)}</b><small>Karma</small></div><div><b>{metric(dashboard?.postCount)}</b><small>Posts</small></div><div><b>{metric(dashboard?.followers)}</b><small>Followers</small></div><div><b>{metric(dashboard?.streak)}</b><small>Day streak</small></div></div>
+    <div className="profile-stats"><div><b>{metric(dashboard?.karma)}</b><small>Karma</small></div><div><b>{metric(dashboard?.postCount)}</b><small>Posts</small></div><div><b>{metric(dashboard?.followers)}</b><small>Followers</small></div><div><b>{metric(dashboard?.streak ?? user.streakCount)}</b><small>24-hour streak</small></div></div>
     <div className="profile-content"><section><span className="eyebrow violet">ABOUT ME</span><h2>{user.about || "Your campus story starts here. Add a few lines about yourself from Edit profile."}</h2><div className="profile-tags"><span>🎨 Design</span><span>📸 Photography</span><span>☕ Chai</span><span>🎧 Indie music</span></div><div className="profile-own-posts"><span className="eyebrow pink">YOUR POSTS</span>{dashboard?.posts.length ? dashboard.posts.slice(0, 3).map((post) => <article key={post.id}><div><b>{post.title}</b><small>{post.community} · {post.time}</small></div><span>{post.votes.toLocaleString()} karma</span></article>) : <p>You haven&apos;t posted anything yet.</p>}</div></section><aside><span className="eyebrow cyan">PREFERENCES</span><button onClick={onRewards}><Gift size={20} /><span><b>Rewards & Premium</b><small>{user.points} points · {Math.max(0, 60 - user.points)} to your next reward</small></span><ArrowRight size={18} /></button><button onClick={toggleTheme}>{theme === "light" ? <Moon size={20} /> : <Sun size={20} />}<span><b>{theme === "light" ? "Dark mode" : "Light mode"}</b><small>Change your campus vibe</small></span><i /></button><button onClick={onEdit}><KeyRound size={20} /><span><b>Password & email</b><small>{user.hasPassword ? "Password login enabled" : "Add an alternative login method"}</small></span><ArrowRight size={18} /></button><button className="privacy-row" role="switch" aria-checked={user.isPrivate} disabled={privacyPending} onClick={() => onPrivacyChange(!user.isPrivate)}>{user.isPrivate ? <LockKeyhole size={20} /> : <Globe2 size={20} />}<span><b>Private profile</b><small>{user.isPrivate ? "Follow requests require your approval" : "Anyone can follow you instantly"}</small></span><i className={user.isPrivate ? "on" : ""} /></button><button className="logout-row" onClick={onLogout}><LogOut size={20} /><span><b>Log out</b><small>End this session on every layer</small></span><ArrowRight size={18} /></button></aside></div>
   </div>;
 }
 
-function SearchPanel({ close, notify }: { close: () => void; notify: (message: string) => void }) {
+function SearchPanel({ close, notify, onActivity }: { close: () => void; notify: (message: string) => void; onActivity: () => void }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<UserSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1181,7 +1277,7 @@ function SearchPanel({ close, notify }: { close: () => void; notify: (message: s
     return "Chat request";
   }
 
-  return <><div className="overlay search-overlay" onMouseDown={(event) => event.target === event.currentTarget && close()}><section className="search-panel people-search-panel" role="dialog" aria-modal="true" aria-label="Find people"><label><Search size={22} /><input autoFocus value={query} onChange={(event) => { const value = event.target.value; setQuery(value); if (!value.trim()) { setResults([]); setLoading(false); } }} maxLength={50} placeholder="Search people by username" /><kbd>ESC</kbd></label>{query.trim() ? <div className="search-results people-results"><span className="eyebrow violet">PEOPLE</span>{results.map((user) => <article className="user-search-result" key={user.id}><Avatar text={user.username} image={user.avatarUrl} color={user.isPrivate ? "#FF5C8A" : "#6C3BFF"} size={48} /><div className="user-result-copy"><header><a href={`/members/${user.id}`}><b>{user.username}</b></a><span>{user.isPrivate ? <><LockKeyhole size={12} /> Private</> : <><Globe2 size={12} /> Public</>}</span></header><p>{user.about || "New to Smart Campus."}</p></div><div className="user-result-actions"><button disabled={actionId === user.id || user.followStatus !== "none"} onClick={() => void follow(user)}>{user.followStatus === "accepted" ? <UserCheck size={15} /> : <UserPlus size={15} />}{user.followStatus === "none" ? "Follow" : user.followStatus === "pending" ? "Requested" : user.followStatus === "accepted" ? "Following" : "Declined"}</button><button disabled={user.chatStatus !== "none"} onClick={() => setChatTarget(user)}><MessageCircle size={15} />{chatLabel(user.chatStatus)}</button></div></article>)}{loading && <div className="search-status"><LoaderCircle className="spin" size={20} /> Searching campus…</div>}{!loading && !results.length && <div className="search-status"><Users size={25} /><b>No matching users</b><small>Try the beginning of their username.</small></div>}</div> : <div className="search-empty people-search-empty"><Users size={30} /><b>Find your people</b><span>Search by username to follow someone or send one chat request.</span></div>}<button className="close-search" onClick={close}><X size={20} /></button></section></div>{chatTarget && <ChatRequestModal target={chatTarget} close={() => setChatTarget(null)} sent={() => { setResults((current) => current.map((item) => item.id === chatTarget.id ? { ...item, chatStatus: "pending_sent" } : item)); setChatTarget(null); notify(`Chat request sent to ${chatTarget.username}`); }} />}</>;
+  return <><div className="overlay search-overlay" onMouseDown={(event) => event.target === event.currentTarget && close()}><section className="search-panel people-search-panel" role="dialog" aria-modal="true" aria-label="Find people"><label><Search size={22} /><input autoFocus value={query} onChange={(event) => { const value = event.target.value; setQuery(value); if (!value.trim()) { setResults([]); setLoading(false); } }} maxLength={50} placeholder="Search people by username" /><kbd>ESC</kbd></label>{query.trim() ? <div className="search-results people-results"><span className="eyebrow violet">PEOPLE</span>{results.map((user) => <article className="user-search-result" key={user.id}><Avatar text={user.username} image={user.avatarUrl} color={user.isPrivate ? "#FF5C8A" : "#6C3BFF"} size={48} /><div className="user-result-copy"><header><a href={`/members/${user.id}`}><b>{user.username}</b></a><span>{user.isPrivate ? <><LockKeyhole size={12} /> Private</> : <><Globe2 size={12} /> Public</>}</span></header><p>{user.about || "New to Smart Campus."}</p></div><div className="user-result-actions"><button disabled={actionId === user.id || user.followStatus !== "none"} onClick={() => void follow(user)}>{user.followStatus === "accepted" ? <UserCheck size={15} /> : <UserPlus size={15} />}{user.followStatus === "none" ? "Follow" : user.followStatus === "pending" ? "Requested" : user.followStatus === "accepted" ? "Following" : "Declined"}</button><button disabled={user.chatStatus !== "none"} onClick={() => setChatTarget(user)}><MessageCircle size={15} />{chatLabel(user.chatStatus)}</button></div></article>)}{loading && <div className="search-status"><LoaderCircle className="spin" size={20} /> Searching campus…</div>}{!loading && !results.length && <div className="search-status"><Users size={25} /><b>No matching users</b><small>Try the beginning of their username.</small></div>}</div> : <div className="search-empty people-search-empty"><Users size={30} /><b>Find your people</b><span>Search by username to follow someone or send one chat request.</span></div>}<button className="close-search" onClick={close}><X size={20} /></button></section></div>{chatTarget && <ChatRequestModal target={chatTarget} close={() => setChatTarget(null)} sent={() => { setResults((current) => current.map((item) => item.id === chatTarget.id ? { ...item, chatStatus: "pending_sent" } : item)); setChatTarget(null); onActivity(); notify(`Chat request sent to ${chatTarget.username}`); }} />}</>;
 }
 
 function ChatRequestModal({ target, close, sent }: { target: UserSearchResult; close: () => void; sent: () => void }) {
@@ -1207,10 +1303,10 @@ function ChatRequestModal({ target, close, sent }: { target: UserSearchResult; c
   return <div className="overlay chat-request-overlay" onMouseDown={(event) => event.target === event.currentTarget && close()}><form className="chat-request-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="chat-request-title"><header><Avatar text={target.username} image={target.avatarUrl} color="#6C3BFF" size={48} /><div><span className="eyebrow cyan">ONE MESSAGE</span><h2 id="chat-request-title">Message {target.username}</h2></div><IconButton label="Close" onClick={close}><X size={19} /></IconButton></header><p>Introduce yourself with one message. You cannot send another unless {target.username} accepts.</p><label><span>Initial message</span><textarea autoFocus required rows={5} maxLength={1000} value={message} onChange={(event) => { setMessage(event.target.value); setError(""); }} placeholder="Hey! I saw we’re both into…" /><small>{message.length} / 1000</small></label>{error && <p className="form-error" role="alert">{error}</p>}<footer><button type="button" onClick={close}>Cancel</button><button disabled={busy || !message.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />} Send request</button></footer></form></div>;
 }
 
-function Notifications({ close }: { close: () => void }) {
-  const [read, setRead] = useState<number[]>([]);
-  const items = [["AA", "Aarav replied to your comment", "“Gate 3 momos and it’s not even close.”", "2m"], ["DC", "Design Club Core", "Mira sent a new message", "8m"], ["🎤", "Open Mic Night is tomorrow", "Doors open at 6:00 PM", "1h"], ["🎁", "You earned 10 points!", "riya.reads joined from your invite", "1d"]];
-  return <><button className="drawer-scrim" onClick={close} aria-label="Close notifications" /><aside className="notification-drawer"><header><div><span className="eyebrow pink">WHAT&apos;S NEW</span><h2>Notifications</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><div className="notification-actions"><button onClick={() => setRead(items.map((_, i) => i))}><Check size={15} /> Mark all read</button><button>Settings</button></div>{items.map((item, index) => <button className={read.includes(index) ? "read" : ""} key={item[1]} onClick={() => setRead(r => [...r, index])}><Avatar text={item[0]} color={index % 2 ? "#22D3EE" : "#6C3BFF"} /><span><b>{item[1]}</b><small>{item[2]}</small><em>{item[3]}</em></span>{!read.includes(index) && <i />}</button>)}</aside></>;
+function Notifications({ close, items, loading, onRead, onReadAll }: { close: () => void; items: UserNotification[]; loading: boolean; onRead: (notification: UserNotification) => Promise<void>; onReadAll: () => Promise<void> }) {
+  const unreadCount = items.filter((item) => !item.isRead).length;
+  const marker: Record<UserNotification["type"], string> = { EVENT: "EV", COMMUNITY: "CO", POST: "PO", MESSAGE: "MS", FOLLOW_REQUEST: "FR" };
+  return <><button className="drawer-scrim" onClick={close} aria-label="Close notifications" /><aside className="notification-drawer" aria-label="Notifications"><header><div><span className="eyebrow pink">WHAT&apos;S NEW</span><h2>Notifications</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><div className="notification-actions"><button disabled={!unreadCount} onClick={() => void onReadAll()}><Check size={15} /> Mark all read</button><span>{unreadCount} unread</span></div>{loading && !items.length ? <div className="notification-state"><LoaderCircle className="spin" size={22} /> Loading notifications…</div> : items.length ? items.map((item, index) => <button className={item.isRead ? "read" : ""} key={item.id} onClick={() => void onRead(item)}><Avatar text={marker[item.type]} color={index % 2 ? "#22D3EE" : "#6C3BFF"} /><span><b>{item.content}</b><small>{item.type.replace("_", " ").toLowerCase()}</small><em>{relativeTime(item.createdAt)}</em></span>{!item.isRead && <i />}</button>) : <div className="notification-state"><Bell size={26} /><b>You&apos;re all caught up</b><small>New community activity will appear here.</small></div>}</aside></>;
 }
 
 function Composer({ author, close, onCreate, communities, initialCommunity }: { author: string; close: () => void; onCreate: (post: Post) => void; communities: Community[]; initialCommunity: string }) {

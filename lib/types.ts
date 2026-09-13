@@ -1,4 +1,11 @@
-export type View = "home" | "explore" | "events" | "rewards" | "chat" | "profile" | "certificates";
+export type AppRole = "USER" | "APP_MODERATOR" | "SUPER_ADMIN";
+export type CommunityRole = "MEMBER" | "COMMUNITY_MODERATOR" | "COMMUNITY_ADMIN";
+export type CommunityType = "COLLEGE" | "INDIVIDUAL" | "COMPANY";
+export type CommunityMembershipSource = "DIRECT" | "PARENT";
+export type EventStatus = "PENDING" | "APPROVED" | "REJECTED";
+export type NotificationType = "EVENT" | "COMMUNITY" | "POST" | "MESSAGE" | "FOLLOW_REQUEST";
+
+export type View = "home" | "explore" | "events" | "rewards" | "chat" | "profile" | "certificates" | "admin";
 
 export type SessionUser = {
   id: string;
@@ -10,8 +17,21 @@ export type SessionUser = {
   isPrivate: boolean;
   hasPassword: boolean;
   points: number;
+  streakCount: number;
   referralCode: string;
   profileSetupComplete: boolean;
+  createdAt: number;
+  appRole: AppRole;
+};
+
+export type UserNotification = {
+  id: string;
+  recipientId: string;
+  senderId: string | null;
+  type: NotificationType;
+  content: string;
+  link: string;
+  isRead: boolean;
   createdAt: number;
 };
 
@@ -160,6 +180,9 @@ export type CampusEvent = {
   canManageEvent: boolean;
   createdAt: number;
   updatedAt: number;
+  status: EventStatus;
+  reviewedBy?: string;
+  reviewedAt?: number;
   month: string;
   day: string;
   time: string;
@@ -195,6 +218,8 @@ export type Community = {
   id: string;
   creatorId: string;
   name: string;
+  type: CommunityType;
+  parentId: string | null;
   members: string;
   color: string;
   emoji: string;
@@ -202,8 +227,9 @@ export type Community = {
   bannerUrl: string;
   description: string;
   joined: boolean;
+  membershipSource: CommunityMembershipSource | null;
   privacy?: "public" | "restricted" | "private";
-  role?: "ADMIN" | "MEMBER";
+  role?: CommunityRole;
   createdAt: number;
   updatedAt: number;
 };

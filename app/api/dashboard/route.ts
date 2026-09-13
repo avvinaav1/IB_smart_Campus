@@ -10,5 +10,5 @@ export async function GET(request: NextRequest) {
   const user = await getSession(request.cookies.get(SESSION_COOKIE)?.value);
   if (!user) return noStoreJson({ error: "Your session has expired." }, { status: 401 });
   const [dashboard, followers] = await Promise.all([getUserDashboard(user.id), countFollowers(user.id)]);
-  return noStoreJson({ data: { dashboard: { ...dashboard, followers } } });
+  return noStoreJson({ data: { dashboard: { ...dashboard, followers, streak: user.streakCount } } });
 }

@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { communities as initialCommunities } from "@/lib/data";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
-import type { Community } from "@/lib/types";
+import { communityHierarchyDeletionOrder, effectiveCommunityMemberCount, effectiveCommunityMemberRecords, isCommunityType, normalizeCommunityType, parentCommunityAdminMemberships, resolveCommunityHierarchyAccess, validateCommunityParent } from "@/lib/community-hierarchy";
+import type { Community, CommunityRole, CommunityType } from "@/lib/types";
+import { normalizeCommunityRole } from "@/lib/moderation-policy";
 
-export type CommunityRole = "ADMIN" | "MEMBER";
+export type { CommunityRole } from "@/lib/types";
 export type CommunityPrivacy = "public" | "restricted" | "private";
 
 type StoredCommunity = {
   id: string;
   name: string;
+  type: CommunityType;
+  parentId: string | null;
   description: string;
   creatorId: string;
   color: string;
@@ -30,7 +34,7 @@ type CommunityMember = {
 };
 
 type CommunityDatabase = {
-  version: 2;
+  version: 4;
   communities: Record<string, StoredCommunity>;
   members: Record<string, CommunityMember>;
   memberIndex: Record<string, string>;
@@ -39,6 +43,8 @@ type CommunityDatabase = {
 
 export type NewCommunityInput = {
   name: string;
+  type: CommunityType;
+  parentId: string | null;
   description: string;
   color: string;
   emoji: string;
@@ -73,6 +79,8 @@ function seededDatabase(): CommunityDatabase {
   const communities = Object.fromEntries(initialCommunities.map((community) => [community.id, {
     id: community.id,
     name: community.name,
+    type: community.type,
+    parentId: community.parentId,
     description: community.description,
     creatorId: community.creatorId,
     color: community.color,
@@ -85,7 +93,7 @@ function seededDatabase(): CommunityDatabase {
     updatedAt: community.updatedAt,
   }]));
   return {
-    version: 2,
+    version: 4,
     communities,
     members: {},
     memberIndex: {},
@@ -97,23 +105,45 @@ function hydrate(parsed: Partial<CommunityDatabase> | null): CommunityDatabase {
   if (!parsed || !parsed.communities) return seededDatabase();
   const communities = Object.fromEntries(Object.entries(parsed.communities || {}).map(([id, community]) => [id, {
     ...community,
+    type: normalizeCommunityType(community.type),
+    parentId: typeof community.parentId === "string" && community.parentId ? community.parentId : null,
     iconUrl: typeof community.iconUrl === "string" ? community.iconUrl : "",
     bannerUrl: typeof community.bannerUrl === "string" ? community.bannerUrl : "",
   }])) as Record<string, StoredCommunity>;
   const database: CommunityDatabase = {
-    version: 2,
+    version: 4,
     communities,
     members: parsed.members || {},
     memberIndex: parsed.memberIndex || {},
     nameIndex: parsed.nameIndex || {},
   };
-  for (const member of Object.values(database.members)) database.memberIndex[membershipKey(member.communityId, member.userId)] = member.id;
+  for (const community of Object.values(database.communities)) {
+    if (!community.parentId) continue;
+    const parent = database.communities[community.parentId];
+    if (!parent || parent.id === community.id || parent.parentId) community.parentId = null;
+  }
+  for (const member of Object.values(database.members)) {
+    member.role = normalizeCommunityRole(member.role);
+    database.memberIndex[membershipKey(member.communityId, member.userId)] = member.id;
+  }
   for (const community of Object.values(database.communities)) database.nameIndex[community.name.toLowerCase()] = community.id;
+  for (const community of Object.values(database.communities)) {
+    if (community.creatorId === "system") continue;
+    const key = membershipKey(community.id, community.creatorId);
+    const existingId = database.memberIndex[key];
+    if (existingId && database.members[existingId]) database.members[existingId].role = "COMMUNITY_ADMIN";
+    else {
+      const member: CommunityMember = { id: randomUUID(), communityId: community.id, userId: community.creatorId, role: "COMMUNITY_ADMIN", createdAt: community.createdAt };
+      database.members[member.id] = member;
+      database.memberIndex[key] = member.id;
+      community.memberCount = Math.max(1, community.memberCount);
+    }
+  }
   return database;
 }
 
-async function loadDatabase() {
-  return hydrate(await readDocument<Partial<CommunityDatabase>>(STORE_DOC));
+async function loadDatabase(options?: { fresh?: boolean }) {
+  return hydrate(await readDocument<Partial<CommunityDatabase>>(STORE_DOC, options));
 }
 
 function mutate<T>(action: (database: CommunityDatabase) => T | Promise<T>): Promise<T> {
@@ -131,13 +161,13 @@ function mutate<T>(action: (database: CommunityDatabase) => T | Promise<T>): Pro
 }
 
 function publicCommunity(database: CommunityDatabase, community: StoredCommunity, viewerId: string): Community {
-  const membershipId = database.memberIndex[membershipKey(community.id, viewerId)];
-  const membership = membershipId ? database.members[membershipId] : undefined;
+  const access = resolveCommunityHierarchyAccess(database, community, viewerId);
   return {
     ...community,
-    members: formatMemberCount(community.memberCount),
-    joined: Boolean(membership),
-    role: membership?.role,
+    members: formatMemberCount(effectiveCommunityMemberCount(database, community)),
+    joined: access.joined,
+    role: access.role,
+    membershipSource: access.membershipSource,
   };
 }
 
@@ -148,6 +178,8 @@ export function validateCommunityInput(input: NewCommunityInput) {
   if (!/^#[0-9a-f]{6}$/i.test(input.color)) return "Choose a valid community color.";
   if (!input.emoji.trim() || input.emoji.trim().length > 8) return "Choose a short community icon.";
   if (!["public", "restricted", "private"].includes(input.privacy)) return "Choose a valid community visibility.";
+  if (!isCommunityType(input.type)) return "Choose a valid community type.";
+  if (input.parentId !== null && !input.parentId.trim()) return "Choose a valid parent community.";
   return "";
 }
 
@@ -162,11 +194,13 @@ export async function listCommunities(viewerId: string) {
 export async function createCommunity(creatorId: string, input: NewCommunityInput) {
   return mutate((database) => {
     const name = normalizeName(input.name);
-    if (database.nameIndex[name.toLowerCase()]) return { error: "That community name is already taken." } as const;
+    if (database.nameIndex[name.toLowerCase()]) return { error: "That community name is already taken.", status: 409 } as const;
+    const parentError = validateCommunityParent(database, input.parentId, creatorId);
+    if (parentError) return parentError;
     const now = Date.now();
     const id = randomUUID();
-    const community: StoredCommunity = { id, name, description: input.description.trim(), creatorId, color: input.color.toUpperCase(), emoji: input.emoji.trim(), iconUrl: "", bannerUrl: "", privacy: input.privacy, memberCount: 1, createdAt: now, updatedAt: now };
-    const membership: CommunityMember = { id: randomUUID(), communityId: id, userId: creatorId, role: "ADMIN", createdAt: now };
+    const community: StoredCommunity = { id, name, type: input.type, parentId: input.parentId, description: input.description.trim(), creatorId, color: input.color.toUpperCase(), emoji: input.emoji.trim(), iconUrl: "", bannerUrl: "", privacy: input.privacy, memberCount: 1, createdAt: now, updatedAt: now };
+    const membership: CommunityMember = { id: randomUUID(), communityId: id, userId: creatorId, role: "COMMUNITY_ADMIN", createdAt: now };
     database.communities[id] = community;
     database.nameIndex[name.toLowerCase()] = id;
     database.members[membership.id] = membership;
@@ -179,31 +213,34 @@ export async function setCommunityMembership(communityId: string, userId: string
   return mutate((database) => {
     const community = database.communities[communityId];
     if (!community) return { error: "Community not found.", status: 404 } as const;
+    const access = resolveCommunityHierarchyAccess(database, community, userId);
+    if (!joined && access.role === "COMMUNITY_ADMIN") {
+      return { error: access.membershipSource === "PARENT" ? "Parent community admins cannot leave inherited sub-community membership." : "Community admins cannot leave their own community.", status: 400 } as const;
+    }
     const key = membershipKey(communityId, userId);
     const existingId = database.memberIndex[key];
     const existing = existingId ? database.members[existingId] : undefined;
-    if (joined && !existing) {
+    let changed = false;
+    if (joined && !access.joined) {
       const membership: CommunityMember = { id: randomUUID(), communityId, userId, role: "MEMBER", createdAt: Date.now() };
       database.members[membership.id] = membership;
       database.memberIndex[key] = membership.id;
       community.memberCount += 1;
       community.updatedAt = Date.now();
-    } else if (!joined && existing?.role === "ADMIN") {
-      return { error: "Community admins cannot leave their own community.", status: 400 } as const;
+      changed = true;
     } else if (!joined && existing) {
       delete database.members[existing.id];
       delete database.memberIndex[key];
       community.memberCount = Math.max(0, community.memberCount - 1);
       community.updatedAt = Date.now();
+      changed = true;
     }
-    return { community: publicCommunity(database, community, userId) } as const;
+    return { community: publicCommunity(database, community, userId), changed } as const;
   });
 }
 
 function canManage(database: CommunityDatabase, community: StoredCommunity, userId: string) {
-  if (community.creatorId === userId) return true;
-  const membershipId = database.memberIndex[membershipKey(community.id, userId)];
-  return Boolean(membershipId && database.members[membershipId]?.role === "ADMIN");
+  return resolveCommunityHierarchyAccess(database, community, userId).role === "COMMUNITY_ADMIN";
 }
 
 export async function canManageCommunityBranding(communityId: string, userId: string) {
@@ -233,8 +270,7 @@ export async function resolveCommunityForPost(communityId: string, userId: strin
   const database = await loadDatabase();
   const community = database.communities[communityId];
   if (!community) return { error: "Choose a community that still exists." } as const;
-  const membership = database.memberIndex[membershipKey(communityId, userId)];
-  if (community.privacy !== "public" && !membership) return { error: "Join this community before posting." } as const;
+  if (community.privacy !== "public" && !resolveCommunityHierarchyAccess(database, community, userId).joined) return { error: "Join this community before posting." } as const;
   return { community } as const;
 }
 
@@ -254,6 +290,8 @@ export async function ensureCommunityForLegacyPost(name: string, color: string, 
     const community: StoredCommunity = {
       id,
       name: normalizedName || `c/recovered-${id.slice(0, 8)}`,
+      type: "INDIVIDUAL",
+      parentId: null,
       description: "Recovered from an existing community post.",
       creatorId,
       color: /^#[0-9a-f]{6}$/i.test(color) ? color.toUpperCase() : "#6C3BFF",
@@ -268,7 +306,7 @@ export async function ensureCommunityForLegacyPost(name: string, color: string, 
     database.communities[id] = community;
     database.nameIndex[community.name.toLowerCase()] = id;
     if (creatorId !== "system") {
-      const membership: CommunityMember = { id: randomUUID(), communityId: id, userId: creatorId, role: "ADMIN", createdAt: now };
+      const membership: CommunityMember = { id: randomUUID(), communityId: id, userId: creatorId, role: "COMMUNITY_ADMIN", createdAt: now };
       database.members[membership.id] = membership;
       database.memberIndex[membershipKey(id, creatorId)] = membership.id;
     }
@@ -280,4 +318,110 @@ export async function visibleCommunityIds() {
   await writeQueue;
   const database = await loadDatabase();
   return new Set(Object.keys(database.communities));
+}
+
+export type CommunityMemberRecord = CommunityMember & {
+  inherited: boolean;
+  readOnly: boolean;
+  inheritedFromCommunityId: string | null;
+  inheritedFromCommunityName: string | null;
+};
+export type AdminCommunity = StoredCommunity & { members: number };
+
+export async function getCommunityAccess(communityId: string, userId: string) {
+  await writeQueue;
+  const database = await loadDatabase({ fresh: true });
+  const community = database.communities[communityId];
+  if (!community) return null;
+  const access = resolveCommunityHierarchyAccess(database, community, userId);
+  return { communityId, creatorId: community.creatorId, ...access };
+}
+
+export async function listCommunityMemberRecords(communityId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const community = database.communities[communityId];
+  if (!community) return null;
+  return effectiveCommunityMemberRecords(database, community) as CommunityMemberRecord[];
+}
+
+export async function listEffectiveCommunityMemberIds(communityId: string) {
+  const records = await listCommunityMemberRecords(communityId);
+  return records ? [...new Set(records.map((member) => member.userId))] : [];
+}
+
+export async function setCommunityMemberRole(communityId: string, actorId: string, userId: string, role: Extract<CommunityRole, "MEMBER" | "COMMUNITY_MODERATOR">) {
+  return mutate((database) => {
+    const community = database.communities[communityId];
+    if (!community) return { error: "Community not found.", status: 404 } as const;
+    if (!canManage(database, community, actorId)) return { error: "Only the community admin can manage moderator roles.", status: 403 } as const;
+    if (community.creatorId === userId) return { error: "The community creator must remain its admin.", status: 403 } as const;
+    if (parentCommunityAdminMemberships(database, community).some((member) => member.userId === userId)) {
+      return { error: "Inherited parent admins must be managed from the parent community.", status: 403 } as const;
+    }
+    const memberId = database.memberIndex[membershipKey(communityId, userId)];
+    const member = memberId ? database.members[memberId] : undefined;
+    if (!member) return { error: "That user is not a community member.", status: 404 } as const;
+    member.role = role;
+    community.updatedAt = Date.now();
+    return { member } as const;
+  });
+}
+
+export async function listAdminCommunities(query = "") {
+  await writeQueue;
+  const database = await loadDatabase();
+  const normalized = query.trim().toLowerCase();
+  return Object.values(database.communities)
+    .filter((community) => !normalized || community.name.toLowerCase().includes(normalized) || community.description.toLowerCase().includes(normalized))
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map((community) => ({ ...community, members: effectiveCommunityMemberCount(database, community) }));
+}
+
+export async function communityDeletionOrder(communityId: string) {
+  await writeQueue;
+  const database = await loadDatabase({ fresh: true });
+  if (!database.communities[communityId]) return [];
+  return communityHierarchyDeletionOrder(database.communities, communityId);
+}
+
+export async function getCommunitySummary(communityId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const community = database.communities[communityId];
+  return community ? { ...community } : null;
+}
+
+export async function communitiesCreatedBy(userId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  return Object.values(database.communities).filter((community) => community.creatorId === userId).map((community) => community.id);
+}
+
+export async function removeUserCommunityMemberships(userId: string) {
+  return mutate((database) => {
+    for (const member of Object.values(database.members)) {
+      if (member.userId !== userId) continue;
+      delete database.members[member.id];
+      delete database.memberIndex[membershipKey(member.communityId, userId)];
+      const community = database.communities[member.communityId];
+      if (community) community.memberCount = Math.max(0, community.memberCount - 1);
+    }
+    return { removed: true } as const;
+  });
+}
+
+export async function deleteCommunityRecord(communityId: string) {
+  return mutate((database) => {
+    const community = database.communities[communityId];
+    if (!community) return { deleted: false, imageUrls: [] as string[] } as const;
+    for (const member of Object.values(database.members)) {
+      if (member.communityId !== communityId) continue;
+      delete database.members[member.id];
+      delete database.memberIndex[membershipKey(communityId, member.userId)];
+    }
+    delete database.nameIndex[community.name.toLowerCase()];
+    delete database.communities[communityId];
+    return { deleted: true, imageUrls: [community.iconUrl, community.bannerUrl].filter(Boolean) } as const;
+  });
 }

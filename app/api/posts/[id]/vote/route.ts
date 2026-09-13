@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { getSession } from "@/lib/auth-store";
+import { getSession, incrementUserStreak } from "@/lib/auth-store";
 import { isSameOrigin, noStoreJson, readJson, SESSION_COOKIE } from "@/lib/auth-http";
 import { setPostVote } from "@/lib/post-store";
 
@@ -24,5 +24,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
 
   const result = await setPostVote(postId, user.id, vote);
   if ("error" in result) return noStoreJson({ error: result.error }, { status: 404 });
+  if (vote === 1 && result.previousVote !== 1) {
+    try { await incrementUserStreak(user.id, "POST_LIKE", String(postId)); }
+    catch (error) { console.error("Post-like streak update failed", error); }
+  }
   return noStoreJson({ data: result });
 }

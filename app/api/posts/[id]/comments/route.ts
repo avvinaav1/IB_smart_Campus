@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { getSession } from "@/lib/auth-store";
+import { getSession, incrementUserStreak } from "@/lib/auth-store";
 import { isSameOrigin, noStoreJson, readJson, SESSION_COOKIE } from "@/lib/auth-http";
 import { createComment, validateCommentBody } from "@/lib/post-store";
 
@@ -23,5 +23,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
 
   const result = await createComment(postId, user.id, user.username, body);
   if ("error" in result) return noStoreJson({ error: result.error }, { status: 404 });
+  try { await incrementUserStreak(user.id, "POST_COMMENT", result.comment.id); }
+  catch (error) { console.error("Comment streak update failed", error); }
   return noStoreJson({ data: result }, { status: 201 });
 }
