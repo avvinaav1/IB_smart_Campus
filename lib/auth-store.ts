@@ -2,15 +2,27 @@ import { createHmac, randomBytes, randomInt, randomUUID, scrypt as scryptCallbac
 import { promisify } from "node:util";
 import { isKnownIndianCampus } from "@/lib/campus-store";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
-import type { SessionUser } from "@/lib/types";
+import type { AppRole, SessionUser } from "@/lib/types";
+import { normalizeAppRole, SUPER_ADMIN_USERNAME } from "@/lib/moderation-policy";
+import { applyStreakActivity, visibleStreakCount, type StreakAction } from "@/lib/streak-policy";
 
 export type AuthIntent = "register" | "login";
-type StoredUser = Omit<SessionUser, "isPrivate" | "campus" | "profileSetupComplete"> & { isPrivate?: boolean; campus?: string; profileSetupComplete?: boolean; passwordHash?: string };
+type StoredUser = Omit<SessionUser, "isPrivate" | "campus" | "profileSetupComplete" | "appRole" | "streakCount"> & {
+  isPrivate?: boolean;
+  campus?: string;
+  profileSetupComplete?: boolean;
+  appRole?: AppRole;
+  passwordHash?: string;
+  streakCount: number;
+  streakLastActivityAt: number | null;
+  streakLastAwardAt: number | null;
+  streakActionKeys: Record<string, true>;
+};
 type OtpRecord = { digest: string; intent: AuthIntent; referralCode?: string; expiresAt: number; attempts: number };
 type EmailChangeRecord = { digest: string; userId: string; newEmail: string; expiresAt: number; attempts: number };
 type SessionRecord = { userId: string; expiresAt: number };
 type AuthState = {
-  version: 6;
+  version: 8;
   users: Record<string, StoredUser>;
   emailIndex: Record<string, string>;
   referralIndex: Record<string, string>;
@@ -37,8 +49,9 @@ const PASSWORD_RATE_LIMIT = 10;
 const MAX_VERIFY_ATTEMPTS = 5;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const STORE_DOC = process.env.AUTH_STORE_DOC || "auth";
+export { SUPER_ADMIN_USERNAME } from "@/lib/moderation-policy";
 const scrypt = promisify(scryptCallback);
-const emptyState = (): AuthState => ({ version: 6, users: {}, emailIndex: {}, referralIndex: {}, otps: {}, emailChanges: {}, sessions: {}, rateLimits: {} });
+const emptyState = (): AuthState => ({ version: 8, users: {}, emailIndex: {}, referralIndex: {}, otps: {}, emailChanges: {}, sessions: {}, rateLimits: {} });
 
 let mutationQueue: Promise<unknown> = Promise.resolve();
 
@@ -72,8 +85,12 @@ function createReferralCode(used: Set<string>) {
   return code;
 }
 
+export function effectiveAppRole(user: { username: string; appRole?: unknown }): AppRole {
+  return normalizeAppRole(user.username, user.appRole);
+}
+
 function normalizeState(value: LegacyState | null): AuthState {
-  if ((value?.version === 2 || value?.version === 3 || value?.version === 4 || value?.version === 5 || value?.version === 6) && value.emailIndex && value.emailChanges) {
+  if ((value?.version === 2 || value?.version === 3 || value?.version === 4 || value?.version === 5 || value?.version === 6 || value?.version === 7 || value?.version === 8) && value.emailIndex && value.emailChanges) {
     const usedCodes = new Set<string>();
     const users: Record<string, StoredUser> = {};
     const referralIndex: Record<string, string> = {};
@@ -82,11 +99,17 @@ function normalizeState(value: LegacyState | null): AuthState {
       const referralCode = /^SC-[A-Z0-9]{6,12}$/.test(candidate) && !usedCodes.has(candidate) ? candidate : createReferralCode(usedCodes);
       usedCodes.add(referralCode);
       const points = typeof stored.points === "number" && Number.isFinite(stored.points) ? Math.max(0, Math.floor(stored.points)) : 0;
-      users[id] = { ...stored, points, referralCode, campus: typeof stored.campus === "string" ? stored.campus.slice(0, 180) : "", isPrivate: Boolean(stored.isPrivate), profileSetupComplete: typeof stored.profileSetupComplete === "boolean" ? stored.profileSetupComplete : true } as StoredUser;
+      const streakCount = typeof stored.streakCount === "number" && Number.isFinite(stored.streakCount) ? Math.max(0, Math.floor(stored.streakCount)) : 0;
+      const streakLastActivityAt = typeof stored.streakLastActivityAt === "number" && Number.isFinite(stored.streakLastActivityAt) ? stored.streakLastActivityAt : null;
+      const streakLastAwardAt = typeof stored.streakLastAwardAt === "number" && Number.isFinite(stored.streakLastAwardAt) ? stored.streakLastAwardAt : null;
+      const streakActionKeys = stored.streakActionKeys && typeof stored.streakActionKeys === "object"
+        ? Object.fromEntries(Object.keys(stored.streakActionKeys).map((key) => [key, true as const]))
+        : {};
+      users[id] = { ...stored, points, streakCount, streakLastActivityAt, streakLastAwardAt, streakActionKeys, referralCode, campus: typeof stored.campus === "string" ? stored.campus.slice(0, 180) : "", isPrivate: Boolean(stored.isPrivate), profileSetupComplete: typeof stored.profileSetupComplete === "boolean" ? stored.profileSetupComplete : true, appRole: effectiveAppRole(stored as StoredUser) } as StoredUser;
       referralIndex[referralCode] = id;
     }
     return {
-      version: 6,
+      version: 8,
       users,
       emailIndex: value.emailIndex,
       referralIndex,
@@ -99,13 +122,13 @@ function normalizeState(value: LegacyState | null): AuthState {
 
   const state = emptyState();
   const emailToId = new Map<string, string>();
-  const usedNames = new Set<string>();
+  const usedNames = new Set<string>([SUPER_ADMIN_USERNAME]);
   const usedCodes = new Set<string>();
   for (const legacyUser of Object.values(value?.users || {})) {
     const email = normalizeEmail(legacyUser.email);
     const id = randomUUID();
     const referralCode = createReferralCode(usedCodes);
-    const user: StoredUser = { id, email, username: defaultUsername(email, usedNames), about: "", campus: "", avatarUrl: "", isPrivate: false, hasPassword: false, points: 0, referralCode, profileSetupComplete: true, createdAt: legacyUser.createdAt || Date.now() };
+    const user: StoredUser = { id, email, username: defaultUsername(email, usedNames), about: "", campus: "", avatarUrl: "", isPrivate: false, hasPassword: false, points: 0, streakCount: 0, streakLastActivityAt: null, streakLastAwardAt: null, streakActionKeys: {}, referralCode, profileSetupComplete: true, createdAt: legacyUser.createdAt || Date.now(), appRole: "USER" };
     state.users[id] = user;
     state.emailIndex[email] = id;
     state.referralIndex[referralCode] = id;
@@ -147,6 +170,7 @@ function mutate<T>(action: (state: AuthState) => T | Promise<T>): Promise<T> {
       const state = normalizeState(current);
       cleanup(state, Date.now());
       result = await action(state);
+      for (const user of Object.values(state.users)) user.appRole = effectiveAppRole(user);
       return state;
     });
     return result;
@@ -165,8 +189,17 @@ function consumeRateLimit(state: AuthState, scope: string, limit: number) {
   return 0;
 }
 
+export async function incrementUserStreak(userId: string, action: StreakAction, resourceId: string) {
+  return mutate((state) => {
+    const user = state.users[userId];
+    if (!user) return { error: "Account not found.", status: 404 } as const;
+    const actionKey = digest(`streak:${userId}:${action}:${resourceId}`);
+    return applyStreakActivity(user, actionKey);
+  });
+}
+
 function publicUser(user: StoredUser): SessionUser {
-  return { id: user.id, email: user.email, username: user.username, about: user.about, campus: user.campus || "", avatarUrl: user.avatarUrl, isPrivate: Boolean(user.isPrivate), hasPassword: Boolean(user.passwordHash), points: user.points, referralCode: user.referralCode, profileSetupComplete: user.profileSetupComplete !== false, createdAt: user.createdAt };
+  return { id: user.id, email: user.email, username: user.username, about: user.about, campus: user.campus || "", avatarUrl: user.avatarUrl, isPrivate: Boolean(user.isPrivate), hasPassword: Boolean(user.passwordHash), points: user.points, streakCount: visibleStreakCount(user), referralCode: user.referralCode, profileSetupComplete: user.profileSetupComplete !== false, createdAt: user.createdAt, appRole: effectiveAppRole(user) };
 }
 
 function createSession(state: AuthState, userId: string) {
@@ -243,10 +276,10 @@ export async function verifyOtp(email: string, intent: AuthIntent, code: string)
     if (intent === "register") {
       if (userId) return { error: "An account already exists for this email." } as const;
       userId = randomUUID();
-      const used = new Set(Object.values(state.users).map((user) => user.username.toLowerCase()));
+      const used = new Set([SUPER_ADMIN_USERNAME, ...Object.values(state.users).map((user) => user.username.toLowerCase())]);
       const usedCodes = new Set(Object.keys(state.referralIndex));
       const referralCode = createReferralCode(usedCodes);
-      const user: StoredUser = { id: userId, email, username: defaultUsername(email, used), about: "", campus: "", avatarUrl: "", isPrivate: false, hasPassword: false, points: 0, referralCode, profileSetupComplete: false, createdAt: Date.now() };
+      const user: StoredUser = { id: userId, email, username: defaultUsername(email, used), about: "", campus: "", avatarUrl: "", isPrivate: false, hasPassword: false, points: 0, streakCount: 0, streakLastActivityAt: null, streakLastAwardAt: null, streakActionKeys: {}, referralCode, profileSetupComplete: false, createdAt: Date.now(), appRole: "USER" };
       state.users[userId] = user;
       state.emailIndex[email] = userId;
       state.referralIndex[referralCode] = userId;
@@ -296,6 +329,16 @@ export async function getSession(token?: string) {
   const resolved = await resolveSession(token);
   if (!resolved) return null;
   const user = resolved.state.users[resolved.session.userId];
+  return user ? publicUser(user) : null;
+}
+
+export async function getFreshSession(token?: string) {
+  if (!token) return null;
+  await mutationQueue;
+  const state = await loadState({ fresh: true });
+  const session = state.sessions[sessionKey(token)];
+  if (!session || session.expiresAt <= Date.now()) return null;
+  const user = state.users[session.userId];
   return user ? publicUser(user) : null;
 }
 
@@ -387,6 +430,10 @@ export async function updateProfile(userId: string, username: string, about: str
   return mutate((state) => {
     const user = state.users[userId];
     if (!user) return { error: "Account not found." } as const;
+    const currentProtected = user.username.toLowerCase() === SUPER_ADMIN_USERNAME;
+    const requestedProtected = username.toLowerCase() === SUPER_ADMIN_USERNAME;
+    if (currentProtected && user.username.toLowerCase() !== username.toLowerCase()) return { error: "The permanent Super Admin username cannot be changed." } as const;
+    if (!currentProtected && requestedProtected) return { error: "That username is reserved." } as const;
     const usernameError = validateUsername(username);
     if (usernameError) return { error: usernameError } as const;
     if (about.length > 500) return { error: "About must be 500 characters or fewer." } as const;
@@ -398,6 +445,53 @@ export async function updateProfile(userId: string, username: string, about: str
     user.campus = campus.trim();
     user.profileSetupComplete = true;
     return { user: publicUser(user) } as const;
+  });
+}
+
+export type AdminUser = Pick<SessionUser, "id" | "username" | "email" | "campus" | "createdAt" | "appRole"> & { protected: boolean };
+
+function adminUser(user: StoredUser): AdminUser {
+  return { id: user.id, username: user.username, email: user.email, campus: user.campus || "", createdAt: user.createdAt, appRole: effectiveAppRole(user), protected: user.username.toLowerCase() === SUPER_ADMIN_USERNAME };
+}
+
+export async function listAdminUsers(query = "") {
+  await mutationQueue;
+  const state = await loadState({ fresh: true });
+  const normalized = query.trim().toLowerCase();
+  return Object.values(state.users)
+    .filter((user) => !normalized || user.username.toLowerCase().includes(normalized) || user.email.toLowerCase().includes(normalized) || (user.campus || "").toLowerCase().includes(normalized))
+    .sort((a, b) => b.createdAt - a.createdAt || a.username.localeCompare(b.username))
+    .map(adminUser);
+}
+
+export async function setUserAppRole(userId: string, appRole: Exclude<AppRole, "SUPER_ADMIN">) {
+  return mutate((state) => {
+    const user = state.users[userId];
+    if (!user) return { error: "Account not found.", status: 404 } as const;
+    if (user.username.toLowerCase() === SUPER_ADMIN_USERNAME) return { error: "The permanent Super Admin role cannot be changed.", status: 403 } as const;
+    user.appRole = appRole;
+    return { user: adminUser(user) } as const;
+  });
+}
+
+export async function getAdminUser(userId: string) {
+  await mutationQueue;
+  const state = await loadState({ fresh: true });
+  const user = state.users[userId];
+  return user ? adminUser(user) : null;
+}
+
+export async function deleteAuthUser(userId: string) {
+  return mutate((state) => {
+    const user = state.users[userId];
+    if (!user) return { deleted: false } as const;
+    if (user.username.toLowerCase() === SUPER_ADMIN_USERNAME) return { error: "The permanent Super Admin account cannot be deleted.", status: 403 } as const;
+    delete state.users[userId];
+    delete state.emailIndex[user.email];
+    delete state.referralIndex[user.referralCode];
+    for (const [key, session] of Object.entries(state.sessions)) if (session.userId === userId) delete state.sessions[key];
+    for (const [key, change] of Object.entries(state.emailChanges)) if (change.userId === userId) delete state.emailChanges[key];
+    return { deleted: true, avatarUrl: user.avatarUrl } as const;
   });
 }
 

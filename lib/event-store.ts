@@ -1,9 +1,11 @@
 import "server-only";
 
 import { randomInt, randomUUID } from "node:crypto";
+import { getCommunityAccess } from "@/lib/community-store";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import { events as initialEvents } from "@/lib/data";
-import type { CampusEvent, CoverFit, CustomFormAnswers, CustomFormField, CustomFormSchema } from "@/lib/types";
+import type { CampusEvent, CoverFit, CustomFormAnswers, CustomFormField, CustomFormSchema, EventStatus } from "@/lib/types";
+import { eventStatusForCommunity, normalizeEventStatus } from "@/lib/moderation-policy";
 
 export type { CoverFit } from "@/lib/types";
 
@@ -32,6 +34,9 @@ type StoredEvent = {
   customFormSchema: CustomFormSchema;
   createdAt: number;
   updatedAt: number;
+  status: EventStatus;
+  reviewedBy?: string;
+  reviewedAt?: number;
 };
 
 export type RsvpRecord = {
@@ -57,7 +62,7 @@ export type EventAdminRecord = {
 };
 
 type EventDatabase = {
-  version: 4;
+  version: 5;
   events: Record<string, StoredEvent>;
   rsvps: Record<string, RsvpRecord>;
   eventAdmins: Record<string, EventAdminRecord>;
@@ -95,7 +100,7 @@ export type NewEventInput = {
 
 // Every field optional: the creator edits only what changed. `endsAt: ""` clears
 // a previously set end.
-export type EventUpdateInput = Partial<NewEventInput>;
+export type EventUpdateInput = Partial<Omit<NewEventInput, "community">> & { community?: string | null };
 
 const EMPTY_FORM_SCHEMA: CustomFormSchema = { version: 1, fields: [] };
 const CHECK_IN_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -202,14 +207,14 @@ function generateUniqueCheckInCode(database: EventDatabase) {
 function seededDatabase(): EventDatabase {
   const seedTime = Date.now();
   return {
-    version: 4,
-    events: Object.fromEntries(initialEvents.map((event, index) => [event.id, { ...event, creatorId: "system", customFormSchema: { ...EMPTY_FORM_SCHEMA }, createdAt: seedTime - index * 1_000, updatedAt: seedTime - index * 1_000 }])),
+    version: 5,
+    events: Object.fromEntries(initialEvents.map((event, index) => [event.id, { ...event, creatorId: "system", status: "APPROVED", customFormSchema: { ...EMPTY_FORM_SCHEMA }, createdAt: seedTime - index * 1_000, updatedAt: seedTime - index * 1_000 }])),
     rsvps: {}, eventAdmins: {}, rsvpIndex: {}, checkInCodeIndex: {}, eventAdminIndex: {},
   };
 }
 
 function normalizeDatabase(stored: LegacyEventDatabase): EventDatabase {
-  const database: EventDatabase = { version: 4, events: {}, rsvps: {}, eventAdmins: {}, rsvpIndex: {}, checkInCodeIndex: {}, eventAdminIndex: {} };
+  const database: EventDatabase = { version: 5, events: {}, rsvps: {}, eventAdmins: {}, rsvpIndex: {}, checkInCodeIndex: {}, eventAdminIndex: {} };
   for (const [id, rawEvent] of Object.entries(stored.events || {})) {
     if (!rawEvent || typeof rawEvent.creatorId !== "string") continue;
     const event = rawEvent as StoredEvent;
@@ -222,6 +227,8 @@ function normalizeDatabase(stored: LegacyEventDatabase): EventDatabase {
     event.coverFit = rawEvent.coverFit === "fit" ? "fit" : "fill";
     event.coverFocusX = clampPercent(rawEvent.coverFocusX);
     event.coverFocusY = clampPercent(rawEvent.coverFocusY);
+    event.status = normalizeEventStatus(rawEvent.status);
+    if (event.status === "PENDING") { delete event.reviewedBy; delete event.reviewedAt; }
     database.events[id] = event;
   }
   for (const [id, rawRsvp] of Object.entries(stored.rsvps || {})) {
@@ -354,17 +361,24 @@ export function validateEventInput(input: NewEventInput, options?: { allowPastSt
 export async function listEvents(viewerId: string) {
   await writeQueue;
   const database = await loadDatabase();
-  return Object.values(database.events).sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime() || b.createdAt - a.createdAt).map((event) => publicEvent(database, event, viewerId));
+  return Object.values(database.events).filter((event) => event.status === "APPROVED" || event.creatorId === viewerId).sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime() || b.createdAt - a.createdAt).map((event) => publicEvent(database, event, viewerId));
 }
 
 export async function getEvent(eventId: string, viewerId: string) {
   await writeQueue;
   const database = await loadDatabase();
   const event = database.events[eventId];
-  return event ? publicEvent(database, event, viewerId) : null;
+  if (!event) return null;
+  if (event.status !== "APPROVED" && !canManage(database, event, viewerId)) return null;
+  return publicEvent(database, event, viewerId);
 }
 
 export async function createEvent(creatorId: string, input: NewEventInput) {
+  if (input.community) {
+    const access = await getCommunityAccess(input.community, creatorId);
+    if (!access) return { error: "Community not found.", status: 404 } as const;
+    if (!access.joined) return { error: "Join this community before submitting an event.", status: 403 } as const;
+  }
   return mutate((database) => {
     const now = Date.now();
     const event: StoredEvent = {
@@ -374,7 +388,7 @@ export async function createEvent(creatorId: string, input: NewEventInput) {
       ...(input.endsAt ? { endsAt: new Date(input.endsAt).toISOString() } : {}),
       capacity: input.capacity, imageUrl: input.imageUrl,
       coverFit: input.coverFit, coverFocusX: clampPercent(input.coverFocusX), coverFocusY: clampPercent(input.coverFocusY),
-      customFormSchema: input.customFormSchema, createdAt: now, updatedAt: now,
+      customFormSchema: input.customFormSchema, status: eventStatusForCommunity(input.community), createdAt: now, updatedAt: now,
     };
     database.events[event.id] = event;
     return publicEvent(database, event, creatorId);
@@ -395,7 +409,7 @@ function mergedEventInput(event: StoredEvent, patch: EventUpdateInput): NewEvent
     venueAddress: pick("venueAddress", event.venueAddress || event.location),
     directionsUrl: pick("directionsUrl", event.directionsUrl),
     campus: pick("campus", event.campus),
-    community: pick("community", event.community),
+    community: patch.community === undefined ? event.community : patch.community || undefined,
     startsAt: pick("startsAt", event.startsAt),
     endsAt: patch.endsAt === undefined ? event.endsAt : (patch.endsAt || undefined),
     capacity: pick("capacity", event.capacity),
@@ -408,6 +422,17 @@ function mergedEventInput(event: StoredEvent, patch: EventUpdateInput): NewEvent
 }
 
 export async function updateEvent(eventId: string, userId: string, patch: EventUpdateInput) {
+  if (patch.community) {
+    await writeQueue;
+    const current = (await loadDatabase()).events[eventId];
+    if (!current) return { error: "Event not found.", status: 404 } as const;
+    if (current.creatorId !== userId) return { error: "Only the event creator can edit this event.", status: 403 } as const;
+    if (current.community !== patch.community) {
+      const access = await getCommunityAccess(patch.community, userId);
+      if (!access) return { error: "Community not found.", status: 404 } as const;
+      if (!access.joined) return { error: "Join the destination community before submitting this event.", status: 403 } as const;
+    }
+  }
   return mutate((database) => {
     const event = database.events[eventId];
     if (!event) return { error: "Event not found.", status: 404 } as const;
@@ -436,6 +461,9 @@ export async function updateEvent(eventId: string, userId: string, patch: EventU
     event.coverFocusX = clampPercent(merged.coverFocusX);
     event.coverFocusY = clampPercent(merged.coverFocusY);
     event.customFormSchema = merged.customFormSchema;
+    event.status = eventStatusForCommunity(merged.community);
+    delete event.reviewedBy;
+    delete event.reviewedAt;
     event.updatedAt = Date.now();
     return { event: publicEvent(database, event, userId) } as const;
   });
@@ -445,6 +473,7 @@ export async function setEventRsvp(eventId: string, userId: string, submittedAns
   return mutate((database) => {
     const event = database.events[eventId];
     if (!event) return { error: "Event not found.", status: 404 } as const;
+    if (event.status !== "APPROVED") return { error: "Registration opens after this event is approved.", status: 409 } as const;
     const existingId = database.rsvpIndex[rsvpKey(eventId, userId)];
     const existing = existingId ? database.rsvps[existingId] : undefined;
     if (existing) return { event: publicEvent(database, event, userId), rsvp: existing, alreadyExisted: true } as const;
@@ -465,6 +494,7 @@ export async function cancelEventRsvp(eventId: string, userId: string) {
   return mutate((database) => {
     const event = database.events[eventId];
     if (!event) return { error: "Event not found.", status: 404 } as const;
+    if (event.status !== "APPROVED") return { error: "This event is not currently live.", status: 409 } as const;
     const key = rsvpKey(eventId, userId);
     const rsvpId = database.rsvpIndex[key];
     if (!rsvpId) return { error: "You have not RSVP’d to this event.", status: 404 } as const;
@@ -484,6 +514,7 @@ export async function listEventRsvpsForManager(eventId: string, userId: string) 
   const database = await loadDatabase();
   const event = database.events[eventId];
   if (!event) return { error: "Event not found.", status: 404 } as const;
+  if (event.status !== "APPROVED") return { error: "This event is not currently live.", status: 409 } as const;
   if (!canManage(database, event, userId)) return { error: "You are not allowed to manage this event.", status: 403 } as const;
   const rsvps = Object.values(database.rsvps).filter((rsvp) => rsvp.eventId === eventId).sort((a, b) => a.createdAt - b.createdAt);
   return { event, rsvps, isCreator: event.creatorId === userId } as const;
@@ -494,7 +525,7 @@ export async function listEventRsvpsForManager(eventId: string, userId: string) 
 export async function getViewerCheckIn(eventId: string, userId: string) {
   await writeQueue;
   const database = await loadDatabase();
-  if (!database.events[eventId]) return null;
+  if (!database.events[eventId] || database.events[eventId].status !== "APPROVED") return null;
   const rsvpId = database.rsvpIndex[rsvpKey(eventId, userId)];
   const rsvp = rsvpId ? database.rsvps[rsvpId] : undefined;
   if (!rsvp) return null;
@@ -508,6 +539,7 @@ export async function getAttendeeCheckIn(eventId: string, managerId: string, rsv
   const database = await loadDatabase();
   const event = database.events[eventId];
   if (!event) return { error: "Event not found.", status: 404 } as const;
+  if (event.status !== "APPROVED") return { error: "This event is not currently live.", status: 409 } as const;
   if (!canManage(database, event, managerId)) return { error: "You are not allowed to manage this event.", status: 403 } as const;
   const rsvp = database.rsvps[rsvpId];
   if (!rsvp || rsvp.eventId !== eventId) return { error: "That attendee was not found for this event.", status: 404 } as const;
@@ -527,6 +559,7 @@ export async function addEventAdmin(eventId: string, creatorId: string, adminUse
   return mutate((database) => {
     const event = database.events[eventId];
     if (!event) return { error: "Event not found.", status: 404 } as const;
+    if (event.status !== "APPROVED") return { error: "This event is not currently live.", status: 409 } as const;
     if (event.creatorId !== creatorId) return { error: "Only the event creator can add administrators.", status: 403 } as const;
     if (adminUserId === creatorId) return { error: "The event creator already has full access.", status: 409 } as const;
     const key = eventAdminKey(eventId, adminUserId);
@@ -554,6 +587,7 @@ export async function checkInEventAttendee(eventId: string, managerId: string, s
   return mutate((database) => {
     const event = database.events[eventId];
     if (!event) return { error: "Event not found.", status: 404 } as const;
+    if (event.status !== "APPROVED") return { error: "This event is not currently live.", status: 409 } as const;
     if (!canManage(database, event, managerId)) return { error: "You are not allowed to check in attendees for this event.", status: 403 } as const;
     const code = submittedCode.trim().toUpperCase();
     if (!/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/.test(code)) return { error: "Enter a valid 6-character check-in code.", status: 400 } as const;
@@ -565,6 +599,132 @@ export async function checkInEventAttendee(eventId: string, managerId: string, s
     const now = Date.now();
     rsvp.status = "CHECKED_IN"; rsvp.checkedInAt = now; rsvp.checkedInBy = managerId; rsvp.updatedAt = now;
     return { rsvp } as const;
+  });
+}
+
+function removeEventFromDatabase(database: EventDatabase, eventId: string) {
+  const event = database.events[eventId];
+  if (!event) return null;
+  for (const rsvp of Object.values(database.rsvps)) {
+    if (rsvp.eventId !== eventId) continue;
+    delete database.rsvps[rsvp.id];
+    delete database.rsvpIndex[rsvpKey(eventId, rsvp.userId)];
+    delete database.checkInCodeIndex[rsvp.checkInCode];
+  }
+  for (const admin of Object.values(database.eventAdmins)) {
+    if (admin.eventId !== eventId) continue;
+    delete database.eventAdmins[admin.id];
+    delete database.eventAdminIndex[eventAdminKey(eventId, admin.userId)];
+  }
+  delete database.events[eventId];
+  return event;
+}
+
+export async function getEventModerationContext(eventId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const event = database.events[eventId];
+  return event ? { id: event.id, communityId: event.community, creatorId: event.creatorId, status: event.status } : null;
+}
+
+export async function listPendingCommunityEvents(communityId: string, viewerId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  return Object.values(database.events)
+    .filter((event) => event.community === communityId && event.status === "PENDING")
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((event) => publicEvent(database, event, viewerId));
+}
+
+export async function reviewCommunityEvent(communityId: string, eventId: string, reviewerId: string, status: Extract<EventStatus, "APPROVED" | "REJECTED">) {
+  return mutate((database) => {
+    const event = database.events[eventId];
+    if (!event || event.community !== communityId) return { error: "Event not found in this community.", status: 404 } as const;
+    if (event.status !== "PENDING") return { error: "This event has already been reviewed.", status: 409 } as const;
+    event.status = status;
+    event.reviewedBy = reviewerId;
+    event.reviewedAt = Date.now();
+    event.updatedAt = event.reviewedAt;
+    return { event: publicEvent(database, event, reviewerId) } as const;
+  });
+}
+
+export async function listAdminEvents(query = "", status?: EventStatus) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const normalized = query.trim().toLowerCase();
+  return Object.values(database.events)
+    .filter((event) => (!status || event.status === status) && (!normalized || event.title.toLowerCase().includes(normalized) || event.campus.toLowerCase().includes(normalized) || event.venueName.toLowerCase().includes(normalized)))
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map((event) => publicEvent(database, event, ""));
+}
+
+export async function getAdminEvent(eventId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const event = database.events[eventId];
+  if (!event) return null;
+  return {
+    event: publicEvent(database, event, ""),
+    rsvps: Object.values(database.rsvps).filter((rsvp) => rsvp.eventId === eventId).sort((a, b) => a.createdAt - b.createdAt),
+  };
+}
+
+export async function deleteEventRecord(eventId: string, expectedCommunityId?: string | null) {
+  return mutate((database) => {
+    const current = database.events[eventId];
+    if (current && expectedCommunityId !== undefined && (current.community || null) !== expectedCommunityId) {
+      return { error: "The event changed communities. Refresh and try again.", status: 409 } as const;
+    }
+    const event = removeEventFromDatabase(database, eventId);
+    return event ? { deleted: true, eventId, imageUrl: event.imageUrl } as const : { deleted: false, eventId, imageUrl: "" } as const;
+  });
+}
+
+export async function deleteEventsForCommunity(communityId: string) {
+  return mutate((database) => {
+    const removed: Array<{ eventId: string; imageUrl: string }> = [];
+    for (const event of Object.values(database.events)) {
+      if (event.community !== communityId) continue;
+      const deleted = removeEventFromDatabase(database, event.id);
+      if (deleted) removed.push({ eventId: deleted.id, imageUrl: deleted.imageUrl });
+    }
+    return removed;
+  });
+}
+
+export async function eventRecordsForCommunity(communityId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  return Object.values(database.events).filter((event) => event.community === communityId).map((event) => ({ eventId: event.id, imageUrl: event.imageUrl }));
+}
+
+export async function eventRecordsCreatedBy(userId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  return Object.values(database.events).filter((event) => event.creatorId === userId).map((event) => ({ eventId: event.id, imageUrl: event.imageUrl }));
+}
+
+export async function deleteUserEventData(userId: string) {
+  return mutate((database) => {
+    const removedEvents: Array<{ eventId: string; imageUrl: string }> = [];
+    for (const event of Object.values(database.events)) {
+      if (event.creatorId !== userId) continue;
+      const deleted = removeEventFromDatabase(database, event.id);
+      if (deleted) removedEvents.push({ eventId: deleted.id, imageUrl: deleted.imageUrl });
+    }
+    for (const rsvp of Object.values(database.rsvps)) {
+      if (rsvp.userId !== userId) continue;
+      delete database.rsvps[rsvp.id];
+      delete database.rsvpIndex[rsvpKey(rsvp.eventId, userId)];
+      delete database.checkInCodeIndex[rsvp.checkInCode];
+    }
+    for (const admin of Object.values(database.eventAdmins)) {
+      if (admin.userId !== userId && admin.addedBy !== userId) continue;
+      delete database.eventAdmins[admin.id];
+      delete database.eventAdminIndex[eventAdminKey(admin.eventId, admin.userId)];
+    }
+    return removedEvents;
   });
 }
 

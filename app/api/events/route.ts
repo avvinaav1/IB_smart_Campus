@@ -46,5 +46,7 @@ export async function POST(request: NextRequest) {
   const validationError = validateEventInput(input);
   if (validationError) return noStoreJson({ error: validationError }, { status: 400 });
   const event = await createEvent(userId, input);
-  return noStoreJson({ data: { event } }, { status: 201 });
+  return "error" in event
+    ? noStoreJson({ error: event.error }, { status: event.status })
+    : noStoreJson({ data: { event } }, { status: 201 });
 }

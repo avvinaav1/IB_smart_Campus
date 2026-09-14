@@ -1,7 +1,8 @@
 import type { NextRequest } from "next/server";
-import { getDirectoryUser, getDirectoryUsers } from "@/lib/auth-store";
+import { getDirectoryUser, getDirectoryUsers, incrementUserStreak } from "@/lib/auth-store";
 import { authenticatedUserId, isSameOrigin, noStoreJson, readJson } from "@/lib/auth-http";
 import { createChatRequest, listIncomingChatRequests, validateInitialMessage } from "@/lib/social-store";
+import { createNotification } from "@/lib/notification-store";
 
 export const runtime = "nodejs";
 
@@ -28,5 +29,23 @@ export async function POST(request: NextRequest) {
   const recipient = await getDirectoryUser(recipientId);
   if (!recipient) return noStoreJson({ error: "User not found." }, { status: 404 });
   const result = await createChatRequest(userId, recipient.id, message);
+  if (!("error" in result)) {
+    try {
+      const sender = await getDirectoryUser(userId);
+      await Promise.all([
+        incrementUserStreak(userId, "CHAT_MESSAGE", `request:${result.request.id}`),
+        createNotification({
+          recipientId: recipient.id,
+          senderId: userId,
+          type: "MESSAGE",
+          content: `${sender?.username || "A campus user"} sent you a message request.`,
+          link: "/?view=chat&requests=message",
+          dedupeKey: `chat-request:${result.request.id}`,
+        }),
+      ]);
+    } catch (error) {
+      console.error("Chat-request notification failed", error);
+    }
+  }
   return "error" in result ? noStoreJson({ error: result.error }, { status: result.status }) : noStoreJson({ data: result }, { status: 201 });
 }

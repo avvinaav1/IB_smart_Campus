@@ -29,7 +29,7 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
   if (typeof body.venueAddress === "string") patch.venueAddress = body.venueAddress;
   if (typeof body.directionsUrl === "string") patch.directionsUrl = body.directionsUrl;
   if (typeof body.campus === "string") patch.campus = body.campus;
-  if (typeof body.community === "string") patch.community = body.community === "None" ? undefined : body.community;
+  if (typeof body.community === "string") patch.community = body.community === "None" ? null : body.community;
   if (typeof body.startsAt === "string") patch.startsAt = body.startsAt;
   if (typeof body.endsAt === "string") patch.endsAt = body.endsAt; // "" clears the end
   if (typeof body.capacity === "number") patch.capacity = body.capacity;

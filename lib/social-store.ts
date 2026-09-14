@@ -131,6 +131,14 @@ export async function countFollowers(userId: string) {
   return Object.values(database.follows).filter((record) => record.targetUserId === userId && record.status === "accepted").length;
 }
 
+export async function listFollowerIds(userId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  return Object.values(database.follows)
+    .filter((record) => record.targetUserId === userId && record.status === "accepted")
+    .map((record) => record.followerId);
+}
+
 export function validateInitialMessage(message: string) {
   const trimmed = message.trim();
   if (!trimmed) return "Write one initial message before sending.";
@@ -223,6 +231,23 @@ export async function sendConversationMessage(conversationId: string, senderId: 
     conversation.updatedAt = message.createdAt;
     const { conversationId: omittedConversationId, ...visible } = message;
     void omittedConversationId;
-    return { message: visible } as const;
+    const recipientId = Object.values(database.conversationMembers).find((candidate) => candidate.conversationId === conversationId && candidate.userId !== senderId)?.userId || null;
+    return { message: visible, recipientId } as const;
+  });
+}
+
+export async function deleteUserSocialData(userId: string) {
+  return mutate((database) => {
+    for (const follow of Object.values(database.follows)) {
+      if (follow.followerId === userId || follow.targetUserId === userId) delete database.follows[follow.id];
+    }
+    for (const request of Object.values(database.chatRequests)) {
+      if (request.senderId === userId || request.recipientId === userId) delete database.chatRequests[request.id];
+    }
+    const conversationIds = new Set(Object.values(database.conversationMembers).filter((member) => member.userId === userId).map((member) => member.conversationId));
+    for (const conversationId of conversationIds) delete database.conversations[conversationId];
+    for (const [key, member] of Object.entries(database.conversationMembers)) if (conversationIds.has(member.conversationId)) delete database.conversationMembers[key];
+    for (const message of Object.values(database.messages)) if (conversationIds.has(message.conversationId)) delete database.messages[message.id];
+    return { removed: true } as const;
   });
 }

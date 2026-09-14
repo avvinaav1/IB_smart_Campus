@@ -63,20 +63,6 @@ function publicPost(post: StoredPost, viewerId: string): Post {
   };
 }
 
-function postingStreak(posts: StoredPost[]) {
-  const dayMs = 86_400_000;
-  const activeDays = [...new Set(posts.map((post) => Math.floor(post.createdAt / dayMs)))].sort((a, b) => b - a);
-  if (!activeDays.length) return 0;
-  const today = Math.floor(Date.now() / dayMs);
-  if (activeDays[0] < today - 1) return 0;
-  let streak = 1;
-  for (let index = 1; index < activeDays.length; index += 1) {
-    if (activeDays[index] !== activeDays[index - 1] - 1) break;
-    streak += 1;
-  }
-  return streak;
-}
-
 // Transaction-safe shaping: never calls another store (a nested Firestore
 // transaction would deadlock). Legacy posts with no communityId keep "" here and
 // are simply filtered out of feeds; the read path below backfills them for
@@ -159,18 +145,18 @@ export async function getUserDashboard(userId: string): Promise<UserDashboard> {
     karma: owned.reduce((total, post) => total + voteTotal(post), 0),
     postCount: owned.length,
     followers: 0,
-    streak: postingStreak(owned),
+    streak: 0,
     posts: owned.map((post) => publicPost(post, userId)),
   };
 }
 
 export async function createPost(userId: string, author: string, input: NewPostInput) {
   const resolved = await resolveCommunityForPost(input.communityId, userId);
-  if ("error" in resolved) return resolved;
+  if (!resolved.community) return { error: resolved.error || "Choose a community that still exists." } as const;
   const targetCommunity = resolved.community;
   return mutate((database) => {
     const duplicate = database.posts.find((post) => post.userId === userId && post.clientRequestId === input.clientRequestId);
-    if (duplicate) return { post: publicPost(duplicate, userId) } as const;
+    if (duplicate) return { post: publicPost(duplicate, userId), created: false } as const;
     const maxId = database.posts.reduce((highest, post) => Math.max(highest, Number(post.id) || 0), 0);
     const post: StoredPost = {
       id: Math.max(Date.now(), maxId + 1),
@@ -193,7 +179,7 @@ export async function createPost(userId: string, author: string, input: NewPostI
       votesByUser: {},
     };
     database.posts.push(post);
-    return { post: publicPost(post, userId) } as const;
+    return { post: publicPost(post, userId), created: true } as const;
   });
 }
 
@@ -221,9 +207,78 @@ export async function setPostVote(postId: number, userId: string, vote: 1 | -1 |
     if (!post) return { error: "That post no longer exists." } as const;
     post.voteBase ??= post.votes - voteDelta(post);
     post.votesByUser ??= {};
+    const previousVote = post.votesByUser[userId];
     if (vote === null) delete post.votesByUser[userId];
     else post.votesByUser[userId] = vote;
     post.votes = post.voteBase + voteDelta(post);
-    return { post: publicPost(post, userId) } as const;
+    return { post: publicPost(post, userId), previousVote } as const;
+  });
+}
+
+export async function getPostModerationContext(postId: number) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const post = database.posts.find((candidate) => candidate.id === postId);
+  return post ? { id: post.id, communityId: post.communityId } : null;
+}
+
+export async function listAdminPosts(query = "") {
+  await writeQueue;
+  const database = await loadDatabase();
+  const normalized = query.trim().toLowerCase();
+  return database.posts
+    .filter((post) => !normalized || post.title.toLowerCase().includes(normalized) || post.author.toLowerCase().includes(normalized) || post.community.toLowerCase().includes(normalized))
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map((post) => publicPost(post, ""));
+}
+
+export async function deletePostRecord(postId: number, expectedCommunityId?: string) {
+  return mutate((database) => {
+    const index = database.posts.findIndex((post) => post.id === postId);
+    if (index < 0) return { deleted: false, imageUrls: [] as string[] } as const;
+    if (expectedCommunityId !== undefined && database.posts[index].communityId !== expectedCommunityId) {
+      return { error: "The post changed communities. Refresh and try again.", status: 409 } as const;
+    }
+    const [post] = database.posts.splice(index, 1);
+    return { deleted: true, imageUrls: post.images || (post.image ? [post.image] : []) } as const;
+  });
+}
+
+export async function deletePostComment(postId: number, commentId: string, expectedCommunityId?: string) {
+  return mutate((database) => {
+    const post = database.posts.find((candidate) => candidate.id === postId);
+    if (!post) return { error: "Post not found.", status: 404 } as const;
+    if (expectedCommunityId !== undefined && post.communityId !== expectedCommunityId) {
+      return { error: "The post changed communities. Refresh and try again.", status: 409 } as const;
+    }
+    const comments = post.commentItems || [];
+    if (!comments.some((comment) => comment.id === commentId)) return { error: "Comment not found.", status: 404 } as const;
+    post.commentItems = comments.filter((comment) => comment.id !== commentId);
+    post.comments = Math.max(0, post.comments - 1);
+    return { deleted: true } as const;
+  });
+}
+
+export async function deletePostsForCommunity(communityId: string) {
+  return mutate((database) => {
+    const removed = database.posts.filter((post) => post.communityId === communityId);
+    database.posts = database.posts.filter((post) => post.communityId !== communityId);
+    return removed.flatMap((post) => post.images || (post.image ? [post.image] : []));
+  });
+}
+
+export async function deleteUserPostData(userId: string) {
+  return mutate((database) => {
+    const removed = database.posts.filter((post) => post.authorId === userId || post.userId === userId);
+    database.posts = database.posts.filter((post) => post.authorId !== userId && post.userId !== userId);
+    for (const post of database.posts) {
+      if (post.votesByUser?.[userId]) delete post.votesByUser[userId];
+      const comments = post.commentItems || [];
+      const remaining = comments.filter((comment) => comment.userId !== userId);
+      post.commentItems = remaining;
+      post.comments = Math.max(0, post.comments - (comments.length - remaining.length));
+      post.votes = voteTotal(post);
+    }
+    return removed.flatMap((post) => post.images || (post.image ? [post.image] : []));
   });
 }
