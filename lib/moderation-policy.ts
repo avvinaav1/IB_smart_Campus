@@ -53,6 +53,14 @@ export function canDelegateAppRoles(appRole: AppRole) {
   return appRole === "SUPER_ADMIN";
 }
 
+export function canManageCertificates(appRole: AppRole, instituteRole?: InstituteRole) {
+  return isGlobalModerator(appRole) || instituteRole === "INSTITUTE_ADMIN";
+}
+
+export function canManageEventAttendance(appRole: AppRole, isCreator: boolean, isEventAdmin: boolean) {
+  return isGlobalModerator(appRole) || isCreator || isEventAdmin;
+}
+
 export function isScopedCommunityModerator(appRole: AppRole, communityRole?: CommunityRole) {
   return isGlobalModerator(appRole) || communityRole === "COMMUNITY_ADMIN" || communityRole === "COMMUNITY_MODERATOR";
 }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, ChevronDown, LoaderCircle, Plus, Search, ShieldCheck, Trash2, UserCog, X } from "lucide-react";
 import type { AppRole, CampusEvent, Community, CommunityRole, EventAttendee, EventStatus, Institute, InstituteRole, InstituteSummary, Post, SessionUser, UserSearchResult } from "@/lib/types";
+import { announceDataChange, mutationSucceeded } from "@/lib/client-data-sync";
 
 type Page<T> = { items: T[]; nextCursor: string | null };
 type AdminUser = { id: string; username: string; email: string; campus: string; createdAt: number; appRole: AppRole; protected: boolean };
@@ -24,6 +25,7 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: "no-store", ...init });
   const result = await response.json() as { data?: T; error?: string };
   if (!response.ok) throw new Error(result.error || "The moderation request failed.");
+  if (mutationSucceeded(init)) announceDataChange();
   return result.data as T;
 }
 

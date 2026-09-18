@@ -1,15 +1,17 @@
 "use client";
 
 import Image from "next/image";
-import { Check, Download, ExternalLink, KeyRound, LoaderCircle, MapPin, Pencil, ScanLine, Search, ShieldCheck, TicketCheck, UserPlus, Users, X } from "lucide-react";
+import { Check, ClipboardPlus, Download, ExternalLink, KeyRound, LoaderCircle, MapPin, Pencil, ScanLine, Search, ShieldCheck, TicketCheck, UserPlus, Users, X } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { coverImageStyle, eventWhen } from "@/lib/event-format";
 import type { CampusEvent, CustomFormAnswers, CustomFormField, EventAdmin, EventAttendee, UserSearchResult } from "@/lib/types";
+import { announceDataChange, mutationSucceeded } from "@/lib/client-data-sync";
 
 async function requestJson<T>(url: string, init?: RequestInit) {
   const response = await fetch(url, init);
   const result = await response.json() as { data?: T; error?: string };
   if (!response.ok) throw new Error(result.error || "Something went wrong. Please try again.");
+  if (mutationSucceeded(init)) announceDataChange();
   return result.data;
 }
 
@@ -103,7 +105,11 @@ function QrScanner({ onCode, onClose, onError }: { onCode: (code: string) => voi
   </div>;
 }
 
-function EventAdminDashboard({ event, notify }: { event: CampusEvent; notify: (message: string) => void }) {
+function localDateTimeValue(date = new Date()) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+function EventAdminDashboard({ event, notify, onChange }: { event: CampusEvent; notify: (message: string) => void; onChange: (event: CampusEvent) => void }) {
   const [attendees, setAttendees] = useState<EventAttendee[] | null>(null);
   const [admins, setAdmins] = useState<EventAdmin[]>([]);
   const [checkInCode, setCheckInCode] = useState("");
@@ -112,6 +118,9 @@ function EventAdminDashboard({ event, notify }: { event: CampusEvent; notify: (m
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<UserSearchResult[]>([]);
   const [adminBusy, setAdminBusy] = useState("");
+  const [walkInOpen, setWalkInOpen] = useState(false);
+  const [walkInBusy, setWalkInBusy] = useState(false);
+  const [walkIn, setWalkIn] = useState({ name: "", email: "", phone: "", institution: "", studentId: "", checkedInAt: localDateTimeValue() });
   const canScan = useQrScanSupported();
 
   useEffect(() => {
@@ -189,6 +198,22 @@ function EventAdminDashboard({ event, notify }: { event: CampusEvent; notify: (m
     finally { setAdminBusy(""); }
   }
 
+  async function addWalkIn(submission: React.FormEvent<HTMLFormElement>) {
+    submission.preventDefault();
+    if (walkInBusy) return;
+    setWalkInBusy(true);
+    try {
+      const data = await requestJson<{ attendee: EventAttendee; event: CampusEvent }>(`/api/events/${event.id}/walk-ins`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...walkIn, checkedInAt: new Date(walkIn.checkedInAt).toISOString() }) });
+      if (!data?.attendee || !data.event) throw new Error("The server did not return the walk-in entry.");
+      setAttendees(current => [...(current || []), data.attendee]);
+      onChange(data.event);
+      setWalkIn({ name: "", email: "", phone: "", institution: "", studentId: "", checkedInAt: localDateTimeValue() });
+      setWalkInOpen(false);
+      notify(`${data.attendee.username} added as a manual walk-in`);
+    } catch (error) { notify(error instanceof Error ? error.message : "Could not add the walk-in attendee."); }
+    finally { setWalkInBusy(false); }
+  }
+
   const checkedIn = attendees?.filter(attendee => attendee.status === "CHECKED_IN").length || 0;
   const visibleResults = query.trim().length >= 2 ? results : [];
   return <section className="event-admin-dashboard">
@@ -202,7 +227,8 @@ function EventAdminDashboard({ event, notify }: { event: CampusEvent; notify: (m
       </div>
       {scanning && <QrScanner onCode={(code) => void submitCode(code)} onClose={() => setScanning(false)} onError={notify} />}
     </form>
-    <section className="dashboard-attendees"><header><b>Attendees</b><span>{attendees?.length ?? "…"}</span></header>{attendees === null ? <div className="attendee-loading"><LoaderCircle className="spin" size={20} /> Loading registrations…</div> : attendees.length ? <div className="attendee-list">{attendees.map(attendee => <div key={attendee.rsvpId}><MiniAvatar name={attendee.username} /><span><b>{attendee.username}</b><small>{attendee.email} · <code>{attendee.checkInCode}</code></small></span><em className={attendee.status === "CHECKED_IN" ? "checked" : ""}>{attendee.rsvpStatus === "waitlisted" ? "Waitlisted" : attendee.status === "CHECKED_IN" ? "Checked in" : "Registered"}</em></div>)}</div> : <p className="attendee-empty">No registrations yet.</p>}</section>
+    <section className="manual-walk-in"><header><div><b>Add Manual Walk-In Entry</b><small>Register and check in a participant who arrived without an online RSVP.</small></div><button type="button" onClick={() => setWalkInOpen(value => !value)}><ClipboardPlus size={16} /> {walkInOpen ? "Close" : "Add walk-in"}</button></header>{walkInOpen && <form onSubmit={addWalkIn}><div className="manual-walk-in-grid"><label>Event ID<input value={event.id} readOnly /></label><label>Name<input value={walkIn.name} onChange={input => setWalkIn(current => ({ ...current, name: input.target.value }))} minLength={2} maxLength={120} required /></label><label>Email<input type="email" value={walkIn.email} onChange={input => setWalkIn(current => ({ ...current, email: input.target.value }))} maxLength={254} /></label><label>Phone number<input type="tel" value={walkIn.phone} onChange={input => setWalkIn(current => ({ ...current, phone: input.target.value }))} maxLength={30} /></label><label>Institution <small>Optional</small><input value={walkIn.institution} onChange={input => setWalkIn(current => ({ ...current, institution: input.target.value }))} maxLength={160} /></label><label>Registration / Student ID <small>Optional</small><input value={walkIn.studentId} onChange={input => setWalkIn(current => ({ ...current, studentId: input.target.value }))} maxLength={80} /></label><label>Check-in time<input type="datetime-local" value={walkIn.checkedInAt} onChange={input => setWalkIn(current => ({ ...current, checkedInAt: input.target.value }))} required /></label></div><p>Entry type: <b>Manual Walk-In</b> · An email address or phone number is required and duplicate identifiers are rejected.</p><button className="manual-walk-in-submit" disabled={walkInBusy}>{walkInBusy ? <LoaderCircle className="spin" size={16} /> : <ClipboardPlus size={16} />} Add and check in</button></form>}</section>
+    <section className="dashboard-attendees"><header><b>Attendees</b><span>{attendees?.length ?? "…"}</span></header>{attendees === null ? <div className="attendee-loading"><LoaderCircle className="spin" size={20} /> Loading registrations…</div> : attendees.length ? <div className="attendee-list">{attendees.map(attendee => <div key={attendee.rsvpId}><MiniAvatar name={attendee.username} /><span><b>{attendee.username}</b><small>{attendee.email || attendee.phone || "No contact"} · <code>{attendee.checkInCode}</code>{attendee.registrationSource === "MANUAL_WALK_IN" && <mark>Manual Walk-In</mark>}</small></span><em className={attendee.status === "CHECKED_IN" ? "checked" : ""}>{attendee.rsvpStatus === "waitlisted" ? "Waitlisted" : attendee.status === "CHECKED_IN" ? "Checked in" : "Registered"}</em></div>)}</div> : <p className="attendee-empty">No registrations yet.</p>}</section>
     {event.isCreator && <section className="event-admins-manager"><header><div><b>Co-admins</b><small>Add trusted people to export attendees and check people in.</small></div><span>{admins.length}</span></header>{admins.length > 0 && <div className="event-admin-list">{admins.map(admin => <div key={admin.id}><MiniAvatar name={admin.username} image={admin.avatarUrl} /><b>{admin.username}</b><button type="button" disabled={adminBusy === admin.userId} onClick={() => void removeAdmin(admin)} aria-label={`Remove ${admin.username}`}><X size={15} /></button></div>)}</div>}<label className="admin-search"><Search size={17} /><input value={query} onChange={input => setQuery(input.target.value)} placeholder="Search by username" maxLength={50} /></label>{visibleResults.length > 0 && <div className="admin-search-results">{visibleResults.map(user => <button type="button" disabled={Boolean(adminBusy)} onClick={() => void addAdmin(user)} key={user.id}><MiniAvatar name={user.username} image={user.avatarUrl} /><span><b>{user.username}</b><small>{user.about || "Smart Campus member"}</small></span>{adminBusy === user.id ? <LoaderCircle className="spin" size={16} /> : <UserPlus size={16} />}</button>)}</div>}</section>}
   </section>;
 }
@@ -254,7 +280,7 @@ export function EventRegistrationDetail({ event, close, notify, onChange, onEdit
     {registrationOpen && !event.viewerRsvpStatus && <form className="registration-form" onSubmit={submitRegistration}><header><div><span className="eyebrow violet">REGISTRATION</span><h3>A few details before you&apos;re in</h3></div><button type="button" onClick={() => setRegistrationOpen(false)} aria-label="Close registration form"><X size={16} /></button></header>{event.customFormSchema.fields.map(field => <RegistrationQuestion field={field} value={answers[field.id]} onChange={value => setAnswers(current => { const next = { ...current }; if (value === undefined || value === "") delete next[field.id]; else next[field.id] = value; return next; })} key={field.id} />)}<button className="registration-submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <TicketCheck size={18} />} {nearlyFull ? "Join waitlist" : "Confirm registration"}</button></form>}
     <div className="disclosure"><ShieldCheck size={19} /><p>Your verified email and registration answers are shared only with this event&apos;s creator and assigned event admins.</p></div>
     {event.canManageEvent && <div className="creator-event-actions"><button type="button" onClick={() => setAdminOpen(current => !current)}><Users size={17} /> {adminOpen ? "Close dashboard" : "Admin dashboard"}</button><a href={`/api/events/${event.id}/rsvps/export`} download><Download size={17} /> Export CSV</a></div>}
-    {adminOpen && event.canManageEvent && <EventAdminDashboard event={event} notify={notify} />}
+    {adminOpen && event.canManageEvent && <EventAdminDashboard event={event} notify={notify} onChange={onChange} />}
     {!registrationOpen && <button className={event.viewerRsvpStatus ? "rsvp-button going" : "rsvp-button"} disabled={busy || event.viewerCheckInStatus === "CHECKED_IN"} onClick={() => event.viewerRsvpStatus ? void cancelRsvp() : beginRegistration()}>{busy ? <><LoaderCircle className="spin" size={20} /> Updating…</> : event.viewerCheckInStatus === "CHECKED_IN" ? <><Check size={20} /> Checked in</> : event.viewerRsvpStatus ? <><Check size={20} /> {event.viewerRsvpStatus === "waitlisted" ? "Leave waitlist" : "Cancel RSVP"}</> : <><TicketCheck size={20} /> {nearlyFull ? "Join waitlist" : "RSVP now"}</>}</button>}
   </div></section></div>;
 }

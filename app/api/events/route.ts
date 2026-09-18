@@ -15,9 +15,9 @@ function focus(value: unknown, fallback: number) {
 }
 
 export async function GET(request: NextRequest) {
-  const userId = await authenticatedUserId(request);
-  if (!userId) return noStoreJson({ error: "Your session has expired." }, { status: 401 });
-  return noStoreJson({ data: { events: await listEvents(userId) } });
+  const session = await getFreshSession(request.cookies.get(SESSION_COOKIE)?.value);
+  if (!session) return noStoreJson({ error: "Your session has expired." }, { status: 401 });
+  return noStoreJson({ data: { events: await listEvents(session.id, { globalModerator: isGlobalModerator(session.appRole) }) } });
 }
 
 export async function POST(request: NextRequest) {

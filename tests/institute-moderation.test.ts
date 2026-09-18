@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canApproveInstituteCommunityEvent, canApproveInstituteEvent, canCreateInstituteContent, canManageInstitutes, isGlobalModerator, isInstituteModerator } from "../lib/moderation-policy.ts";
+import { canApproveInstituteCommunityEvent, canApproveInstituteEvent, canCreateInstituteContent, canManageCertificates, canManageEventAttendance, canManageInstitutes, isGlobalModerator, isInstituteModerator } from "../lib/moderation-policy.ts";
 
 test("only global roles can create institutes and assign institute roles", () => {
   assert.equal(canManageInstitutes("USER"), false);
@@ -31,4 +31,21 @@ test("event approval includes institute moderators and relevant community admins
   assert.equal(canApproveInstituteCommunityEvent("USER", "INSTITUTE_ADMIN", "MEMBER"), true);
   assert.equal(canApproveInstituteCommunityEvent("USER", "INSTITUTE_MODERATOR", "COMMUNITY_ADMIN"), true);
   assert.equal(canApproveInstituteCommunityEvent("USER", "INSTITUTE_MODERATOR", "COMMUNITY_MODERATOR"), true);
+});
+
+test("certificate management is limited to global moderators and institute admins", () => {
+  assert.equal(canManageCertificates("SUPER_ADMIN"), true);
+  assert.equal(canManageCertificates("APP_MODERATOR"), true);
+  assert.equal(canManageCertificates("USER", "INSTITUTE_ADMIN"), true);
+  assert.equal(canManageCertificates("USER", "INSTITUTE_MODERATOR"), false);
+  assert.equal(canManageCertificates("USER", "INSTITUTE_MEMBER"), false);
+  assert.equal(canManageCertificates("USER"), false);
+});
+
+test("walk-in attendance access includes event managers and global moderators only", () => {
+  assert.equal(canManageEventAttendance("USER", true, false), true);
+  assert.equal(canManageEventAttendance("USER", false, true), true);
+  assert.equal(canManageEventAttendance("APP_MODERATOR", false, false), true);
+  assert.equal(canManageEventAttendance("SUPER_ADMIN", false, false), true);
+  assert.equal(canManageEventAttendance("USER", false, false), false);
 });

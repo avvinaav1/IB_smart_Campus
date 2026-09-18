@@ -1,7 +1,6 @@
 "use client";
 
 import Image from "next/image";
-import Link from "next/link";
 import dynamic from "next/dynamic";
 import { CertificateGallery, CertificateInbox } from "@/components/certificates/certificate-gallery";
 import {
@@ -20,8 +19,9 @@ import { ProfileSetup } from "@/components/profile-setup";
 import { CommunityModerationPanel, GlobalAdminDashboard, InstituteDashboard } from "@/components/moderation-dashboard";
 import { coverImageStyle, eventWhen } from "@/lib/event-format";
 import type { CampusEvent, ChatRequestView, Community, CommunityType, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, InstituteSummary, Post, SessionUser, UserDashboard, UserNotification, UserSearchResult, View } from "@/lib/types";
+import { announceDataChange, mutationSucceeded, subscribeToDataChanges } from "@/lib/client-data-sync";
 
-const CertificateBuilder = dynamic(() => import("@/components/certificates/certificate-builder"), { ssr: false });
+const CertificatePortal = dynamic(() => import("@/components/certificates/certificate-portal"), { ssr: false });
 
 const nav = [
   { id: "home" as View, label: "Home", icon: Home },
@@ -66,6 +66,7 @@ async function requestJson<T>(url: string, init?: RequestInit) {
   const response = await fetch(url, init);
   const result = await response.json() as { data?: T; error?: string };
   if (!response.ok) throw new Error(result.error || "Something went wrong. Please try again.");
+  if (mutationSucceeded(init)) announceDataChange();
   return result.data;
 }
 
@@ -88,7 +89,7 @@ function Toast({ message }: { message: string }) {
   return <div className="toast" role="status"><Check size={17} strokeWidth={3} />{message}</div>;
 }
 
-export function SmartCampusApp({ previewUser, initialView = "home", initialCommunityId = "", initialChatRequests = false }: { previewUser?: SessionUser; initialView?: View; initialCommunityId?: string; initialChatRequests?: boolean }) {
+export function SmartCampusApp({ previewUser, initialView = "home", initialCommunityId = "", initialChatRequests = false, initialVerificationCode = "" }: { previewUser?: SessionUser; initialView?: View; initialCommunityId?: string; initialChatRequests?: boolean; initialVerificationCode?: string }) {
   const [authUser, setAuthUser] = useState<SessionUser | null | undefined>(previewUser);
   const previewMode = Boolean(previewUser && authUser?.id === previewUser.id);
   const [view, setView] = useState<View>(initialView);
@@ -112,8 +113,13 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   const [privacyPending, setPrivacyPending] = useState(false);
   const [votePending, setVotePending] = useState<Set<number>>(() => new Set());
   const [toast, setToast] = useState("");
+  const [dataRevision, setDataRevision] = useState(0);
   const voteRequests = useRef(new Set<number>());
   const unreadNotifications = notifications.filter((notification) => !notification.isRead).length;
+
+  useEffect(() => {
+    return subscribeToDataChanges(() => setDataRevision(value => value + 1));
+  }, []);
 
   useEffect(() => {
     if (previewUser) return;
@@ -162,14 +168,14 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       }
     }
     void refreshGlobalFeed();
-    const interval = window.setInterval(refreshGlobalFeed, 20_000);
+    const interval = window.setInterval(refreshGlobalFeed, 5_000);
     window.addEventListener("focus", refreshGlobalFeed);
     return () => {
       active = false;
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshGlobalFeed);
     };
-  }, [authUser, previewMode]);
+  }, [authUser, previewMode, dataRevision]);
 
   useEffect(() => {
     if (previewMode || !authUser?.profileSetupComplete) return;
@@ -186,14 +192,14 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       }
     }
     void refreshNotifications();
-    const interval = window.setInterval(refreshNotifications, 20_000);
+    const interval = window.setInterval(refreshNotifications, 5_000);
     window.addEventListener("focus", refreshNotifications);
     return () => {
       active = false;
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshNotifications);
     };
-  }, [authUser, notificationsOpen, previewMode]);
+  }, [authUser, notificationsOpen, previewMode, dataRevision]);
 
   useEffect(() => {
     if (previewMode || !authUser?.profileSetupComplete) return;
@@ -207,14 +213,14 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       }
     }
     void refreshCommunities();
-    const interval = window.setInterval(refreshCommunities, 20_000);
+    const interval = window.setInterval(refreshCommunities, 5_000);
     window.addEventListener("focus", refreshCommunities);
     return () => {
       active = false;
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshCommunities);
     };
-  }, [authUser, previewMode]);
+  }, [authUser, previewMode, dataRevision]);
 
   useEffect(() => {
     if (previewMode || !authUser?.profileSetupComplete) return;
@@ -231,14 +237,14 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       }
     }
     void refreshGlobalEvents();
-    const interval = window.setInterval(refreshGlobalEvents, 20_000);
+    const interval = window.setInterval(refreshGlobalEvents, 5_000);
     window.addEventListener("focus", refreshGlobalEvents);
     return () => {
       active = false;
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshGlobalEvents);
     };
-  }, [authUser, previewMode]);
+  }, [authUser, previewMode, dataRevision]);
 
   useEffect(() => {
     if (previewMode || !authUser?.profileSetupComplete) return;
@@ -252,14 +258,14 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       }
     }
     void refreshDashboard();
-    const interval = window.setInterval(refreshDashboard, 20_000);
+    const interval = window.setInterval(refreshDashboard, 5_000);
     window.addEventListener("focus", refreshDashboard);
     return () => {
       active = false;
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshDashboard);
     };
-  }, [authUser, previewMode]);
+  }, [authUser, previewMode, dataRevision]);
 
   function toggleTheme() {
     const next = theme === "light" ? "dark" : "light";
@@ -273,7 +279,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  const viewTitle: Record<View, string> = { home: "Your campus", explore: "Explore", events: "Events", rewards: "Rewards", chat: "Messages", profile: "Profile", certificates: "Certificate studio", admin: "Global administration", institute: "Institute dashboard" };
+  const viewTitle: Record<View, string> = { home: "Your campus", explore: "Explore", events: "Events", rewards: "Rewards", chat: "Messages", profile: "Profile", certificates: "Certificate portal", admin: "Global administration", institute: "Institute dashboard" };
 
   function resetUserState() {
     setPosts([]);
@@ -363,6 +369,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "The post could not be saved.");
       const saved = result.data?.post as Post;
+      announceDataChange();
       setPosts((current) => [saved, ...current.filter((post) => post.clientRequestId !== clientRequestId && post.id !== saved.id)]);
       void requestUserDashboard().then(setDashboard).catch(() => undefined);
       setToast(`Posted to ${saved.community}`);
@@ -428,6 +435,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Your vote could not be saved.");
       const saved = result.data.post as Post;
+      announceDataChange();
       setPosts((current) => current.map((post) => post.id === id ? { ...saved, saved: post.saved } : post));
       void requestUserDashboard().then(setDashboard).catch(() => undefined);
     } catch (error) {
@@ -492,14 +500,14 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
         </header>
 
         <main>
-          {view === "certificates" && <CertificateBuilder preview={previewMode} events={events} />}
+          {view === "certificates" && <CertificatePortal preview={previewMode} events={events} appRole={authUser.appRole} initialCode={initialVerificationCode} />}
           {view === "home" && <HomeView user={authUser} posts={posts} events={events.filter((event) => event.status === "APPROVED")} communities={communities} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} />}
           {view === "explore" && <ExploreView user={authUser} items={communities} setItems={setCommunities} posts={posts} setPosts={setPosts} vote={persistVote} votePending={votePending} notify={setToast} onMembership={persistCommunityMembership} onEvents={() => go("events")} openComments={setCommentPostId} openComposer={(community = "c/campuslife") => { setComposerCommunity(community); setComposerOpen(true); }} initialCommunityId={initialCommunityId} />}
           {view === "events" && <EventsView events={events} communities={communities} defaultCampus={authUser.campus || ""} onEvent={setEventOpen} onCreated={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setEventOpen(event); }} notify={setToast} />}
           {view === "rewards" && <RewardsView user={authUser} notify={setToast} />}
           {view === "chat" && <ChatView user={authUser} notify={setToast} onDiscover={() => setSearchOpen(true)} initialRequests={initialChatRequests} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
           {view === "profile" && <ProfileView user={authUser} dashboard={dashboard} theme={theme} toggleTheme={toggleTheme} privacyPending={privacyPending} onPrivacyChange={changePrivacy} onRewards={() => go("rewards")} onEdit={() => setProfileEditorOpen(true)} onLogout={logout} />}
-          {view === "profile" && <CertificateGallery userId={authUser.id} preview={previewMode} onBuild={() => go("certificates")} />}
+          {view === "profile" && <CertificateGallery userId={authUser.id} preview={previewMode} canManage={authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN"} onBuild={() => go("certificates")} />}
           {view === "admin" && (authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN") && <GlobalAdminDashboard user={authUser} notify={setToast} />}
           {view === "institute" && <InstituteDashboard user={authUser} communities={communities} notify={setToast} onCreateCommunity={setInstituteCommunityTarget} onCreateEvent={setInstituteEventTarget} onCommunityChanged={(community) => setCommunities((current) => [community, ...current.filter((item) => item.id !== community.id)])} />}
         </main>
@@ -709,7 +717,6 @@ function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending
   if (selectedCommunity) return <CommunityDetail key={selectedCommunity.id} user={user} communities={items} posts={posts} setPosts={setPosts} vote={vote} votePending={votePending} community={selectedCommunity} notify={notify} openComments={openComments} openComposer={() => openComposer(selectedCommunity.name)} goBack={() => setSelectedId(null)} onOpenCommunity={setSelectedId} onMembership={onMembership} toggleMembership={() => void onMembership(selectedCommunity)} onUpdated={(updated) => setItems((current) => current.map((item) => item.id === updated.id ? updated : item))} onCommunityCreated={(created) => setItems((current) => [created, ...current])} />;
   return <div className="content-page">
     <section className="page-hero explore-hero"><div><span className="eyebrow lime">FIND YOUR PEOPLE</span><h1>Campus is better together.</h1><p>Clubs, obsessions, niche questions and the people who get it.</p></div><span className="hero-sticker">COME<br />HANG<br />OUT <i>→</i></span></section>
-    <section className="explore-verification" aria-labelledby="explore-verification-title"><span className="explore-verification-icon"><ShieldCheck size={28} aria-hidden="true" /></span><div><span className="eyebrow violet">CERTIFICATE VERIFICATION</span><h2 id="explore-verification-title">Check an achievement.</h2><p>Enter a certificate’s unique code to confirm its recipient, event, issue date and issuer. No account needed.</p></div><Link href="/verify" className="explore-verification-link">Verify a certificate<ArrowRight size={18} aria-hidden="true" /></Link></section>
     <div className="explore-toolbar"><label><Search size={20} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search communities" /></label><div className="toolbar-actions"><button className="outline-button" onClick={onEvents}><CalendarDays size={19} /> Browse events</button><button className="primary-action" onClick={() => setCreating(true)}><Plus size={19} /> Create community</button></div></div>
     <div className="category-chips">{["All", "Campus life", "Creative", "Tech", "Sports", "Culture", "Food"].map((x, i) => <button className={i === 0 ? "active" : ""} key={x}>{x}</button>)}</div>
     <div className="community-grid">{filtered.map((item, index) => <CommunityCard key={item.id} item={item} index={index} communities={items} onOpen={setSelectedId} onMembership={onMembership} />)}</div>
