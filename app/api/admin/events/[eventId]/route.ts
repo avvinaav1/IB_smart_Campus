@@ -12,6 +12,6 @@ export async function GET(request: NextRequest, context: { params: Promise<{ eve
   const result = await getAdminEvent(eventId);
   if (!result) return noStoreJson({ error: "Event not found." }, { status: 404 });
   const users = await getEventAttendeeUsers(result.rsvps.map((rsvp) => rsvp.userId));
-  const attendees = result.rsvps.map((rsvp) => ({ ...rsvp, username: users.get(rsvp.userId)?.username || "Deleted user", email: users.get(rsvp.userId)?.email || "" }));
+  const attendees = result.rsvps.map((rsvp) => ({ ...rsvp, username: rsvp.participantName || users.get(rsvp.userId)?.username || "Deleted user", email: rsvp.participantEmail || users.get(rsvp.userId)?.email || "", phone: rsvp.participantPhone, institution: rsvp.institution, studentId: rsvp.studentId, registrationSource: rsvp.registrationSource }));
   return noStoreJson({ data: { event: result.event, attendees } });
 }

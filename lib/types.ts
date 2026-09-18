@@ -211,6 +211,10 @@ export type EventAttendee = {
   userId: string;
   username: string;
   email: string;
+  phone?: string;
+  institution?: string;
+  studentId?: string;
+  registrationSource: "ONLINE" | "MANUAL_WALK_IN";
   rsvpStatus: "going" | "waitlisted";
   status: "REGISTERED" | "CHECKED_IN";
   checkInCode: string;

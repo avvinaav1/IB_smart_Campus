@@ -54,6 +54,7 @@ export async function listInstitutes(viewerId: string) {
 }
 export async function listInstitutesForUser(userId: string) { await writeQueue; const db = await load(); const ids = new Set(Object.values(db.members).filter(m => m.userId === userId).map(m => m.instituteId)); return Object.values(db.institutes).filter(i => ids.has(i.id)); }
 export async function getInstituteMembership(instituteId: string, userId: string) { await writeQueue; const db = await load(); const id = db.memberIndex[key(instituteId, userId)]; return id ? db.members[id] || null : null; }
+export async function hasInstituteAdminRole(userId: string) { await writeQueue; const db = await load(); return Object.values(db.members).some(member => member.userId === userId && member.role === "INSTITUTE_ADMIN"); }
 export async function listInstituteMembers(instituteId: string) { await writeQueue; const db = await load(); return Object.values(db.members).filter(m => m.instituteId === instituteId).sort((a, b) => a.createdAt - b.createdAt); }
 export async function joinInstitute(instituteId: string, userId: string) {
   return mutate(db => {

@@ -1,6 +1,9 @@
+import { announceDataChange, mutationSucceeded } from "@/lib/client-data-sync";
+
 export async function certificateRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/certificates${path}`, { cache: "no-store", ...init });
   const result = await response.json(); if (!response.ok) throw new Error(result.error || "Certificate request failed");
+  if (mutationSucceeded(init)) announceDataChange();
   return result.data as T;
 }
 export function jsonRequest(body: unknown, method = "POST"): RequestInit { return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }; }

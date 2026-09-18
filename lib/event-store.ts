@@ -5,7 +5,7 @@ import { getCommunityAccess, getCommunitySummary } from "@/lib/community-store";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import { events as initialEvents } from "@/lib/data";
 import type { CampusEvent, CoverFit, CustomFormAnswers, CustomFormField, CustomFormSchema, EventStatus } from "@/lib/types";
-import { eventStatusForCommunity, normalizeEventStatus } from "@/lib/moderation-policy";
+import { canManageEventAttendance, eventStatusForCommunity, normalizeEventStatus } from "@/lib/moderation-policy";
 import { getInstitute, getInstituteMembership } from "@/lib/institute-store";
 
 export type { CoverFit } from "@/lib/types";
@@ -50,6 +50,12 @@ export type RsvpRecord = {
   customFormAnswers: CustomFormAnswers;
   checkInCode: string;
   status: CheckInStatus;
+  registrationSource: "ONLINE" | "MANUAL_WALK_IN";
+  participantName?: string;
+  participantEmail?: string;
+  participantPhone?: string;
+  institution?: string;
+  studentId?: string;
   checkedInAt?: number;
   checkedInBy?: string;
   createdAt: number;
@@ -79,6 +85,15 @@ type LegacyEventDatabase = {
   events?: Record<string, Partial<StoredEvent>>;
   rsvps?: Record<string, Omit<Partial<RsvpRecord>, "status"> & { status?: string }>;
   eventAdmins?: Record<string, Partial<EventAdminRecord>>;
+};
+
+export type ManualWalkInInput = {
+  name: string;
+  email?: string;
+  phone?: string;
+  institution?: string;
+  studentId?: string;
+  checkedInAt: number;
 };
 
 export type NewEventInput = {
@@ -251,6 +266,12 @@ function normalizeDatabase(stored: LegacyEventDatabase): EventDatabase {
       : {};
     const rsvp: RsvpRecord = {
       id, eventId: rawRsvp.eventId, userId: rawRsvp.userId, rsvpStatus, customFormAnswers: answers, checkInCode, status,
+      registrationSource: rawRsvp.registrationSource === "MANUAL_WALK_IN" ? "MANUAL_WALK_IN" : "ONLINE",
+      ...(typeof rawRsvp.participantName === "string" ? { participantName: rawRsvp.participantName } : {}),
+      ...(typeof rawRsvp.participantEmail === "string" ? { participantEmail: rawRsvp.participantEmail } : {}),
+      ...(typeof rawRsvp.participantPhone === "string" ? { participantPhone: rawRsvp.participantPhone } : {}),
+      ...(typeof rawRsvp.institution === "string" ? { institution: rawRsvp.institution } : {}),
+      ...(typeof rawRsvp.studentId === "string" ? { studentId: rawRsvp.studentId } : {}),
       ...(typeof rawRsvp.checkedInAt === "number" ? { checkedInAt: rawRsvp.checkedInAt } : {}),
       ...(typeof rawRsvp.checkedInBy === "string" ? { checkedInBy: rawRsvp.checkedInBy } : {}),
       createdAt: typeof rawRsvp.createdAt === "number" ? rawRsvp.createdAt : Date.now(),
@@ -294,11 +315,11 @@ function mutate<T>(action: (database: EventDatabase) => T | Promise<T>): Promise
   return operation;
 }
 
-function canManage(database: EventDatabase, event: StoredEvent, userId: string) {
-  return event.creatorId === userId || Boolean(database.eventAdminIndex[eventAdminKey(event.id, userId)]);
+function canManage(database: EventDatabase, event: StoredEvent, userId: string, globalModerator = false) {
+  return canManageEventAttendance(globalModerator ? "APP_MODERATOR" : "USER", event.creatorId === userId, Boolean(database.eventAdminIndex[eventAdminKey(event.id, userId)]));
 }
 
-function publicEvent(database: EventDatabase, event: StoredEvent, viewerId: string): CampusEvent {
+function publicEvent(database: EventDatabase, event: StoredEvent, viewerId: string, globalModerator = false): CampusEvent {
   const rsvps = Object.values(database.rsvps).filter((rsvp) => rsvp.eventId === event.id);
   const viewerRsvp = rsvps.find((rsvp) => rsvp.userId === viewerId);
   const start = new Date(event.startsAt);
@@ -318,7 +339,7 @@ function publicEvent(database: EventDatabase, event: StoredEvent, viewerId: stri
     viewerRsvpStatus: viewerRsvp?.rsvpStatus,
     viewerCheckInCode: viewerRsvp?.checkInCode,
     viewerCheckInStatus: viewerRsvp?.status,
-    isCreator, isEventAdmin, canManageEvent: isCreator || isEventAdmin,
+    isCreator, isEventAdmin, canManageEvent: canManageEventAttendance(globalModerator ? "APP_MODERATOR" : "USER", isCreator, isEventAdmin),
     month: started.month,
     day: started.day,
     time: started.time,
@@ -366,10 +387,10 @@ export function validateEventInput(input: NewEventInput, options?: { allowPastSt
   return validateCustomFormSchema(input.customFormSchema);
 }
 
-export async function listEvents(viewerId: string) {
+export async function listEvents(viewerId: string, options?: { globalModerator?: boolean }) {
   await writeQueue;
   const database = await loadDatabase();
-  return Object.values(database.events).filter((event) => event.status === "APPROVED" || event.creatorId === viewerId).sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime() || b.createdAt - a.createdAt).map((event) => publicEvent(database, event, viewerId));
+  return Object.values(database.events).filter((event) => event.status === "APPROVED" || event.creatorId === viewerId).sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime() || b.createdAt - a.createdAt).map((event) => publicEvent(database, event, viewerId, options?.globalModerator));
 }
 
 export async function getEvent(eventId: string, viewerId: string) {
@@ -525,7 +546,7 @@ export async function setEventRsvp(eventId: string, userId: string, submittedAns
     const goingCount = Object.values(database.rsvps).filter((rsvp) => rsvp.eventId === eventId && rsvp.rsvpStatus === "going").length;
     const now = Date.now();
     const checkInCode = generateUniqueCheckInCode(database);
-    const rsvp: RsvpRecord = { id: randomUUID(), eventId, userId, rsvpStatus: goingCount >= event.capacity ? "waitlisted" : "going", customFormAnswers: answerResult.answers, checkInCode, status: "REGISTERED", createdAt: now, updatedAt: now };
+    const rsvp: RsvpRecord = { id: randomUUID(), eventId, userId, rsvpStatus: goingCount >= event.capacity ? "waitlisted" : "going", customFormAnswers: answerResult.answers, checkInCode, status: "REGISTERED", registrationSource: "ONLINE", createdAt: now, updatedAt: now };
     database.rsvps[rsvp.id] = rsvp;
     database.rsvpIndex[rsvpKey(eventId, userId)] = rsvp.id;
     database.checkInCodeIndex[checkInCode] = rsvp.id;
@@ -552,13 +573,13 @@ export async function cancelEventRsvp(eventId: string, userId: string) {
   });
 }
 
-export async function listEventRsvpsForManager(eventId: string, userId: string) {
+export async function listEventRsvpsForManager(eventId: string, userId: string, options?: { globalModerator?: boolean }) {
   await writeQueue;
   const database = await loadDatabase();
   const event = database.events[eventId];
   if (!event) return { error: "Event not found.", status: 404 } as const;
   if (event.status !== "APPROVED") return { error: "This event is not currently live.", status: 409 } as const;
-  if (!canManage(database, event, userId)) return { error: "You are not allowed to manage this event.", status: 403 } as const;
+  if (!canManage(database, event, userId, options?.globalModerator)) return { error: "You are not allowed to manage this event.", status: 403 } as const;
   const rsvps = Object.values(database.rsvps).filter((rsvp) => rsvp.eventId === eventId).sort((a, b) => a.createdAt - b.createdAt);
   return { event, rsvps, isCreator: event.creatorId === userId } as const;
 }
@@ -589,12 +610,12 @@ export async function getAttendeeCheckIn(eventId: string, managerId: string, rsv
   return { checkInCode: rsvp.checkInCode } as const;
 }
 
-export async function listEventAdminsForManager(eventId: string, userId: string) {
+export async function listEventAdminsForManager(eventId: string, userId: string, options?: { globalModerator?: boolean }) {
   await writeQueue;
   const database = await loadDatabase();
   const event = database.events[eventId];
   if (!event) return { error: "Event not found.", status: 404 } as const;
-  if (!canManage(database, event, userId)) return { error: "You are not allowed to manage this event.", status: 403 } as const;
+  if (!canManage(database, event, userId, options?.globalModerator)) return { error: "You are not allowed to manage this event.", status: 403 } as const;
   return { event, isCreator: event.creatorId === userId, admins: Object.values(database.eventAdmins).filter((admin) => admin.eventId === eventId).sort((a, b) => a.createdAt - b.createdAt) } as const;
 }
 
@@ -626,12 +647,12 @@ export async function removeEventAdmin(eventId: string, creatorId: string, admin
   });
 }
 
-export async function checkInEventAttendee(eventId: string, managerId: string, submittedCode: string) {
+export async function checkInEventAttendee(eventId: string, managerId: string, submittedCode: string, options?: { globalModerator?: boolean }) {
   return mutate((database) => {
     const event = database.events[eventId];
     if (!event) return { error: "Event not found.", status: 404 } as const;
     if (event.status !== "APPROVED") return { error: "This event is not currently live.", status: 409 } as const;
-    if (!canManage(database, event, managerId)) return { error: "You are not allowed to check in attendees for this event.", status: 403 } as const;
+    if (!canManage(database, event, managerId, options?.globalModerator)) return { error: "You are not allowed to check in attendees for this event.", status: 403 } as const;
     const code = submittedCode.trim().toUpperCase();
     if (!/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/.test(code)) return { error: "Enter a valid 6-character check-in code.", status: 400 } as const;
     const rsvpId = database.checkInCodeIndex[code];
@@ -642,6 +663,43 @@ export async function checkInEventAttendee(eventId: string, managerId: string, s
     const now = Date.now();
     rsvp.status = "CHECKED_IN"; rsvp.checkedInAt = now; rsvp.checkedInBy = managerId; rsvp.updatedAt = now;
     return { rsvp } as const;
+  });
+}
+
+function normalizedEmail(value?: string) { return value?.trim().toLowerCase() || ""; }
+function normalizedPhone(value?: string) { return value?.replace(/\D/g, "") || ""; }
+function normalizedStudentId(value?: string) { return value?.trim().toLowerCase().replace(/\s+/g, "") || ""; }
+
+export async function addManualWalkIn(eventId: string, managerId: string, input: ManualWalkInInput, options?: { globalModerator?: boolean; registeredEmails?: string[] }) {
+  return mutate((database) => {
+    const event = database.events[eventId];
+    if (!event) return { error: "Event not found.", status: 404 } as const;
+    if (event.status !== "APPROVED") return { error: "Walk-ins can only be added to a live event.", status: 409 } as const;
+    if (!canManage(database, event, managerId, options?.globalModerator)) return { error: "You are not allowed to add walk-ins for this event.", status: 403 } as const;
+    const name = input.name.trim(), email = normalizedEmail(input.email), phone = normalizedPhone(input.phone), studentId = input.studentId?.trim() || "";
+    if (name.length < 2 || name.length > 120) return { error: "Participant names must be 2–120 characters.", status: 400 } as const;
+    if (!email && !phone) return { error: "Add an email address or phone number.", status: 400 } as const;
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: "Enter a valid email address.", status: 400 } as const;
+    if (phone && (phone.length < 7 || phone.length > 15)) return { error: "Enter a valid phone number.", status: 400 } as const;
+    if (studentId.length > 80 || (input.institution?.trim().length || 0) > 160) return { error: "Institution details are too long.", status: 400 } as const;
+    const checkedInAt = Number(input.checkedInAt);
+    if (!Number.isFinite(checkedInAt) || checkedInAt <= 0 || checkedInAt > Date.now() + 5 * 60_000) return { error: "Choose a valid check-in time.", status: 400 } as const;
+    const registeredEmails = new Set((options?.registeredEmails || []).map(normalizedEmail).filter(Boolean));
+    const duplicate = Object.values(database.rsvps).find(rsvp => rsvp.eventId === eventId && (
+      (email && normalizedEmail(rsvp.participantEmail) === email)
+      || (phone && normalizedPhone(rsvp.participantPhone) === phone)
+      || (studentId && normalizedStudentId(rsvp.studentId) === normalizedStudentId(studentId))
+    ));
+    if (duplicate || (email && registeredEmails.has(email))) return { error: "A participant with that email, phone number, or student ID is already registered.", status: 409 } as const;
+    const now = Date.now(), id = randomUUID(), checkInCode = generateUniqueCheckInCode(database);
+    const rsvp: RsvpRecord = {
+      id, eventId, userId: `manual-${id}`, rsvpStatus: "going", customFormAnswers: {}, checkInCode, status: "CHECKED_IN", registrationSource: "MANUAL_WALK_IN",
+      participantName: name, ...(email ? { participantEmail: email } : {}), ...(phone ? { participantPhone: phone } : {}),
+      ...(input.institution?.trim() ? { institution: input.institution.trim() } : {}), ...(studentId ? { studentId } : {}),
+      checkedInAt, checkedInBy: managerId, createdAt: now, updatedAt: now,
+    };
+    database.rsvps[id] = rsvp; database.rsvpIndex[rsvpKey(eventId, rsvp.userId)] = id; database.checkInCodeIndex[checkInCode] = id;
+    return { rsvp, event: publicEvent(database, event, managerId, options?.globalModerator) } as const;
   });
 }
 

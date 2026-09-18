@@ -11,6 +11,7 @@ import { addExternal, canViewProfile, changeCertificate, createJob, getCertifica
 import { jobInputSchema, layoutSchema, MAX_UPLOAD, type JobRow } from "./model";
 import { matchRecipient } from "./matching";
 import { smtpConfigured } from "./email";
+import { mayManageCertificates } from "./access";
 import { processJob } from "./worker";
 
 class ApiError extends Error { constructor(message: string, public status = 400) { super(message); } }
@@ -64,7 +65,19 @@ export async function handleCertificates(request: NextRequest, path: string[]) {
       return assetResponse(c.assetId, request.nextUrl.searchParams.has("download") ? `certificate-${c.id}.png` : undefined);
     }
     if (!user) throw new ApiError("Sign in to save or deliver certificates. Local preview supports editing and ZIP export.", 401);
+    if (method === "GET" && path[0] === "access" && path.length === 1) return json({ canManage: await mayManageCertificates(user) });
     if (method === "GET" && !path.length) return json(await listCertificates(user.id, user.id, request.nextUrl.searchParams.get("cursor") || undefined));
+    if (path[0] === "inbox") {
+      const messages = firestore().collection("certificateInboxes").doc(user.id).collection("messages");
+      if (method === "GET" && path.length === 1) {
+        let query = messages.orderBy("createdAt", "desc").orderBy("__name__", "desc");
+        const cursor = request.nextUrl.searchParams.get("cursor"); if (cursor) { const doc = await messages.doc(safeId(cursor)).get(); if (doc.exists) query = query.startAfter(doc); }
+        const page = await query.limit(24).get();
+        return json({ messages: page.docs.map(d => ({ ...d.data(), id: d.id, imageUrl: `/api/certificates/${d.get("certificateId")}/image` })), nextCursor: page.size === 24 ? page.docs.at(-1)!.id : null });
+      }
+      if (method === "PATCH" && path.length === 2) { const ref = messages.doc(path[1]); if (!(await ref.get()).exists) throw new ApiError("Message not found", 404); await ref.update({ readAt: Date.now() }); return json({ ok: true }); }
+    }
+    if (!await mayManageCertificates(user)) throw new ApiError("Certificate management requires Super Admin, App Moderator, or Institute Admin access.", 403);
     if (path[0] === "assets" && method === "POST" && path.length === 1) {
       const raw = await boundedBody(request, MAX_UPLOAD + 65536);
       const form = await new Request(request.url, { method: "POST", headers: { "Content-Type": request.headers.get("content-type") || "" }, body: raw }).formData();
@@ -174,16 +187,6 @@ export async function handleCertificates(request: NextRequest, path: string[]) {
       }
       const page = await firestore().collection("certificateTemplates").where("ownerId", "==", user.id).orderBy("updatedAt", "desc").limit(30).get();
       return json({ templates: page.docs.map(d => ({ id: d.id, title: d.get("title") })) });
-    }
-    if (path[0] === "inbox") {
-      const messages = firestore().collection("certificateInboxes").doc(user.id).collection("messages");
-      if (method === "GET" && path.length === 1) {
-        let query = messages.orderBy("createdAt", "desc").orderBy("__name__", "desc");
-        const cursor = request.nextUrl.searchParams.get("cursor"); if (cursor) { const doc = await messages.doc(safeId(cursor)).get(); if (doc.exists) query = query.startAfter(doc); }
-        const page = await query.limit(24).get();
-        return json({ messages: page.docs.map(d => ({ ...d.data(), id: d.id, imageUrl: `/api/certificates/${d.get("certificateId")}/image` })), nextCursor: page.size === 24 ? page.docs.at(-1)!.id : null });
-      }
-      if (method === "PATCH" && path.length === 2) { const ref = messages.doc(path[1]); if (!(await ref.get()).exists) throw new ApiError("Message not found", 404); await ref.update({ readAt: Date.now() }); return json({ ok: true }); }
     }
     if (path.length === 1 && method === "PATCH") { const data = z.object({ action: z.enum(["public", "private", "deleted"]) }).parse(await bodyJson(request)); await changeCertificate(path[0], user.id, data.action); return json({ stats: await statsFor(user.id) }); }
     throw new ApiError("Endpoint not found", 404);

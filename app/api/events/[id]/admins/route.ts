@@ -1,15 +1,16 @@
 import type { NextRequest } from "next/server";
-import { getDirectoryUser, getDirectoryUsers } from "@/lib/auth-store";
-import { authenticatedUserId, isSameOrigin, noStoreJson, readJson } from "@/lib/auth-http";
+import { getDirectoryUser, getDirectoryUsers, getFreshSession } from "@/lib/auth-store";
+import { authenticatedUserId, isSameOrigin, noStoreJson, readJson, SESSION_COOKIE } from "@/lib/auth-http";
 import { addEventAdmin, listEventAdminsForManager } from "@/lib/event-store";
+import { isGlobalModerator } from "@/lib/moderation-policy";
 
 export const runtime = "nodejs";
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const userId = await authenticatedUserId(request);
-  if (!userId) return noStoreJson({ error: "Your session has expired." }, { status: 401 });
+  const session = await getFreshSession(request.cookies.get(SESSION_COOKIE)?.value);
+  if (!session) return noStoreJson({ error: "Your session has expired." }, { status: 401 });
   const { id } = await params;
-  const result = await listEventAdminsForManager(id, userId);
+  const result = await listEventAdminsForManager(id, session.id, { globalModerator: isGlobalModerator(session.appRole) });
   if ("error" in result) return noStoreJson({ error: result.error }, { status: result.status });
   const users = await getDirectoryUsers(result.admins.map((admin) => admin.userId));
   const admins = result.admins.flatMap((admin) => {
