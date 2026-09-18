@@ -6,7 +6,7 @@ import "./certificates.css";
 export const metadata: Metadata = {
   metadataBase: new URL("https://ibcampus.icebrkr.space"),
 
-  title: {
+  title: {  
     default: "IB Smart Campus — Digital Campus Platform",
     template: "%s | IB Smart Campus",
   },
@@ -118,9 +118,31 @@ export const metadata: Metadata = {
 
 
   icons: {
-    icon: "/smart-campus-logo-black.png",
-    apple: "/smart-campus-logo-black.png",
+    icon: [
+      { url: "/favicon.ico", type: "image/x-icon" },
+      {
+        url: "/favicon-96x96.png",
+        type: "image/png",
+        sizes: "96x96",
+      },
+    ],
+    apple: [
+      {
+        url: "/apple-touch-icon.png",
+        sizes: "180x180",
+        type: "image/png",
+      },
+    ],
   },
+  manifest: "/site.webmanifest",
+};
+
+const websiteJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  name: "IB Smart Campus",
+  alternateName: "IB Smart Campus by ICEBRKR",
+  url: "https://ibcampus.icebrkr.space/",
 };
 
 export const viewport: Viewport = {
@@ -150,6 +172,12 @@ export default function RootLayout({
         <script
           dangerouslySetInnerHTML={{
             __html: themeScript,
+          }}
+        />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify(websiteJsonLd),
           }}
         />
       </head>
