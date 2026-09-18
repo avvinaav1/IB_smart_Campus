@@ -1,6 +1,8 @@
 import type { NextRequest } from "next/server";
-import { authenticatedUserId, isSameOrigin, noStoreJson, readJson } from "@/lib/auth-http";
+import { authenticatedUserId, isSameOrigin, noStoreJson, readJson, SESSION_COOKIE } from "@/lib/auth-http";
 import { createEvent, listEvents, type CoverFit, type NewEventInput, validateEventInput } from "@/lib/event-store";
+import { getFreshSession } from "@/lib/auth-store";
+import { isGlobalModerator } from "@/lib/moderation-policy";
 
 export const runtime = "nodejs";
 
@@ -33,7 +35,9 @@ export async function POST(request: NextRequest) {
     venueAddress: typeof body.venueAddress === "string" ? body.venueAddress : "",
     directionsUrl: typeof body.directionsUrl === "string" ? body.directionsUrl : "",
     campus: typeof body.campus === "string" ? body.campus : "",
-    community: typeof body.community === "string" && body.community !== "None" ? body.community : undefined,
+    community: typeof body.community === "string" && body.community !== "None" ? body.community : typeof body.communityId === "string" ? body.communityId : undefined,
+    communityId: typeof body.communityId === "string" ? body.communityId : undefined,
+    instituteId: typeof body.instituteId === "string" ? body.instituteId : undefined,
     startsAt: typeof body.startsAt === "string" ? body.startsAt : "",
     endsAt: typeof body.endsAt === "string" && body.endsAt ? body.endsAt : undefined,
     capacity: typeof body.capacity === "number" ? body.capacity : Number.NaN,
@@ -45,7 +49,8 @@ export async function POST(request: NextRequest) {
   };
   const validationError = validateEventInput(input);
   if (validationError) return noStoreJson({ error: validationError }, { status: 400 });
-  const event = await createEvent(userId, input);
+  const session = await getFreshSession(request.cookies.get(SESSION_COOKIE)?.value);
+  const event = await createEvent(userId, input, { globalModerator: Boolean(session && isGlobalModerator(session.appRole)) });
   return "error" in event
     ? noStoreJson({ error: event.error }, { status: event.status })
     : noStoreJson({ data: { event } }, { status: 201 });

@@ -1,4 +1,4 @@
-import type { AppRole, CommunityRole, EventStatus } from "@/lib/types";
+import type { AppRole, CommunityRole, EventStatus, InstituteRole } from "@/lib/types";
 
 export const SUPER_ADMIN_USERNAME = "kavinav75";
 
@@ -27,6 +27,26 @@ export function eventStatusForCommunity(communityId?: string | null): EventStatu
 
 export function isGlobalModerator(appRole: AppRole) {
   return appRole === "APP_MODERATOR" || appRole === "SUPER_ADMIN";
+}
+
+export function canManageInstitutes(appRole: AppRole) {
+  return isGlobalModerator(appRole);
+}
+
+export function isInstituteModerator(role?: InstituteRole) {
+  return role === "INSTITUTE_ADMIN" || role === "INSTITUTE_MODERATOR";
+}
+
+export function canApproveInstituteEvent(appRole: AppRole, instituteRole?: InstituteRole) {
+  return isGlobalModerator(appRole) || instituteRole === "INSTITUTE_ADMIN" || instituteRole === "INSTITUTE_MODERATOR";
+}
+
+export function canApproveInstituteCommunityEvent(appRole: AppRole, instituteRole?: InstituteRole, communityRole?: CommunityRole) {
+  return isGlobalModerator(appRole) || instituteRole === "INSTITUTE_ADMIN" || instituteRole === "INSTITUTE_MODERATOR" || communityRole === "COMMUNITY_ADMIN";
+}
+
+export function canCreateInstituteContent(appRole: AppRole, instituteRole?: InstituteRole) {
+  return isGlobalModerator(appRole) || instituteRole === "INSTITUTE_ADMIN" || instituteRole === "INSTITUTE_MODERATOR" || instituteRole === "INSTITUTE_MEMBER";
 }
 
 export function canDelegateAppRoles(appRole: AppRole) {

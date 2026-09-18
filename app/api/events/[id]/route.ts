@@ -1,6 +1,8 @@
 import type { NextRequest } from "next/server";
-import { authenticatedUserId, isSameOrigin, noStoreJson, readJson } from "@/lib/auth-http";
+import { authenticatedUserId, isSameOrigin, noStoreJson, readJson, SESSION_COOKIE } from "@/lib/auth-http";
 import { type EventUpdateInput, getEvent, updateEvent } from "@/lib/event-store";
+import { getFreshSession } from "@/lib/auth-store";
+import { isGlobalModerator } from "@/lib/moderation-policy";
 
 export const runtime = "nodejs";
 
@@ -30,6 +32,8 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
   if (typeof body.directionsUrl === "string") patch.directionsUrl = body.directionsUrl;
   if (typeof body.campus === "string") patch.campus = body.campus;
   if (typeof body.community === "string") patch.community = body.community === "None" ? null : body.community;
+  if (typeof body.communityId === "string" || body.communityId === null) patch.communityId = body.communityId || null;
+  if (typeof body.instituteId === "string" || body.instituteId === null) patch.instituteId = body.instituteId || null;
   if (typeof body.startsAt === "string") patch.startsAt = body.startsAt;
   if (typeof body.endsAt === "string") patch.endsAt = body.endsAt; // "" clears the end
   if (typeof body.capacity === "number") patch.capacity = body.capacity;
@@ -39,7 +43,8 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
   if (typeof body.coverFocusY === "number") patch.coverFocusY = body.coverFocusY;
   if (body.customFormSchema !== undefined) patch.customFormSchema = body.customFormSchema as EventUpdateInput["customFormSchema"];
 
-  const result = await updateEvent(id, userId, patch);
+  const session = await getFreshSession(request.cookies.get(SESSION_COOKIE)?.value);
+  const result = await updateEvent(id, userId, patch, { globalModerator: Boolean(session && isGlobalModerator(session.appRole)) });
   return "error" in result
     ? noStoreJson({ error: result.error }, { status: result.status })
     : noStoreJson({ data: { event: result.event } });

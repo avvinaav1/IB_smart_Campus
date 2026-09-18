@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { isSameOrigin, noStoreJson } from "@/lib/auth-http";
 import { getEventModerationContext } from "@/lib/event-store";
 import { cascadeDeleteEvent } from "@/lib/moderation-cascade";
-import { requireCommunityModerator, requireGlobalModerator } from "@/lib/moderation-auth";
+import { requireCommunityModerator, requireGlobalModerator, requireInstituteRole } from "@/lib/moderation-auth";
 
 export const runtime = "nodejs";
 export async function DELETE(request: NextRequest, context: { params: Promise<{ eventId: string }> }) {
@@ -12,7 +12,9 @@ export async function DELETE(request: NextRequest, context: { params: Promise<{ 
   if (!event) return noStoreJson({ error: "Event not found." }, { status: 404 });
   const auth = event.communityId
     ? await requireCommunityModerator(request, event.communityId)
-    : await requireGlobalModerator(request);
+    : event.instituteId
+      ? await requireInstituteRole(request, event.instituteId)
+      : await requireGlobalModerator(request);
   if ("response" in auth) return auth.response;
   try {
     const result = await cascadeDeleteEvent(eventId, event.communityId || null);

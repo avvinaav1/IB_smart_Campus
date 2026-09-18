@@ -2,8 +2,11 @@ import { randomUUID } from "node:crypto";
 import { communities as initialCommunities } from "@/lib/data";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import { communityHierarchyDeletionOrder, effectiveCommunityMemberCount, effectiveCommunityMemberRecords, isCommunityType, normalizeCommunityType, parentCommunityAdminMemberships, resolveCommunityHierarchyAccess, validateCommunityParent } from "@/lib/community-hierarchy";
-import type { Community, CommunityRole, CommunityType } from "@/lib/types";
+import type { Community, CommunityRole, CommunityType, InstituteRole } from "@/lib/types";
 import { normalizeCommunityRole } from "@/lib/moderation-policy";
+import { getInstitute, getInstituteMembership } from "@/lib/institute-store";
+import type { CommunityStatus } from "@/lib/types";
+import { instituteCommunityIdentity } from "@/lib/institute-community-naming";
 
 export type { CommunityRole } from "@/lib/types";
 export type CommunityPrivacy = "public" | "restricted" | "private";
@@ -11,6 +14,9 @@ export type CommunityPrivacy = "public" | "restricted" | "private";
 type StoredCommunity = {
   id: string;
   name: string;
+  slug: string;
+  instituteId: string | null;
+  status: CommunityStatus;
   type: CommunityType;
   parentId: string | null;
   description: string;
@@ -49,6 +55,7 @@ export type NewCommunityInput = {
   color: string;
   emoji: string;
   privacy: CommunityPrivacy;
+  instituteId?: string | null;
 };
 
 const STORE_DOC = process.env.COMMUNITIES_STORE_DOC || "communities";
@@ -79,6 +86,9 @@ function seededDatabase(): CommunityDatabase {
   const communities = Object.fromEntries(initialCommunities.map((community) => [community.id, {
     id: community.id,
     name: community.name,
+    slug: community.id,
+    instituteId: null,
+    status: "APPROVED" as const,
     type: community.type,
     parentId: community.parentId,
     description: community.description,
@@ -109,6 +119,9 @@ function hydrate(parsed: Partial<CommunityDatabase> | null): CommunityDatabase {
     parentId: typeof community.parentId === "string" && community.parentId ? community.parentId : null,
     iconUrl: typeof community.iconUrl === "string" ? community.iconUrl : "",
     bannerUrl: typeof community.bannerUrl === "string" ? community.bannerUrl : "",
+    slug: typeof community.slug === "string" && community.slug ? community.slug : community.name,
+    instituteId: typeof community.instituteId === "string" && community.instituteId ? community.instituteId : null,
+    status: community.status === "PENDING" || community.status === "REJECTED" ? community.status : "APPROVED",
   }])) as Record<string, StoredCommunity>;
   const database: CommunityDatabase = {
     version: 4,
@@ -118,6 +131,13 @@ function hydrate(parsed: Partial<CommunityDatabase> | null): CommunityDatabase {
     nameIndex: parsed.nameIndex || {},
   };
   for (const community of Object.values(database.communities)) {
+    if (community.instituteId) {
+      const previousName = community.name;
+      const identity = instituteCommunityIdentity(community.name);
+      community.name = identity.name;
+      community.slug = identity.slug;
+      if (previousName !== community.name) delete database.nameIndex[previousName.toLowerCase()];
+    }
     if (!community.parentId) continue;
     const parent = database.communities[community.parentId];
     if (!parent || parent.id === community.id || parent.parentId) community.parentId = null;
@@ -171,6 +191,16 @@ function publicCommunity(database: CommunityDatabase, community: StoredCommunity
   };
 }
 
+async function withInstituteRoles(items: Community[], viewerId: string) {
+  const instituteIds = [...new Set(items.map((item) => item.instituteId).filter((id): id is string => Boolean(id)))];
+  const roles = new Map<string, InstituteRole>();
+  await Promise.all(instituteIds.map(async (instituteId) => {
+    const membership = await getInstituteMembership(instituteId, viewerId);
+    if (membership) roles.set(instituteId, membership.role);
+  }));
+  return items.map((item) => item.instituteId ? { ...item, instituteRole: roles.get(item.instituteId) } : item);
+}
+
 export function validateCommunityInput(input: NewCommunityInput) {
   const name = normalizeName(input.name);
   if (!/^c\/[a-z0-9][a-z0-9-]{2,39}$/.test(name)) return "Community names need 3–40 letters, numbers, or hyphens.";
@@ -186,20 +216,30 @@ export function validateCommunityInput(input: NewCommunityInput) {
 export async function listCommunities(viewerId: string) {
   await writeQueue;
   const database = await loadDatabase();
-  return Object.values(database.communities)
+  const items = Object.values(database.communities)
+    .filter(community => community.status === "APPROVED" || community.creatorId === viewerId || resolveCommunityHierarchyAccess(database, community, viewerId).role === "COMMUNITY_ADMIN")
     .sort((a, b) => b.createdAt - a.createdAt || a.name.localeCompare(b.name))
     .map((community) => publicCommunity(database, community, viewerId));
+  return withInstituteRoles(items, viewerId);
 }
 
 export async function createCommunity(creatorId: string, input: NewCommunityInput) {
+  if (input.instituteId && !(await getInstitute(input.instituteId))) return { error: "Institute not found.", status: 404 } as const;
   return mutate((database) => {
-    const name = normalizeName(input.name);
+    const parent = input.parentId ? database.communities[input.parentId] : null;
+    if (parent?.instituteId && input.instituteId && parent.instituteId !== input.instituteId) {
+      return { error: "A sub-community must belong to the same institute as its parent.", status: 409 } as const;
+    }
+    const instituteId = parent?.instituteId || input.instituteId || null;
+    const identity = instituteId ? instituteCommunityIdentity(input.name) : null;
+    const name = identity?.name || normalizeName(input.name);
     if (database.nameIndex[name.toLowerCase()]) return { error: "That community name is already taken.", status: 409 } as const;
+    if (identity && Object.values(database.communities).some(community => community.slug.toLowerCase() === identity.slug.toLowerCase())) return { error: "That community URL slug is already taken.", status: 409 } as const;
     const parentError = validateCommunityParent(database, input.parentId, creatorId);
     if (parentError) return parentError;
     const now = Date.now();
     const id = randomUUID();
-    const community: StoredCommunity = { id, name, type: input.type, parentId: input.parentId, description: input.description.trim(), creatorId, color: input.color.toUpperCase(), emoji: input.emoji.trim(), iconUrl: "", bannerUrl: "", privacy: input.privacy, memberCount: 1, createdAt: now, updatedAt: now };
+    const community: StoredCommunity = { id, name, slug: identity?.slug || name, instituteId, status: instituteId ? "PENDING" : "APPROVED", type: input.type, parentId: input.parentId, description: input.description.trim(), creatorId, color: input.color.toUpperCase(), emoji: input.emoji.trim(), iconUrl: "", bannerUrl: "", privacy: input.privacy, memberCount: 1, createdAt: now, updatedAt: now };
     const membership: CommunityMember = { id: randomUUID(), communityId: id, userId: creatorId, role: "COMMUNITY_ADMIN", createdAt: now };
     database.communities[id] = community;
     database.nameIndex[name.toLowerCase()] = id;
@@ -209,11 +249,63 @@ export async function createCommunity(creatorId: string, input: NewCommunityInpu
   });
 }
 
+export async function importCommunityIntoInstitute(communityId: string, instituteId: string, viewerId: string) {
+  if (!(await getInstitute(instituteId))) return { error: "Institute not found.", status: 404 } as const;
+  return mutate(database => {
+    const community = database.communities[communityId];
+    if (!community) return { error: "Community not found.", status: 404 } as const;
+    if (community.instituteId && community.instituteId !== instituteId) return { error: "Community already belongs to another institute.", status: 409 } as const;
+    const oldName = community.name;
+    const identity = instituteCommunityIdentity(oldName);
+    const name = identity.name;
+    const conflict = database.nameIndex[name.toLowerCase()];
+    if (conflict && conflict !== communityId) return { error: "That institute community name is already taken.", status: 409 } as const;
+    if (Object.values(database.communities).some(item => item.id !== communityId && item.slug.toLowerCase() === identity.slug.toLowerCase())) return { error: "That institute community URL slug is already taken.", status: 409 } as const;
+    delete database.nameIndex[oldName.toLowerCase()];
+    community.name = name;
+    community.slug = identity.slug;
+    community.instituteId = instituteId;
+    community.status = "PENDING";
+    community.updatedAt = Date.now();
+    database.nameIndex[name.toLowerCase()] = communityId;
+    return { community: publicCommunity(database, community, viewerId) } as const;
+  });
+}
+
+export async function listPendingInstituteCommunities(instituteId: string, viewerId: string) {
+  await writeQueue; const database = await loadDatabase({ fresh: true });
+  const items = Object.values(database.communities).filter(c => c.instituteId === instituteId && c.status === "PENDING").map(c => publicCommunity(database, c, viewerId));
+  return withInstituteRoles(items, viewerId);
+}
+
+export async function listInstituteCommunities(instituteId: string, viewerId: string, includeModeration = false) {
+  await writeQueue;
+  const database = await loadDatabase({ fresh: true });
+  const items = Object.values(database.communities)
+    .filter((community) => community.instituteId === instituteId && (includeModeration || community.status === "APPROVED" || community.creatorId === viewerId))
+    .sort((a, b) => b.createdAt - a.createdAt || a.name.localeCompare(b.name))
+    .map((community) => publicCommunity(database, community, viewerId));
+  return withInstituteRoles(items, viewerId);
+}
+
+export async function reviewInstituteCommunity(instituteId: string, communityId: string, reviewerId: string, status: Extract<CommunityStatus, "APPROVED" | "REJECTED">) {
+  return mutate(database => {
+    const community = database.communities[communityId];
+    if (!community || community.instituteId !== instituteId) return { error: "Institute community not found.", status: 404 } as const;
+    if (community.status !== "PENDING") return { error: "This community has already been reviewed.", status: 409 } as const;
+    community.status = status; community.updatedAt = Date.now();
+    return { community: publicCommunity(database, community, reviewerId) } as const;
+  });
+}
+
 export async function setCommunityMembership(communityId: string, userId: string, joined: boolean) {
   return mutate((database) => {
     const community = database.communities[communityId];
     if (!community) return { error: "Community not found.", status: 404 } as const;
     const access = resolveCommunityHierarchyAccess(database, community, userId);
+    if (joined && community.status !== "APPROVED" && access.role !== "COMMUNITY_ADMIN") {
+      return { error: "This community is not open until its institute approves it.", status: 409 } as const;
+    }
     if (!joined && access.role === "COMMUNITY_ADMIN") {
       return { error: access.membershipSource === "PARENT" ? "Parent community admins cannot leave inherited sub-community membership." : "Community admins cannot leave their own community.", status: 400 } as const;
     }
@@ -290,6 +382,9 @@ export async function ensureCommunityForLegacyPost(name: string, color: string, 
     const community: StoredCommunity = {
       id,
       name: normalizedName || `c/recovered-${id.slice(0, 8)}`,
+      slug: normalizedName || `c/recovered-${id.slice(0, 8)}`,
+      instituteId: null,
+      status: "APPROVED",
       type: "INDIVIDUAL",
       parentId: null,
       description: "Recovered from an existing community post.",

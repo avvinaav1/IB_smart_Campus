@@ -17,9 +17,9 @@ import { defaultCoverFor, EventCoverField } from "@/components/event-cover-field
 import { EventRegistrationDetail } from "@/components/event-registration-detail";
 import { ProfileEditor } from "@/components/profile-editor";
 import { ProfileSetup } from "@/components/profile-setup";
-import { CommunityModerationPanel, GlobalAdminDashboard } from "@/components/moderation-dashboard";
+import { CommunityModerationPanel, GlobalAdminDashboard, InstituteDashboard } from "@/components/moderation-dashboard";
 import { coverImageStyle, eventWhen } from "@/lib/event-format";
-import type { CampusEvent, ChatRequestView, Community, CommunityType, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, Post, SessionUser, UserDashboard, UserNotification, UserSearchResult, View } from "@/lib/types";
+import type { CampusEvent, ChatRequestView, Community, CommunityType, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, InstituteSummary, Post, SessionUser, UserDashboard, UserNotification, UserSearchResult, View } from "@/lib/types";
 
 const CertificateBuilder = dynamic(() => import("@/components/certificates/certificate-builder"), { ssr: false });
 
@@ -33,6 +33,7 @@ const nav = [
 ];
 
 const adminNav = { id: "admin" as View, label: "Admin", icon: ShieldCheck };
+const instituteNav = { id: "institute" as View, label: "Institute", icon: Users };
 
 const mobileNav = [
   { id: "home" as View, label: "Home", icon: Home },
@@ -104,6 +105,8 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   const [composerCommunity, setComposerCommunity] = useState("c/campuslife");
   const [eventOpen, setEventOpen] = useState<CampusEvent | null>(null);
   const [editingEvent, setEditingEvent] = useState<CampusEvent | null>(null);
+  const [instituteCommunityTarget, setInstituteCommunityTarget] = useState<InstituteSummary | null>(null);
+  const [instituteEventTarget, setInstituteEventTarget] = useState<InstituteSummary | null>(null);
   const [commentPostId, setCommentPostId] = useState<number | null>(null);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [privacyPending, setPrivacyPending] = useState(false);
@@ -270,7 +273,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  const viewTitle: Record<View, string> = { home: "Your campus", explore: "Explore", events: "Events", rewards: "Rewards", chat: "Messages", profile: "Profile", certificates: "Certificate studio", admin: "Global administration" };
+  const viewTitle: Record<View, string> = { home: "Your campus", explore: "Explore", events: "Events", rewards: "Rewards", chat: "Messages", profile: "Profile", certificates: "Certificate studio", admin: "Global administration", institute: "Institute dashboard" };
 
   function resetUserState() {
     setPosts([]);
@@ -457,7 +460,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
           <span><b>smart</b>campus</span>
         </button>
         <nav aria-label="Primary navigation">
-          {[...nav, ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : [])].map(({ id, label, icon: Icon }) => (
+          {[...nav, instituteNav, ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : [])].map(({ id, label, icon: Icon }) => (
             <button key={id} className={view === id ? "selected" : ""} onClick={() => go(id)}>
               <Icon size={21} strokeWidth={view === id ? 2.8 : 2.2} /><span>{label}</span>
             </button>
@@ -498,11 +501,12 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
           {view === "profile" && <ProfileView user={authUser} dashboard={dashboard} theme={theme} toggleTheme={toggleTheme} privacyPending={privacyPending} onPrivacyChange={changePrivacy} onRewards={() => go("rewards")} onEdit={() => setProfileEditorOpen(true)} onLogout={logout} />}
           {view === "profile" && <CertificateGallery userId={authUser.id} preview={previewMode} onBuild={() => go("certificates")} />}
           {view === "admin" && (authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN") && <GlobalAdminDashboard user={authUser} notify={setToast} />}
+          {view === "institute" && <InstituteDashboard user={authUser} communities={communities} notify={setToast} onCreateCommunity={setInstituteCommunityTarget} onCreateEvent={setInstituteEventTarget} onCommunityChanged={(community) => setCommunities((current) => [community, ...current.filter((item) => item.id !== community.id)])} />}
         </main>
       </div>
 
       <nav className="mobile-nav" aria-label="Mobile navigation">
-        {[...mobileNav, ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : [])].map(({ id, label, icon: Icon }) => id === "create" ? (
+        {[...mobileNav, instituteNav, ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : [])].map(({ id, label, icon: Icon }) => id === "create" ? (
           <button key={id} className="mobile-create" aria-label="Create post" onClick={() => { setComposerCommunity("c/campuslife"); setComposerOpen(true); }}><Icon size={25} strokeWidth={3} /></button>
         ) : (
           <button key={id} className={view === id ? "selected" : ""} onClick={() => go(id as View)}>
@@ -516,6 +520,8 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       {composerOpen && <Composer author={authUser.username} communities={communities} initialCommunity={composerCommunity} close={() => setComposerOpen(false)} onCreate={persistPost} />}
       {eventOpen && <EventRegistrationDetail event={eventOpen} close={() => setEventOpen(null)} notify={setToast} onEdit={() => setEditingEvent(eventOpen)} onChange={(event) => { setEventOpen(event); setEvents((current) => current.map((item) => item.id === event.id ? event : item)); }} />}
       {editingEvent && <EditEventModal event={editingEvent} communities={communities} close={() => setEditingEvent(null)} onSaved={(event) => { setEditingEvent(null); setEventOpen(event); setEvents((current) => current.map((item) => item.id === event.id ? event : item)); setToast("Event updated"); }} />}
+      {instituteCommunityTarget && <CreateCommunityModal institute={instituteCommunityTarget} existingNames={communities.map((item) => item.name)} close={() => setInstituteCommunityTarget(null)} onCreate={(community) => { setCommunities((current) => [community, ...current.filter((item) => item.id !== community.id)]); setInstituteCommunityTarget(null); setToast(`${community.name} was sent for institute verification`); }} />}
+      {instituteEventTarget && <CreateEventModal communities={communities} defaultCampus={authUser.campus || ""} initialInstituteId={instituteEventTarget.id} close={() => setInstituteEventTarget(null)} onCreate={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setInstituteEventTarget(null); setEventOpen(event); setToast("Event submitted for institute verification"); }} />}
       {activeCommentPost && <CommentThread post={activeCommentPost} user={authUser} close={() => setCommentPostId(null)} onUpdated={(updated) => setPosts((current) => current.map((post) => post.id === updated.id ? updated : post))} notify={setToast} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
       {profileEditorOpen && <ProfileEditor user={authUser} close={() => setProfileEditorOpen(false)} onUpdated={setAuthUser} notify={setToast} />}
       {toast && <Toast message={toast} />}
@@ -721,7 +727,9 @@ function CommunityDetail({ user, community, communities, posts, setPosts, vote, 
   const parent = community.parentId ? communities.find((item) => item.id === community.parentId) : undefined;
   const children = communities.filter((item) => item.parentId === community.id);
   const canCreateChildren = !community.parentId && community.role === "COMMUNITY_ADMIN";
-  const canModerate = community.role === "COMMUNITY_ADMIN" || community.role === "COMMUNITY_MODERATOR" || user.appRole === "APP_MODERATOR" || user.appRole === "SUPER_ADMIN";
+  const isGlobalModerator = user.appRole === "APP_MODERATOR" || user.appRole === "SUPER_ADMIN";
+  const canModerate = community.role === "COMMUNITY_ADMIN" || community.role === "COMMUNITY_MODERATOR" || community.instituteRole === "INSTITUTE_ADMIN" || community.instituteRole === "INSTITUTE_MODERATOR" || isGlobalModerator;
+  const canApproveEvents = isGlobalModerator || community.role === "COMMUNITY_ADMIN" || (!community.instituteId && community.role === "COMMUNITY_MODERATOR") || community.instituteRole === "INSTITUTE_ADMIN" || community.instituteRole === "INSTITUTE_MODERATOR";
 
   function save(id: number) {
     setPosts(current => current.map(post => post.id === id ? { ...post, saved: !post.saved } : post));
@@ -734,7 +742,7 @@ function CommunityDetail({ user, community, communities, posts, setPosts, vote, 
       <div className={`community-detail-pattern ${community.bannerUrl ? "has-image" : ""}`}>{community.bannerUrl ? <Image src={community.bannerUrl} alt={`${community.name} banner`} fill sizes="1120px" unoptimized /> : <>〰 &nbsp; ✦ &nbsp; 〰 &nbsp; ✦</>}</div>
       <div className="community-detail-identity"><Avatar text={community.emoji} image={community.iconUrl} color={community.color} size={84} /><div>{parent && <div className="community-breadcrumb"><button type="button" onClick={() => onOpenCommunity(parent.id)}>{parent.name}</button><span>›</span><b>{community.name}</b></div>}<div className="community-header-badges"><span>{communityTypeLabel(community.type)}</span><span>{community.parentId ? "Sub-community" : "Top-level community"}</span><span>{community.privacy || "public"}</span></div><h1>{community.name}</h1><p>{community.description}</p></div><div className="community-detail-actions">{community.role === "COMMUNITY_ADMIN" && <button className="branding-button" onClick={() => setBrandingOpen(true)}><Settings size={17} /> Branding</button>}{canCreateChildren && <button className="branding-button" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}{canModerate && <button className="branding-button" onClick={() => setModerationOpen((current) => !current)}><ShieldCheck size={17} /> {moderationOpen ? "Close moderation" : "Moderation"}</button>}{community.membershipSource === "PARENT" ? <button type="button" className="joined inherited-admin" disabled><ShieldCheck size={16} /> Inherited admin</button> : <button className={community.joined ? "joined" : ""} onClick={toggleMembership}>{community.joined ? <><Check size={17} /> Joined</> : <><Plus size={17} /> Join community</>}</button>}<button onClick={openComposer}><Plus size={17} /> Create post</button></div></div>
     </section>
-    {moderationOpen && <CommunityModerationPanel community={community} posts={communityPosts} onPostDeleted={(id) => setPosts((current) => current.filter((post) => post.id !== id))} onCommentDeleted={(postId, commentId) => setPosts((current) => current.map((post) => post.id === postId ? { ...post, commentItems: (post.commentItems || []).filter((comment) => comment.id !== commentId), comments: Math.max(0, post.comments - 1) } : post))} notify={notify} />}
+    {moderationOpen && <CommunityModerationPanel community={community} posts={communityPosts} canApproveEvents={canApproveEvents} onPostDeleted={(id) => setPosts((current) => current.filter((post) => post.id !== id))} onCommentDeleted={(postId, commentId) => setPosts((current) => current.map((post) => post.id === postId ? { ...post, commentItems: (post.commentItems || []).filter((comment) => comment.id !== commentId), comments: Math.max(0, post.comments - 1) } : post))} notify={notify} />}
     <div className="community-stats"><span><b>{community.members}</b><small>Members</small></span><span><b>{communityPosts.length}</b><small>Posts</small></span><span><b>{communityPosts.reduce((total, post) => total + post.votes, 0).toLocaleString()}</b><small>Community karma</small></span></div>
     {!community.parentId && <nav className="community-detail-tabs" role="tablist" aria-label={`${community.name} sections`}><button role="tab" aria-selected={activeTab === "feed"} className={activeTab === "feed" ? "active" : ""} onClick={() => setActiveTab("feed")}>Feed</button><button role="tab" aria-selected={activeTab === "children"} className={activeTab === "children" ? "active" : ""} onClick={() => setActiveTab("children")}>Sub-Communities <b>{children.length}</b></button></nav>}
     {activeTab === "feed" || community.parentId ? <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div> : <section className="subcommunity-section"><header><div><span className="eyebrow violet">SUB-COMMUNITIES</span><h2>Spaces inside {community.name}</h2><p>Focused communities managed under this parent.</p></div>{canCreateChildren && <button className="primary-action" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</header>{children.length ? <div className="community-grid">{children.map((child, index) => <CommunityCard key={child.id} item={child} index={index} communities={communities} onOpen={onOpenCommunity} onMembership={onMembership} />)}</div> : <div className="community-empty"><span>🪆</span><h3>No sub-communities yet.</h3><p>Create a focused space inside {community.name}.</p>{canCreateChildren && <button onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</div>}</section>}
@@ -823,14 +831,14 @@ function EventsView({ events, communities, defaultCampus, onEvent, onCreated, no
   return <div className="content-page">
     <section className="page-hero events-hero"><div><span className="eyebrow pink">GET OUT THERE</span><h1>Plans worth leaving your room for.</h1><p>From tiny workshops to very loud nights.</p></div><div className="ticket-doodle"><span>ADMIT<br />ONE</span><b>SC-0826</b></div></section>
     <div className="events-toolbar"><div className="category-chips">{["All", "Music", "Tech", "Culture", "Sports"].map(x => <button className={filter === x ? "active" : ""} onClick={() => setFilter(x)} key={x}>{x}</button>)}</div><div className="toolbar-actions"><button className="outline-button"><CalendarDays size={18} /> This month <ChevronDown size={15} /></button><button className="primary-action" onClick={() => setCreating(true)}><Plus size={18} /> Create event</button></div></div>
-    {submissions.length > 0 && <section className="event-submissions"><header><div><span className="eyebrow violet">MY SUBMISSIONS</span><h2>Waiting on community review</h2></div><b>{submissions.length}</b></header><div>{submissions.map((event) => <button key={event.id} onClick={() => onEvent(event)}><span><b>{event.title}</b><small>{event.community} · {eventWhen(event)}</small></span><em className={event.status.toLowerCase()}>{event.status}</em><ArrowRight size={16} /></button>)}</div></section>}
+    {submissions.length > 0 && <section className="event-submissions"><header><div><span className="eyebrow violet">MY SUBMISSIONS</span><h2>Waiting on verification</h2></div><b>{submissions.length}</b></header><div>{submissions.map((event) => <button key={event.id} onClick={() => onEvent(event)}><span><b>{event.title}</b><small>{event.community || (event.instituteId ? "Institute event" : "Standalone event")} · {eventWhen(event)}</small></span><em className={event.status.toLowerCase()}>{event.status}</em><ArrowRight size={16} /></button>)}</div></section>}
     <div className="event-grid">{filtered.map(event => <article key={event.id} onClick={() => onEvent(event)} tabIndex={0} onKeyDown={e => e.key === "Enter" && onEvent(event)}><div className={`event-image ${event.coverFit === "fit" ? "cover-fit" : ""}`}><Image src={event.imageUrl} alt="" fill sizes="(max-width: 700px) 100vw, 420px" unoptimized={event.imageUrl.startsWith("/api/")} style={coverImageStyle(event)} /><span>{event.isCreator ? "YOUR EVENT" : event.isEventAdmin ? "ADMIN" : event.category}</span><div><b>{event.day}</b><small>{event.month}</small></div></div><div className="event-copy"><h2>{event.title}</h2><p><Clock3 size={16} /> {eventWhen(event)}</p><p><MapPin size={16} /> {event.location}</p><div><span className="face-stack"><i>KA</i><i>ZO</i><i>MI</i></span><small>{event.going} going{event.waitlisted ? ` · ${event.waitlisted} waitlisted` : ""}</small><button>View event <ArrowRight size={16} /></button></div></div></article>)}</div>
     {!filtered.length && <div className="events-empty"><CalendarDays size={31} /><h2>No events here yet</h2><p>Publish the first event in this category.</p></div>}
-    {creating && <CreateEventModal communities={communities} defaultCampus={defaultCampus} close={() => setCreating(false)} onCreate={(event) => { onCreated(event); setCreating(false); setFilter("All"); notify(event.status === "PENDING" ? "Event submitted for community review" : "Event published to the global campus feed"); }} />}
+    {creating && <CreateEventModal communities={communities} defaultCampus={defaultCampus} close={() => setCreating(false)} onCreate={(event) => { onCreated(event); setCreating(false); setFilter("All"); notify(event.status === "PENDING" ? "Event submitted for verification" : "Event published to the global campus feed"); }} />}
   </div>;
 }
 
-function CreateCommunityModal({ close, onCreate, existingNames, parent }: { close: () => void; onCreate: (community: Community) => void; existingNames: string[]; parent?: Community }) {
+function CreateCommunityModal({ close, onCreate, existingNames, parent, institute }: { close: () => void; onCreate: (community: Community) => void; existingNames: string[]; parent?: Community; institute?: InstituteSummary }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [emoji, setEmoji] = useState("✨");
@@ -840,20 +848,22 @@ function CreateCommunityModal({ close, onCreate, existingNames, parent }: { clos
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const slug = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
+  const instituteId = institute?.id || parent?.instituteId || null;
+  const communityPrefix = instituteId ? "ic\\" : "c/";
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (slug.length < 3) return setError("Community names need at least 3 letters or numbers.");
     if (description.trim().length < 12) return setError("Add a short description so people know what this community is about.");
     if (!communityType) return setError("Choose whether this is a college, individual, or company community.");
-    if (existingNames.includes(`c/${slug}`)) return setError("That community name is already taken.");
+    if (existingNames.some((existing) => existing.toLowerCase() === `${communityPrefix}${slug}`.toLowerCase())) return setError("That community name is already taken.");
     setBusy(true);
     setError("");
     try {
       const data = await requestJson<{ community: Community }>("/api/communities", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: slug, description: description.trim(), emoji: emoji.trim() || "✨", color, privacy, type: communityType, parentId: parent?.id || null }),
+        body: JSON.stringify({ name: slug, description: description.trim(), emoji: emoji.trim() || "✨", color, privacy, type: communityType, parentId: parent?.id || null, instituteId }),
       });
       if (!data?.community) throw new Error("The server did not return the new community.");
       onCreate(data.community);
@@ -865,11 +875,12 @@ function CreateCommunityModal({ close, onCreate, existingNames, parent }: { clos
   }
 
   return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}>
-    <form className="creation-modal community-creation" onSubmit={submit} aria-label={parent ? `Create a sub-community in ${parent.name}` : "Create a community"}>
-      <header><div><span className="eyebrow cyan">{parent ? "BUILD INSIDE YOUR COMMUNITY" : "BUILD YOUR CORNER"}</span><h2>{parent ? "Create a Sub-Community" : "Create a community"}</h2><p>{parent ? `Start a focused space inside ${parent.name}.` : "Start a space for the people, ideas, or oddly specific thing you care about."}</p></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header>
+    <form className="creation-modal community-creation" onSubmit={submit} aria-label={parent ? `Create a sub-community in ${parent.name}` : institute ? `Create a community in ${institute.name}` : "Create a community"}>
+      <header><div><span className="eyebrow cyan">{institute ? "BUILD INSIDE YOUR INSTITUTE" : parent ? "BUILD INSIDE YOUR COMMUNITY" : "BUILD YOUR CORNER"}</span><h2>{parent ? "Create a Sub-Community" : institute ? "Create an Institute community" : "Create a community"}</h2><p>{institute ? `This community will be verified by ${institute.name} before it goes live.` : parent ? `Start a focused space inside ${parent.name}.` : "Start a space for the people, ideas, or oddly specific thing you care about."}</p></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header>
       {parent && <div className="fixed-parent"><span>Parent community</span><b>{parent.emoji} {parent.name}</b><small>This relationship is fixed after creation.</small></div>}
-      <div className="community-preview" style={{ "--preview-color": color } as React.CSSProperties}><span>{emoji || "✨"}</span><div><small>{parent ? `SUB-COMMUNITY OF ${parent.name}` : "YOUR NEW COMMUNITY"}</small><b>c/{slug || "community-name"}</b></div><i>✦</i></div>
-      <label className="field"><span>Community name</span><div className="slug-input"><b>c/</b><input autoFocus value={name} onChange={event => { setName(event.target.value); setError(""); }} placeholder="design-nerds" maxLength={30} required /></div><small>Letters, numbers, and hyphens. This can&apos;t be changed later.</small></label>
+      {institute && <div className="fixed-parent"><span>Institute</span><b>{institute.name}</b><small>Only an Institute Admin, Super Admin, or app moderator can verify this community.</small></div>}
+      <div className="community-preview" style={{ "--preview-color": color } as React.CSSProperties}><span>{emoji || "✨"}</span><div><small>{institute ? `COMMUNITY OF ${institute.name}` : parent ? `SUB-COMMUNITY OF ${parent.name}` : "YOUR NEW COMMUNITY"}</small><b>{communityPrefix}{slug || "community-name"}</b></div><i>✦</i></div>
+      <label className="field"><span>Community name</span><div className="slug-input"><b>{communityPrefix}</b><input autoFocus value={name} onChange={event => { setName(event.target.value); setError(""); }} placeholder="design-nerds" maxLength={30} required /></div><small>Letters, numbers, and hyphens. This can&apos;t be changed later.</small></label>
       <label className="field"><span>Description</span><textarea value={description} onChange={event => { setDescription(event.target.value); setError(""); }} rows={3} maxLength={180} placeholder="What will people find here?" required /><small>{description.length}/180</small></label>
       <fieldset className="community-type-options"><legend>Community type</legend>{([['COLLEGE', 'College', 'A campus, department, or student institution.'], ['INDIVIDUAL', 'Individual', 'A community organized independently by a person.'], ['COMPANY', 'Company', 'A business, studio, startup, or organization.']] as const).map(([value, title, copy]) => <button type="button" className={communityType === value ? "selected" : ""} aria-pressed={communityType === value} onClick={() => { setCommunityType(value); setError(""); }} key={value}><i>{communityType === value && <Check size={13} />}</i><span><b>{title}</b><small>{copy}</small></span></button>)}</fieldset>
       <div className="form-row"><label className="field emoji-field"><span>Icon</span><input value={emoji} onChange={event => setEmoji(event.target.value)} maxLength={3} aria-label="Community emoji" /></label><fieldset className="field color-field"><legend>Sticker color</legend><div>{["#6C3BFF", "#22D3EE", "#FF5C8A", "#C7FF32", "#FFB629"].map(item => <button type="button" aria-label={`Use ${item}`} aria-pressed={color === item} className={color === item ? "selected" : ""} style={{ background: item }} onClick={() => setColor(item)} key={item}>{color === item && <Check size={15} />}</button>)}</div></fieldset></div>
@@ -879,7 +890,7 @@ function CreateCommunityModal({ close, onCreate, existingNames, parent }: { clos
         ["private", "Private", "Only invited members can view and participate."],
       ] as const).map(([value, title, copy]) => <button type="button" className={privacy === value ? "selected" : ""} onClick={() => setPrivacy(value)} key={value}><i>{privacy === value && <Check size={13} />}</i><span><b>{title}</b><small>{copy}</small></span></button>)}</fieldset>
       {error && <p className="form-error" role="alert">{error}</p>}
-      <footer><button type="button" className="draft-button" onClick={close} disabled={busy}>Cancel</button><button className="post-button" type="submit" disabled={busy}>{busy ? <><LoaderCircle className="spin" size={17} /> Creating…</> : <>{parent ? "Create Sub-Community" : "Create community"} <ArrowRight size={17} /></>}</button></footer>
+      <footer><button type="button" className="draft-button" onClick={close} disabled={busy}>Cancel</button><button className="post-button" type="submit" disabled={busy}>{busy ? <><LoaderCircle className="spin" size={17} /> Creating…</> : <>{institute ? "Submit for verification" : parent ? "Create Sub-Community" : "Create community"} <ArrowRight size={17} /></>}</button></footer>
     </form>
   </div>;
 }
@@ -930,7 +941,7 @@ type EventFormInitial = {
   title: string; description: string; category: string;
   date: string; time: string; endDate: string; endTime: string;
   location: string; directionsUrl: string; capacity: string;
-  community: string; campus: string;
+  community: string; instituteId: string; campus: string;
   coverFit: CoverFit; coverFocusX: number; coverFocusY: number;
   imageUrl: string; customFormFields: CustomFormField[];
 };
@@ -941,19 +952,19 @@ function eventToFormInitial(event: CampusEvent): EventFormInitial {
     date: localDateInput(event.startsAt), time: localTimeInput(event.startsAt),
     endDate: event.endsAt ? localDateInput(event.endsAt) : "", endTime: event.endsAt ? localTimeInput(event.endsAt) : "",
     location: event.location, directionsUrl: event.directionsUrl, capacity: String(event.capacity),
-    community: event.community || "None", campus: event.campus,
+    community: event.community || "None", instituteId: event.instituteId || "", campus: event.campus,
     coverFit: event.coverFit, coverFocusX: event.coverFocusX, coverFocusY: event.coverFocusY,
     imageUrl: event.imageUrl, customFormFields: event.customFormSchema.fields,
   };
 }
 
-function blankEventFormInitial(defaultCampus: string): EventFormInitial {
+function blankEventFormInitial(defaultCampus: string, instituteId = ""): EventFormInitial {
   return {
     title: "", description: "", category: "Music",
     date: new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10), time: "18:00",
     endDate: "", endTime: "",
     location: "", directionsUrl: "", capacity: "100",
-    community: "None", campus: defaultCampus,
+    community: "None", instituteId, campus: defaultCampus,
     coverFit: "fill", coverFocusX: 50, coverFocusY: 50,
     imageUrl: "", customFormFields: [],
   };
@@ -976,7 +987,8 @@ function EventForm({ mode, communities, initial, close, onSubmit }: {
   const [location, setLocation] = useState(initial.location);
   const [directionsUrl, setDirectionsUrl] = useState(initial.directionsUrl);
   const [capacity, setCapacity] = useState(initial.capacity);
-  const [community, setCommunity] = useState(initial.community);
+  const [scope, setScope] = useState(initial.community !== "None" ? `community:${initial.community}` : initial.instituteId ? `institute:${initial.instituteId}` : "standalone");
+  const [institutes, setInstitutes] = useState<InstituteSummary[]>([]);
   const [campus, setCampus] = useState(initial.campus);
   const [coverFit, setCoverFit] = useState<CoverFit>(initial.coverFit);
   const [coverFocusX, setCoverFocusX] = useState(initial.coverFocusX);
@@ -989,6 +1001,13 @@ function EventForm({ mode, communities, initial, close, onSubmit }: {
   const [minimumDate] = useState(() => new Date(Date.now() + 86_400_000).toISOString().slice(0, 10));
 
   useEffect(() => () => { if (coverPreview) URL.revokeObjectURL(coverPreview); }, [coverPreview]);
+  useEffect(() => {
+    let active = true;
+    void requestJson<{ institutes: InstituteSummary[] }>("/api/institutes", { cache: "no-store" })
+      .then((result) => { if (active) setInstitutes(result?.institutes || []); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
 
   function chooseCover(file: File) {
     if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(file.type)) return setError("Choose a JPG, PNG, or WebP image.");
@@ -1026,10 +1045,13 @@ function EventForm({ mode, communities, initial, close, onSubmit }: {
         if (!uploaded?.imageUrl) throw new Error("The image server did not return a URL.");
         imageUrl = uploaded.imageUrl;
       }
+      const communityId = scope.startsWith("community:") ? scope.slice("community:".length) : "";
+      const selectedCommunity = communities.find((item) => item.id === communityId);
+      const instituteId = selectedCommunity?.instituteId || (scope.startsWith("institute:") ? scope.slice("institute:".length) : "");
       await onSubmit({
         title: title.trim(), description: description.trim(), category,
         location: location.trim(), venueName: location.trim(), venueAddress: location.trim(),
-        directionsUrl: directionsUrl.trim(), campus: campus.trim(), community,
+        directionsUrl: directionsUrl.trim(), campus: campus.trim(), community: communityId || "None", communityId: communityId || null, instituteId: instituteId || null,
         startsAt: start.toISOString(), endsAt,
         capacity: eventCapacity, imageUrl,
         coverFit, coverFocusX, coverFocusY,
@@ -1066,7 +1088,7 @@ function EventForm({ mode, communities, initial, close, onSubmit }: {
       <label className="field"><span>Venue</span><div className="icon-input"><MapPin size={17} /><input value={location} onChange={fieldEvent => { setLocation(fieldEvent.target.value); setError(""); }} placeholder="e.g. Main Auditorium" required /></div></label>
       <label className="field directions-field"><span>Google Maps directions link <em>Optional</em></span><div className="icon-input"><Link2 size={17} /><input type="url" inputMode="url" value={directionsUrl} onChange={fieldEvent => { setDirectionsUrl(fieldEvent.target.value); setError(""); }} placeholder="https://maps.app.goo.gl/..." maxLength={2048} /></div><small>In Google Maps, open the venue, tap Share, and paste the link here.</small></label>
       <CampusPicker value={campus} onChange={setCampus} label="Host campus" required allowCustom />
-      <label className="field"><span>Community</span><select value={community} onChange={fieldEvent => setCommunity(fieldEvent.target.value)}><option value="None">None</option>{communities.filter((item) => item.joined || item.id === community).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><small>Join a community before submitting an event to its review queue.</small></label>
+      <label className="field"><span>Publish under</span><select value={scope} onChange={(fieldEvent) => setScope(fieldEvent.target.value)}><option value="standalone">Smart Campus — standalone event</option>{institutes.filter((item) => item.role || item.id === initial.instituteId).length > 0 && <optgroup label="Institutes">{institutes.filter((item) => item.role || item.id === initial.instituteId).map((item) => <option key={item.id} value={`institute:${item.id}`}>{item.name}</option>)}</optgroup>}<optgroup label="Communities">{communities.filter((item) => item.joined || `community:${item.id}` === scope).map((item) => <option key={item.id} value={`community:${item.id}`}>{item.name}</option>)}</optgroup></select><small>{scope === "standalone" ? "Standalone events publish immediately." : "Institute and community events stay hidden until an authorized admin verifies them."}</small></label>
       <RegistrationFormBuilder fields={customFormFields} onChange={setCustomFormFields} />
       <div className="disclosure"><ShieldCheck size={19} /><p>Attendees will see that their verified email and RSVP details are shared with you as the organizer.</p></div>
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -1075,11 +1097,11 @@ function EventForm({ mode, communities, initial, close, onSubmit }: {
   </div>;
 }
 
-function CreateEventModal({ communities, defaultCampus, close, onCreate }: { communities: Community[]; defaultCampus: string; close: () => void; onCreate: (event: CampusEvent) => void }) {
+function CreateEventModal({ communities, defaultCampus, initialInstituteId = "", close, onCreate }: { communities: Community[]; defaultCampus: string; initialInstituteId?: string; close: () => void; onCreate: (event: CampusEvent) => void }) {
   return <EventForm
     mode="create"
     communities={communities}
-    initial={blankEventFormInitial(defaultCampus)}
+    initial={blankEventFormInitial(defaultCampus, initialInstituteId)}
     close={close}
     onSubmit={async (payload) => {
       const data = await requestJson<{ event: CampusEvent }>("/api/events", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
