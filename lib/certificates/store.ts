@@ -137,6 +137,31 @@ export async function leaseJob() {
   }
   return null;
 }
+// Claims one specific job for inline (request-scoped) processing, e.g. right
+// after creation or from a status poll — as opposed to leaseJob(), which picks
+// whichever queued/expired job comes up next for a standalone worker loop.
+// Returns null if the job isn't claimable right now (already leased by another
+// call, or in a terminal/draft state); callers should treat that as "nothing to
+// do" rather than an error.
+export async function leaseJobById(id: string, organizerId: string) {
+  const ref = jobs().doc(id);
+  return firestore().runTransaction(async tx => {
+    const doc = await tx.get(ref);
+    if (!doc.exists || doc.get("organizerId") !== organizerId) return null;
+    const status = doc.get("status"), now = Date.now();
+    if (!["queued", "running"].includes(status)) return null;
+    if (status === "running" && (doc.get("leaseExpiresAt") || 0) > now) return null;
+    if ((doc.get("nextAttemptAt") || 0) > now) return null;
+    const patch = { status: "running", leaseToken: randomUUID(), leaseExpiresAt: now + 120_000, attempts: (doc.get("attempts") || 0) + 1, updatedAt: now };
+    tx.update(ref, patch); return { ...doc.data(), ...patch, id: doc.id } as JobRecord;
+  });
+}
+// Hands a job back to the queue without waiting out its lease, so the next
+// request-scoped chunk can pick it up immediately instead of stalling for up
+// to 120s. Used when a chunk runs out of time budget with rows still pending.
+export async function releaseJobToQueue(job: JobRecord) {
+  await guardedJobWrite(job, { status: "queued", leaseToken: "", leaseExpiresAt: 0 });
+}
 export async function guardedJobWrite(job: JobRecord, patch: Record<string, unknown>, rowId?: string, rowPatch?: Record<string, unknown>) {
   await firestore().runTransaction(async tx => {
     const ref = jobs().doc(job.id), doc = await tx.get(ref);

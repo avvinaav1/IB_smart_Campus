@@ -9,3 +9,5 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ v
   const initialView = linkedViews.has(params.view as View) ? params.view as View : "home";
   return <SmartCampusApp previewUser={developmentPreviewUser()} initialView={initialView} initialCommunityId={params.community || ""} initialChatRequests={params.requests === "follow" || params.requests === "message"} />;
 }
+
+
