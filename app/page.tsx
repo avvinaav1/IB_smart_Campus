@@ -2,7 +2,7 @@ import { SmartCampusApp } from "@/components/smart-campus-app";
 import { developmentPreviewUser } from "@/lib/dev-preview";
 import type { View } from "@/lib/types";
 
-const linkedViews = new Set<View>(["home", "explore", "events", "rewards", "chat", "profile", "certificates", "admin"]);
+const linkedViews = new Set<View>(["home", "explore", "events", "rewards", "chat", "profile", "certificates", "admin", "institute"]);
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ view?: string; community?: string; requests?: string }> }) {
   const params = await searchParams;

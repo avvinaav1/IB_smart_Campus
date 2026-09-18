@@ -1,11 +1,12 @@
 import "server-only";
 
 import { randomInt, randomUUID } from "node:crypto";
-import { getCommunityAccess } from "@/lib/community-store";
+import { getCommunityAccess, getCommunitySummary } from "@/lib/community-store";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import { events as initialEvents } from "@/lib/data";
 import type { CampusEvent, CoverFit, CustomFormAnswers, CustomFormField, CustomFormSchema, EventStatus } from "@/lib/types";
 import { eventStatusForCommunity, normalizeEventStatus } from "@/lib/moderation-policy";
+import { getInstitute, getInstituteMembership } from "@/lib/institute-store";
 
 export type { CoverFit } from "@/lib/types";
 
@@ -24,6 +25,8 @@ type StoredEvent = {
   directionsUrl: string;
   campus: string;
   community?: string;
+  communityId?: string;
+  instituteId?: string;
   startsAt: string;
   endsAt?: string;
   capacity: number;
@@ -88,6 +91,8 @@ export type NewEventInput = {
   directionsUrl: string;
   campus: string;
   community?: string;
+  communityId?: string;
+  instituteId?: string;
   startsAt: string;
   endsAt?: string;
   capacity: number;
@@ -100,7 +105,7 @@ export type NewEventInput = {
 
 // Every field optional: the creator edits only what changed. `endsAt: ""` clears
 // a previously set end.
-export type EventUpdateInput = Partial<Omit<NewEventInput, "community">> & { community?: string | null };
+export type EventUpdateInput = Partial<Omit<NewEventInput, "community" | "communityId" | "instituteId">> & { community?: string | null; communityId?: string | null; instituteId?: string | null };
 
 const EMPTY_FORM_SCHEMA: CustomFormSchema = { version: 1, fields: [] };
 const CHECK_IN_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -223,6 +228,9 @@ function normalizeDatabase(stored: LegacyEventDatabase): EventDatabase {
     const legacy = event as StoredEvent & { lat?: unknown; lng?: unknown };
     event.directionsUrl = typeof event.directionsUrl === "string" ? event.directionsUrl : typeof legacy.lat === "number" && typeof legacy.lng === "number" ? `https://www.google.com/maps/dir/?api=1&destination=${legacy.lat},${legacy.lng}` : "";
     event.customFormSchema = normalizeFormSchema(rawEvent.customFormSchema);
+    event.communityId = typeof rawEvent.communityId === "string" ? rawEvent.communityId : typeof rawEvent.community === "string" ? rawEvent.community : undefined;
+    event.community = event.communityId;
+    event.instituteId = typeof rawEvent.instituteId === "string" ? rawEvent.instituteId : undefined;
     event.endsAt = typeof rawEvent.endsAt === "string" && !Number.isNaN(new Date(rawEvent.endsAt).getTime()) ? rawEvent.endsAt : undefined;
     event.coverFit = rawEvent.coverFit === "fit" ? "fit" : "fill";
     event.coverFocusX = clampPercent(rawEvent.coverFocusX);
@@ -338,7 +346,7 @@ export function validateEventInput(input: NewEventInput, options?: { allowPastSt
   const campus = input.campus.trim();
   if (campus.length < 2 || campus.length > 100) return "Add a host campus of 2–100 characters.";
   if (!/^[\p{L}\p{N} .,'&()\/-]+$/u.test(campus)) return "Use only letters, numbers, spaces and basic punctuation for the campus.";
-  if (input.community && !/^(?:c\/[a-z0-9._-]{2,40}|seed-[a-z0-9-]+|[0-9a-f-]{36})$/i.test(input.community)) return "Choose a valid community.";
+  if (input.community && !/^(?:c\/[a-z0-9._-]{2,40}|ic\/[a-z0-9._-]{2,40}|seed-[a-z0-9-]+|[0-9a-f-]{36})$/i.test(input.community)) return "Choose a valid community.";
   if (Number.isNaN(startsAt.getTime())) return "Choose a valid date and time.";
   if (!options?.allowPastStart && startsAt.getTime() <= Date.now()) return "Choose a future date and time.";
   if (input.endsAt) {
@@ -373,22 +381,32 @@ export async function getEvent(eventId: string, viewerId: string) {
   return publicEvent(database, event, viewerId);
 }
 
-export async function createEvent(creatorId: string, input: NewEventInput) {
+export async function createEvent(creatorId: string, input: NewEventInput, options?: { globalModerator?: boolean }) {
+  let scopedInstituteId = input.instituteId;
+  if (input.instituteId && !(await getInstitute(input.instituteId))) return { error: "Institute not found.", status: 404 } as const;
   if (input.community) {
     const access = await getCommunityAccess(input.community, creatorId);
     if (!access) return { error: "Community not found.", status: 404 } as const;
     if (!access.joined) return { error: "Join this community before submitting an event.", status: 403 } as const;
+    const community = await getCommunitySummary(input.community);
+    if (community?.instituteId) {
+      if (scopedInstituteId && scopedInstituteId !== community.instituteId) return { error: "The event community belongs to a different institute.", status: 409 } as const;
+      scopedInstituteId = community.instituteId;
+    }
+  }
+  if (scopedInstituteId && !input.community && !options?.globalModerator && !(await getInstituteMembership(scopedInstituteId, creatorId))) {
+    return { error: "Join this institute before submitting an event under it.", status: 403 } as const;
   }
   return mutate((database) => {
     const now = Date.now();
     const event: StoredEvent = {
       id: randomUUID(), creatorId, title: input.title.trim(), description: input.description.trim(), category: input.category.trim(), location: input.location.trim(),
       venueName: input.venueName.trim(), venueAddress: input.venueAddress.trim(), directionsUrl: input.directionsUrl.trim(), campus: input.campus.trim(),
-      ...(input.community ? { community: input.community } : {}), startsAt: new Date(input.startsAt).toISOString(),
+      ...(input.community ? { community: input.community, communityId: input.community } : {}), ...(scopedInstituteId ? { instituteId: scopedInstituteId } : {}), startsAt: new Date(input.startsAt).toISOString(),
       ...(input.endsAt ? { endsAt: new Date(input.endsAt).toISOString() } : {}),
       capacity: input.capacity, imageUrl: input.imageUrl,
       coverFit: input.coverFit, coverFocusX: clampPercent(input.coverFocusX), coverFocusY: clampPercent(input.coverFocusY),
-      customFormSchema: input.customFormSchema, status: eventStatusForCommunity(input.community), createdAt: now, updatedAt: now,
+      customFormSchema: input.customFormSchema, status: input.community || scopedInstituteId ? "PENDING" : eventStatusForCommunity(input.community), createdAt: now, updatedAt: now,
     };
     database.events[event.id] = event;
     return publicEvent(database, event, creatorId);
@@ -410,6 +428,8 @@ function mergedEventInput(event: StoredEvent, patch: EventUpdateInput): NewEvent
     directionsUrl: pick("directionsUrl", event.directionsUrl),
     campus: pick("campus", event.campus),
     community: patch.community === undefined ? event.community : patch.community || undefined,
+    communityId: patch.communityId === undefined ? event.communityId : patch.communityId || undefined,
+    instituteId: patch.instituteId === undefined ? event.instituteId : patch.instituteId || undefined,
     startsAt: pick("startsAt", event.startsAt),
     endsAt: patch.endsAt === undefined ? event.endsAt : (patch.endsAt || undefined),
     capacity: pick("capacity", event.capacity),
@@ -421,23 +441,39 @@ function mergedEventInput(event: StoredEvent, patch: EventUpdateInput): NewEvent
   };
 }
 
-export async function updateEvent(eventId: string, userId: string, patch: EventUpdateInput) {
-  if (patch.community) {
-    await writeQueue;
-    const current = (await loadDatabase()).events[eventId];
-    if (!current) return { error: "Event not found.", status: 404 } as const;
-    if (current.creatorId !== userId) return { error: "Only the event creator can edit this event.", status: 403 } as const;
-    if (current.community !== patch.community) {
-      const access = await getCommunityAccess(patch.community, userId);
-      if (!access) return { error: "Community not found.", status: 404 } as const;
-      if (!access.joined) return { error: "Join the destination community before submitting this event.", status: 403 } as const;
+export async function updateEvent(eventId: string, userId: string, patch: EventUpdateInput, options?: { globalModerator?: boolean }) {
+  await writeQueue;
+  const current = (await loadDatabase()).events[eventId];
+  if (!current) return { error: "Event not found.", status: 404 } as const;
+  if (current.creatorId !== userId) return { error: "Only the event creator can edit this event.", status: 403 } as const;
+
+  const requestedCommunity = patch.community === undefined ? current.community : patch.community || undefined;
+  let requestedInstitute = patch.instituteId === undefined ? current.instituteId : patch.instituteId || undefined;
+  if (requestedCommunity) {
+    const [access, community] = await Promise.all([
+      getCommunityAccess(requestedCommunity, userId),
+      getCommunitySummary(requestedCommunity),
+    ]);
+    if (!access || !community) return { error: "Community not found.", status: 404 } as const;
+    if (!access.joined) return { error: "Join the destination community before submitting this event.", status: 403 } as const;
+    requestedInstitute = community.instituteId || undefined;
+  } else if (requestedInstitute) {
+    if (!(await getInstitute(requestedInstitute))) return { error: "Institute not found.", status: 404 } as const;
+    if (!options?.globalModerator && !(await getInstituteMembership(requestedInstitute, userId))) {
+      return { error: "Join the destination institute before submitting this event.", status: 403 } as const;
     }
   }
+  const resolvedPatch: EventUpdateInput = {
+    ...patch,
+    community: requestedCommunity || null,
+    communityId: requestedCommunity || null,
+    instituteId: requestedInstitute || null,
+  };
   return mutate((database) => {
     const event = database.events[eventId];
     if (!event) return { error: "Event not found.", status: 404 } as const;
     if (event.creatorId !== userId) return { error: "Only the event creator can edit this event.", status: 403 } as const;
-    const merged = mergedEventInput(event, patch);
+    const merged = mergedEventInput(event, resolvedPatch);
     const startUnchanged = new Date(merged.startsAt).toISOString() === new Date(event.startsAt).toISOString();
     const validationError = validateEventInput(merged, { allowPastStart: startUnchanged });
     if (validationError) return { error: validationError, status: 400 } as const;
@@ -450,8 +486,15 @@ export async function updateEvent(eventId: string, userId: string, patch: EventU
     event.venueAddress = merged.venueAddress.trim();
     event.directionsUrl = merged.directionsUrl.trim();
     event.campus = merged.campus.trim();
-    if (merged.community) event.community = merged.community;
-    else delete event.community;
+    if (merged.community) {
+      event.community = merged.community;
+      event.communityId = merged.community;
+    } else {
+      delete event.community;
+      delete event.communityId;
+    }
+    if (merged.instituteId) event.instituteId = merged.instituteId;
+    else delete event.instituteId;
     event.startsAt = new Date(merged.startsAt).toISOString();
     if (merged.endsAt) event.endsAt = new Date(merged.endsAt).toISOString();
     else delete event.endsAt;
@@ -461,7 +504,7 @@ export async function updateEvent(eventId: string, userId: string, patch: EventU
     event.coverFocusX = clampPercent(merged.coverFocusX);
     event.coverFocusY = clampPercent(merged.coverFocusY);
     event.customFormSchema = merged.customFormSchema;
-    event.status = eventStatusForCommunity(merged.community);
+    event.status = merged.community || merged.instituteId ? "PENDING" : eventStatusForCommunity(merged.community);
     delete event.reviewedBy;
     delete event.reviewedAt;
     event.updatedAt = Date.now();
@@ -624,7 +667,7 @@ export async function getEventModerationContext(eventId: string) {
   await writeQueue;
   const database = await loadDatabase();
   const event = database.events[eventId];
-  return event ? { id: event.id, communityId: event.community, creatorId: event.creatorId, status: event.status } : null;
+  return event ? { id: event.id, communityId: event.community, instituteId: event.instituteId, creatorId: event.creatorId, status: event.status } : null;
 }
 
 export async function listPendingCommunityEvents(communityId: string, viewerId: string) {
@@ -637,6 +680,9 @@ export async function listPendingCommunityEvents(communityId: string, viewerId: 
 }
 
 export async function reviewCommunityEvent(communityId: string, eventId: string, reviewerId: string, status: Extract<EventStatus, "APPROVED" | "REJECTED">) {
+  if (status === "APPROVED" && (await getCommunitySummary(communityId))?.status !== "APPROVED") {
+    return { error: "The institute must verify this community before its events can be approved.", status: 409 } as const;
+  }
   return mutate((database) => {
     const event = database.events[eventId];
     if (!event || event.community !== communityId) return { error: "Event not found in this community.", status: 404 } as const;
@@ -646,6 +692,47 @@ export async function reviewCommunityEvent(communityId: string, eventId: string,
     event.reviewedAt = Date.now();
     event.updatedAt = event.reviewedAt;
     return { event: publicEvent(database, event, reviewerId) } as const;
+  });
+}
+
+export async function listPendingInstituteEvents(instituteId: string, viewerId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  return Object.values(database.events).filter(event => event.instituteId === instituteId && event.status === "PENDING").sort((a, b) => a.createdAt - b.createdAt).map(event => publicEvent(database, event, viewerId));
+}
+
+export async function reviewInstituteEvent(instituteId: string, eventId: string, reviewerId: string, status: Extract<EventStatus, "APPROVED" | "REJECTED">) {
+  if (status === "APPROVED") {
+    await writeQueue;
+    const pendingEvent = (await loadDatabase()).events[eventId];
+    if (pendingEvent?.community && (await getCommunitySummary(pendingEvent.community))?.status !== "APPROVED") {
+      return { error: "Verify the event community before approving this event.", status: 409 } as const;
+    }
+  }
+  return mutate(database => {
+    const event = database.events[eventId];
+    if (!event || event.instituteId !== instituteId) return { error: "Event not found in this institute.", status: 404 } as const;
+    if (event.status !== "PENDING") return { error: "This event has already been reviewed.", status: 409 } as const;
+    event.status = status; event.reviewedBy = reviewerId; event.reviewedAt = Date.now(); event.updatedAt = event.reviewedAt;
+    return { event: publicEvent(database, event, reviewerId) } as const;
+  });
+}
+
+export async function attachCommunityEventsToInstitute(communityId: string, instituteId: string) {
+  return mutate(database => {
+    let updated = 0;
+    for (const event of Object.values(database.events)) {
+      if ((event.communityId || event.community) !== communityId) continue;
+      event.communityId = communityId;
+      event.community = communityId;
+      event.instituteId = instituteId;
+      event.status = "PENDING";
+      delete event.reviewedBy;
+      delete event.reviewedAt;
+      event.updatedAt = Date.now();
+      updated += 1;
+    }
+    return { updated } as const;
   });
 }
 

@@ -1,11 +1,13 @@
 export type AppRole = "USER" | "APP_MODERATOR" | "SUPER_ADMIN";
 export type CommunityRole = "MEMBER" | "COMMUNITY_MODERATOR" | "COMMUNITY_ADMIN";
+export type InstituteRole = "INSTITUTE_MEMBER" | "INSTITUTE_ADMIN" | "INSTITUTE_MODERATOR";
 export type CommunityType = "COLLEGE" | "INDIVIDUAL" | "COMPANY";
 export type CommunityMembershipSource = "DIRECT" | "PARENT";
 export type EventStatus = "PENDING" | "APPROVED" | "REJECTED";
+export type CommunityStatus = "PENDING" | "APPROVED" | "REJECTED";
 export type NotificationType = "EVENT" | "COMMUNITY" | "POST" | "MESSAGE" | "FOLLOW_REQUEST";
 
-export type View = "home" | "explore" | "events" | "rewards" | "chat" | "profile" | "certificates" | "admin";
+export type View = "home" | "explore" | "events" | "rewards" | "chat" | "profile" | "certificates" | "admin" | "institute";
 
 export type SessionUser = {
   id: string;
@@ -23,6 +25,17 @@ export type SessionUser = {
   createdAt: number;
   appRole: AppRole;
 };
+
+export type Institute = {
+  id: string;
+  name: string;
+  description: string;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type InstituteSummary = Institute & { role: InstituteRole | null };
 
 export type UserNotification = {
   id: string;
@@ -162,6 +175,8 @@ export type CampusEvent = {
   directionsUrl: string;
   campus: string;
   community?: string;
+  communityId?: string;
+  instituteId?: string;
   startsAt: string;
   endsAt?: string;
   capacity: number;
@@ -218,6 +233,9 @@ export type Community = {
   id: string;
   creatorId: string;
   name: string;
+  slug: string;
+  instituteId: string | null;
+  status: CommunityStatus;
   type: CommunityType;
   parentId: string | null;
   members: string;
@@ -230,6 +248,7 @@ export type Community = {
   membershipSource: CommunityMembershipSource | null;
   privacy?: "public" | "restricted" | "private";
   role?: CommunityRole;
+  instituteRole?: InstituteRole;
   createdAt: number;
   updatedAt: number;
 };
