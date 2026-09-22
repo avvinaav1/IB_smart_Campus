@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { normalizeEmail, verifyOtp } from "@/lib/auth-store";
 import { isAuthIntent, isSameOrigin, noStoreJson, readJson, setSessionCookie } from "@/lib/auth-http";
+import { claimCertificatesBestEffort } from "@/lib/certificates/claims";
 
 export const runtime = "nodejs";
 
@@ -16,6 +17,7 @@ export async function POST(request: NextRequest) {
   try { result = await verifyOtp(email, intent, code); }
   catch (error) { console.error("Authentication storage failed", { code: (error as NodeJS.ErrnoException).code || "unavailable" }); return noStoreJson({ error: "Account storage is unavailable. Check the server configuration." }, { status: 503 }); }
   if ("error" in result) return noStoreJson({ error: result.error }, { status: 401 });
+  await claimCertificatesBestEffort(result.user.id, email);
 
   return setSessionCookie(noStoreJson({ data: { user: result.user } }), result.token, result.maxAge);
 }

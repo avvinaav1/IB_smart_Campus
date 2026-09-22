@@ -70,7 +70,14 @@ export async function changeCertificate(id: string, userId: string, change: "pub
   });
 }
 export async function createJob(input: JobInput, organizerId: string, issuerName: string, key: string) {
-  if (input.eventId && !(await getEvent(input.eventId, organizerId))?.canManageEvent) throw new Error("You cannot issue certificates for that event");
+  // The caller already passed mayManageCertificates() (Super Admin, App
+  // Moderator, or any Institute Admin) at the API layer — a broader grant
+  // than event-level canManageEvent (creator/event-admin/global-moderator
+  // only), which would otherwise reject a legitimate certificate organizer
+  // who isn't personally that event's creator or a designated event admin.
+  // Re-check only that the event exists and is visible to them (approved,
+  // or their own draft) rather than re-deriving that narrower permission.
+  if (input.eventId && !(await getEvent(input.eventId, organizerId))) throw new Error("That event was not found.");
   if (input.backgroundAssetId) { const asset = await getAsset(input.backgroundAssetId); if (!asset || asset.ownerId !== organizerId || asset.kind !== "background") throw new Error("Background not found"); }
   const id = hashId(organizerId, key), ref = jobs().doc(id), digest = hashId(JSON.stringify(input));
   const previous = await ref.get();

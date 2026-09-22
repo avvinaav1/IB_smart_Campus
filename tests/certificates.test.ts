@@ -110,14 +110,22 @@ test("placeholder values are literal, not evaluated or recursively expanded", ()
   assert.equal(substitute("Hello {{ name }}", { name: "{{course}} $&" }), "Hello {{course}} $&");
   assert.equal(substitute("{{constructor}}", {}), "");
 });
-test("SMTP content escapes HTML, strips subject newlines, and attaches PNG without sending", () => {
-  const job = { ...input, id: "job-test", emailTemplate: { subject: "Hi {{name}}", text: "Hello {{name}}\nYour certificate is attached." } };
+test("{{event}} is usable in the email subject/message once an event is linked", () => {
+  assert.equal(jobInputSchema.safeParse({ ...input, emailTemplate: { subject: "Certificate for {{event}}", text: "Hi {{name}}" } }).success, false);
+  assert.equal(jobInputSchema.safeParse({ ...input, eventId: "evt-123", emailTemplate: { subject: "Certificate for {{event}}", text: "Hi {{name}}" } }).success, true);
+  assert.equal(substitute("Certificate for {{event}}", { name: "Alex" }, undefined, "Orientation Day"), "Certificate for Orientation Day");
+});
+test("SMTP content escapes HTML, strips subject newlines, and never attaches the certificate image", () => {
+  const job = { ...input, id: "job-test", emailTemplate: { subject: "Hi {{name}}", text: "Hello {{name}}\nYour certificate is ready." } };
   const recipient = { ...row, id: "000001", rowNumber: 1, emailNormalized: "visitor@example.test", values: { name: "<script>\r\nBcc: bad@example.test</script>" } };
-  const mail = certificateMail(job, recipient, new Uint8Array([1, 2, 3]));
+  const mail = certificateMail(job, recipient);
   assert.equal(mail.to, "visitor@example.test"); assert.ok(!mail.subject.includes("\n"));
   assert.ok(mail.html.includes("&lt;script&gt;")); assert.ok(!mail.html.includes("<script>"));
-  assert.equal(mail.attachments[0].contentType, "image/png");
-  assert.equal(mail.messageId, certificateMail(job, recipient, new Uint8Array()).messageId);
+  assert.equal(mail.attachments.length, 1);
+  assert.ok(!mail.attachments.some(a => /^certificate-/.test(a.filename)));
+  assert.ok(mail.html.includes("cid:"));
+  assert.ok(mail.html.includes("sign in"));
+  assert.equal(mail.messageId, certificateMail(job, recipient).messageId);
 });
 test("server rendering produces different full-resolution PNGs and a valid ZIP", async () => {
   const first = await renderPng(INITIAL_LAYOUT, row);

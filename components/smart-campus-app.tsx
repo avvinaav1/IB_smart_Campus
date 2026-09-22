@@ -89,7 +89,7 @@ function Toast({ message }: { message: string }) {
   return <div className="toast" role="status"><Check size={17} strokeWidth={3} />{message}</div>;
 }
 
-export function SmartCampusApp({ previewUser, initialView = "home", initialCommunityId = "", initialChatRequests = false, initialVerificationCode = "" }: { previewUser?: SessionUser; initialView?: View; initialCommunityId?: string; initialChatRequests?: boolean; initialVerificationCode?: string }) {
+export function SmartCampusApp({ previewUser, initialView = "home", initialCommunityId = "", initialChatRequests = false, initialVerificationCode = "", claimEmail = "" }: { previewUser?: SessionUser; initialView?: View; initialCommunityId?: string; initialChatRequests?: boolean; initialVerificationCode?: string; claimEmail?: string }) {
   const [authUser, setAuthUser] = useState<SessionUser | null | undefined>(previewUser);
   const previewMode = Boolean(previewUser && authUser?.id === previewUser.id);
   const [view, setView] = useState<View>(initialView);
@@ -456,7 +456,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   }
 
   if (authUser === undefined) return <AuthLoading />;
-  if (!authUser) return <AuthScreen onAuthenticated={completeAuthentication} />;
+  if (!authUser) return <AuthScreen onAuthenticated={completeAuthentication} prefillEmail={claimEmail} />;
   if (!authUser.profileSetupComplete) return <ProfileSetup user={authUser} onComplete={completeAuthentication} />;
   const activeCommentPost = commentPostId === null ? null : posts.find((post) => post.id === commentPostId) || null;
 

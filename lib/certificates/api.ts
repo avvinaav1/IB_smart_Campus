@@ -194,7 +194,7 @@ export async function handleCertificates(request: NextRequest, path: string[]) {
     if (error instanceof z.ZodError) return Response.json({ error: error.issues[0]?.message || "Invalid certificate data" }, { status: 400 });
     if (error instanceof ApiError) return Response.json({ error: error.message }, { status: error.status });
     const message = error instanceof Error ? error.message : "";
-    const known = ["Job not found", "Certificate not found", "Background not found", "Certificate upload not found", "You cannot issue certificates for that event", "Request key reused with different data", "Upload key already used for another certificate"];
+    const known = ["Job not found", "Certificate not found", "Background not found", "Certificate upload not found", "That event was not found.", "Request key reused with different data", "Upload key already used for another certificate"];
     if (known.includes(message)) return Response.json({ error: message }, { status: message.includes("not found") ? 404 : 400 });
     console.error("Certificate API request failed", { code: (error as { code?: string }).code || "unavailable" });
     return Response.json({ error: "Certificate storage is unavailable. Check Firebase configuration and certificate indexes." }, { status: 503 });

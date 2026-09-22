@@ -6,10 +6,12 @@ import { pipeline } from "node:stream/promises";
 import JSZip from "jszip";
 import { firestore } from "@/lib/firebase-admin";
 import { certificateRecipientDirectory } from "@/lib/auth-store";
+import { getEvent } from "@/lib/event-store";
 import { assetBytes, getAsset, saveAsset } from "./assets";
 import { jobs, leaseJob, guardedJobWrite, internalAward, finishRow, releaseJobToQueue } from "./store";
 import { renderPng } from "./node-render";
-import { certificateMail, certificateTransport } from "./email";
+import { certificateMail, certificateTransport, type CertificateMailEvent } from "./email";
+import { recordPendingClaim } from "./claims";
 import { matchRecipient } from "./matching";
 import type { JobRecord, JobRow, Layout } from "./model";
 import { reserveVerification, activateVerification } from "./verification-store";
@@ -30,8 +32,13 @@ export async function processJob(job: JobRecord, deadline = Infinity): Promise<"
   let timeUp = false;
   const heartbeat = setInterval(() => { void guardedJobWrite(job, { leaseExpiresAt: Date.now() + 120_000 }).catch(() => { heartbeatError = true; }); }, 25_000);
   let mailer: ReturnType<typeof certificateTransport> | null = null;
+  let mailEvent: CertificateMailEvent | undefined;
   try {
     mailer = job.requestedActions.email ? certificateTransport() : null;
+    if (mailer && job.eventId) {
+      const event = await getEvent(job.eventId, job.organizerId);
+      if (event) mailEvent = { title: event.title, imageUrl: event.imageUrl };
+    }
     const revision = await firestore().collection("certificateTemplates").doc(job.templateId).collection("revisions").doc(job.revisionId).get();
     if (!revision.exists) throw new Error("Template revision is missing");
     const layout = revision.data() as Layout;
@@ -79,9 +86,12 @@ export async function processJob(job: JobRecord, deadline = Infinity): Promise<"
             else {
               // Persist intent before contacting SMTP. A crash after this point
               // must not silently send the same email again.
-              const asset = await getAsset(row.assetId!);
-              if (!asset) throw new Error("Rendered artifact missing");
-              const message = certificateMail(job, row, await assetBytes(asset));
+              if (!(await getAsset(row.assetId!))) throw new Error("Rendered artifact missing");
+              // No PNG is attached: recipients without a matching account yet
+              // claim the certificate by registering/signing in with this same
+              // email later (see lib/certificates/claims.ts).
+              if (row.internalStatus !== "delivered") await recordPendingClaim(job, row);
+              const message = certificateMail(job, row, mailEvent);
               await update({ emailStatus: "sending", emailAttempts: row.emailAttempts + 1, emailMessageId: message.messageId });
               try {
                 const result = await mailer!.sendMail(message);
@@ -90,7 +100,9 @@ export async function processJob(job: JobRecord, deadline = Infinity): Promise<"
                 // An explicit SMTP rejection is safe to retry; a transport
                 // timeout/disconnect may have happened after server acceptance.
                 const code = (error as { responseCode?: number }).responseCode;
-                await update({ emailStatus: code && code >= 400 ? "failed" : "unknown", lastError: code ? "SMTP rejected this message." : "SMTP outcome is unknown; review before retrying." });
+                const detail = error instanceof Error ? error.message.replace(/[\r\n]/g, " ").trim().slice(0, 200) : "";
+                const summary = code ? "SMTP rejected this message." : "SMTP outcome is unknown; review before retrying.";
+                await update({ emailStatus: code && code >= 400 ? "failed" : "unknown", lastError: detail ? `${summary} (${detail})` : summary });
               }
             }
           }

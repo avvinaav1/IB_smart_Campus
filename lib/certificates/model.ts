@@ -2,6 +2,11 @@ import { z } from "zod";
 import { resolveColumn } from "./columns";
 import { isVerificationVariable } from "./verification-code";
 
+// A pseudo-variable usable only in the email subject/message (not the
+// certificate design), resolved from the linked event's title.
+export const EVENT_VARIABLE = "event";
+export function isEventVariable(name: string) { return name.trim().toLowerCase() === EVENT_VARIABLE; }
+
 export const FONTS = ["Noto Sans", "Noto Serif", "Noto Sans Mono"] as const;
 export const FONT_FILES = ["NotoSans.ttf", "NotoSerif.ttf", "NotoSansMono.ttf"];
 export const MAX_ROWS = 2000;
@@ -41,8 +46,11 @@ export const jobInputSchema = z.object({
   if (!Object.values(v.requestedActions).some(Boolean)) error("Choose an export or delivery action");
   if ((v.requestedActions.email || v.requestedActions.internalDelivery) && !v.columnMapping.email && !v.columnMapping.username) error("Map an email or username column for delivery");
   const keys = new Set(v.layout.elements.map(e => e.id));
-  const templateVariables = [...v.layout.elements.flatMap(e => variables(e.text)), ...(v.requestedActions.email ? [...variables(v.emailTemplate.subject), ...variables(v.emailTemplate.text)] : [])];
-  if (templateVariables.some(h => !isVerificationVariable(h) && !resolveColumn(h, v.headers))) error("Template contains an unmapped variable");
+  const layoutVariables = v.layout.elements.flatMap(e => variables(e.text));
+  const emailVariables = v.requestedActions.email ? [...variables(v.emailTemplate.subject), ...variables(v.emailTemplate.text)] : [];
+  if (layoutVariables.some(h => !isVerificationVariable(h) && !resolveColumn(h, v.headers))) error("Template contains an unmapped variable");
+  if (emailVariables.some(isEventVariable) && !v.eventId) error("Add an event to use {{event}}, or remove it from the subject/message.");
+  if (emailVariables.some(h => !isVerificationVariable(h) && !isEventVariable(h) && !resolveColumn(h, v.headers))) error("Template contains an unmapped variable");
   for (const row of v.rows) {
     if (Object.keys(row.values).some(h => !v.headers.includes(h))) error("Unexpected row column");
     if (Object.keys(row.overrides).some(k => !keys.has(k))) error("Override refers to a missing layer");
@@ -54,7 +62,7 @@ export const jobInputSchema = z.object({
 });
 export type JobInput = z.infer<typeof jobInputSchema>;
 export function variables(text: string) { return Array.from(text.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g), m => m[1]); }
-export function substitute(text: string, values: Record<string, string>, verificationCode?: string) { const headers = Object.keys(values); return text.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, key: string) => { if (isVerificationVariable(key)) return verificationCode || "PREVIEW ONLY"; const column = resolveColumn(key, headers); return column !== undefined ? values[column] : ""; }); }
+export function substitute(text: string, values: Record<string, string>, verificationCode?: string, eventTitle?: string) { const headers = Object.keys(values); return text.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, key: string) => { if (isVerificationVariable(key)) return verificationCode || "PREVIEW ONLY"; if (isEventVariable(key)) return eventTitle || "PREVIEW ONLY"; const column = resolveColumn(key, headers); return column !== undefined ? values[column] : ""; }); }
 export function badgeFor(count: number): "None" | "Beginner" | "Intermediate" | "Expert" { return count >= 6 ? "Expert" : count >= 3 ? "Intermediate" : count >= 1 ? "Beginner" : "None"; }
 export function effectiveElements(layout: Layout, row: InputRow & { verificationCode?: string }) { return layout.elements.map(e => ({ ...e, ...row.overrides[e.id], id: e.id, text: substitute(row.overrides[e.id]?.text ?? e.text, row.values, row.verificationCode) })); }
 export function newElement(text = "{{name}}", index = 0): TextElement { return { id: `text-${index}`, text, x: 100, y: 170 + index * 60, width: 1000, height: 90, rotation: 0, fontFamily: "Noto Serif", fontSize: 48, color: "#27213c", bold: false, italic: false, align: "center", lineHeight: 1.25, shadow: { enabled: false, color: "#000000", blur: 4, offsetX: 2, offsetY: 2, opacity: 0.3 } }; }

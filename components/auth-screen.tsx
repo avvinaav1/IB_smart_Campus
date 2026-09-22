@@ -30,12 +30,19 @@ async function postJson(url: string, body: object) {
   return result;
 }
 
-export function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: SessionUser) => void }) {
-  const [screen, setScreen] = useState<"welcome" | "form">("welcome");
+// Arriving from a certificate email: skip the welcome screen and pre-fill the
+// address the certificate was sent to. The code is NOT auto-requested — some
+// mail clients/security scanners pre-fetch links in emails, which would
+// silently burn the recipient's one-time code (and their OTP rate limit)
+// before they ever open the message. The person still presses "Email me a
+// code" themselves, same as any other sign-in.
+export function AuthScreen({ onAuthenticated, prefillEmail = "" }: { onAuthenticated: (user: SessionUser) => void; prefillEmail?: string }) {
+  const normalizedPrefill = prefillEmail.trim().toLowerCase();
+  const [screen, setScreen] = useState<"welcome" | "form">(normalizedPrefill ? "form" : "welcome");
   const [intent, setIntent] = useState<AuthIntent>("register");
   const [loginMethod, setLoginMethod] = useState<"otp" | "password">("otp");
   const [step, setStep] = useState<"email" | "code">("email");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(normalizedPrefill);
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [referralCode, setReferralCode] = useState("");
@@ -160,6 +167,7 @@ export function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: Sessio
       <div className="auth-card">
         <button className="auth-choice-back" type="button" onClick={() => setScreen("welcome")}><ArrowLeft size={16} /> Back</button>
         <div className="auth-mobile-brand"><span><Image src="/smart-campus-logo-black.png" alt="" width={6103} height={6103} priority /></span><b>smart</b>campus</div>
+        {normalizedPrefill && <div className="auth-claim-banner">🎓 {step === "email" ? <>We&apos;ve filled in the email your certificate was sent to. Already have an account? Switch to <b>Log in</b> below.</> : <>Verify this code to unlock your certificate.</>}</div>}
         <div className="auth-tabs" aria-label="Authentication method">
           <button type="button" className={intent === "register" ? "active" : ""} onClick={() => switchIntent("register")}>Create account</button>
           <button type="button" className={intent === "login" ? "active" : ""} onClick={() => switchIntent("login")}>Log in</button>

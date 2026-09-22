@@ -5,7 +5,8 @@
     { "collectionGroup": "certificateJobs", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "organizerId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
     { "collectionGroup": "certificateJobs", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "ASCENDING" }] },
     { "collectionGroup": "certificateJobs", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "status", "order": "ASCENDING" }, { "fieldPath": "leaseExpiresAt", "order": "ASCENDING" }] },
-    { "collectionGroup": "certificateTemplates", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "ownerId", "order": "ASCENDING" }, { "fieldPath": "updatedAt", "order": "DESCENDING" }] }
+    { "collectionGroup": "certificateTemplates", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "ownerId", "order": "ASCENDING" }, { "fieldPath": "updatedAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "certificateClaims", "queryScope": "COLLECTION", "fields": [{ "fieldPath": "email", "order": "ASCENDING" }, { "fieldPath": "claimed", "order": "ASCENDING" }] }
   ],
   "fieldOverrides": [
     { "collectionGroup": "certificates", "fieldPath": "verificationCode", "indexes": [{ "order": "ASCENDING", "queryScope": "COLLECTION" }] },
