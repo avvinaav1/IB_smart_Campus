@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- Authenticated image routes are intentionally served directly. */
 import { useCallback, useEffect, useState } from "react";
-import { Award, Download, Upload, Globe2, LockKeyhole, Trash2 } from "lucide-react";
+import { Award, Download, Linkedin, Upload, Globe2, LockKeyhole, Trash2 } from "lucide-react";
 import { badgeFor, type CertificateRecord, type CertificateStats, type InboxMessage } from "@/lib/certificates/model";
 import { certificateRequest, jsonRequest, uploadCertificateAsset } from "./client";
 
@@ -12,6 +12,7 @@ export function CertificateBadge({ count }: { count: number }) {
 type GalleryData = { certificates: CertificateRecord[]; stats: CertificateStats; nextCursor: string | null; user?: { username: string; about: string; avatarUrl: string } };
 export function CertificateGallery({ userId, owner = true, preview = false, canManage = false, onBuild }: { userId: string; owner?: boolean; preview?: boolean; canManage?: boolean; onBuild?: () => void }) {
   const [data, setData] = useState<GalleryData>(), [error, setError] = useState(""), [busy, setBusy] = useState(false), [showUpload, setShowUpload] = useState(false);
+  const [shareNote, setShareNote] = useState("");
   const [title, setTitle] = useState(""), [issuer, setIssuer] = useState(""), [file, setFile] = useState<File>();
   const [pendingUpload, setPendingUpload] = useState<{ file: File; assetId: string; key: string }>();
   const refresh = useCallback(async () => { if (preview) return; try { setData(await certificateRequest<GalleryData>(owner ? "" : `/profiles/${userId}`)); setError(""); } catch (e) { setError((e as Error).message); } }, [preview, owner, userId]);
@@ -27,6 +28,15 @@ export function CertificateGallery({ userId, owner = true, preview = false, canM
       setShowUpload(false); setFile(undefined); setTitle(""); setIssuer(""); setPendingUpload(undefined); await refresh();
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
+  async function shareLinkedIn(c: CertificateRecord) {
+    const shareUrl = `${window.location.origin}/certificates/share/${c.id}`;
+    const caption = `I just earned "${c.title}" from ${c.issuerName} on IB Smart Campus! 🎓\n\n${shareUrl}\n\nTag @icebrkr in your post to give them a shout-out.`;
+    const copied = await navigator.clipboard.writeText(caption).then(() => true).catch(() => false);
+    setShareNote(c.visibility !== "public"
+      ? "This certificate is private, so its image won't preview on LinkedIn until you set it to public. " + (copied ? "We copied a caption for you — paste it into your post and tag @icebrkr." : `Copy this link and tag @icebrkr: ${shareUrl}`)
+      : copied ? "Caption copied — paste it into your LinkedIn post and tag @icebrkr." : `Copy this link and tag @icebrkr: ${shareUrl}`);
+    window.open(`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`, "_blank", "noopener,noreferrer");
+  }
   async function change(id: string, action: string) {
     if (action === "deleted" && !window.confirm("Remove this certificate from your profile? Your badge count will update.")) return;
     setBusy(true); try { await certificateRequest(`/${id}`, jsonRequest({ action }, "PATCH")); await refresh(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
@@ -36,9 +46,9 @@ export function CertificateGallery({ userId, owner = true, preview = false, canM
     <header className="cert-gallery-head"><div><span className="eyebrow violet">YOUR WORK, RECOGNIZED</span><h2>{owner ? "My certificates" : "Earned certificates"}</h2></div>{owner && <CertificateBadge count={data?.stats.certificateCount || 0} />}</header>
     <p className="cert-help">Beginner: 1–2 · Intermediate: 3–5 · Expert: 6+ certificates. Internal awards and self-uploaded certificates both count.</p>
     {owner && <div className="cert-actions">{canManage && <button disabled={preview} onClick={() => setShowUpload(v => !v)}><Upload size={17} />Upload External Certificate</button>}{canManage && onBuild && <button className="cert-primary" onClick={onBuild}><Award size={17} />Open certificate studio</button>}<a href={`/members/${userId}`} target="_blank" rel="noreferrer">View public profile</a></div>}
-    {preview && <p className="cert-note">Sign in to upload certificates and see your saved awards.</p>}{error && <p className="cert-error" role="alert">{error}</p>}
+    {preview && <p className="cert-note">Sign in to upload certificates and see your saved awards.</p>}{error && <p className="cert-error" role="alert">{error}</p>}{shareNote && <p className="cert-note" role="status">{shareNote}</p>}
     {showUpload && <form className="cert-external-form" onSubmit={e => { e.preventDefault(); void upload(); }}><label>Certificate title<input value={title} maxLength={160} required onChange={e => setTitle(e.target.value)} /></label><label>Issued by<input value={issuer} maxLength={160} required onChange={e => setIssuer(e.target.value)} /></label><label>Certificate image<input type="file" accept="image/png,image/jpeg,image/webp" required onChange={e => { setFile(e.target.files?.[0]); setPendingUpload(undefined); }} /></label><p>Self-uploaded certificates start private. You can make them public after uploading.</p><button className="cert-primary" disabled={busy}>{busy ? "Saving…" : "Save certificate"}</button></form>}
-    <div className="cert-gallery-grid">{data?.certificates.map(c => <article className="cert-card" key={c.id}><a href={`${c.imageUrl}?download=1`}><img loading="lazy" src={c.imageUrl} alt={c.title} /></a><div><span className={`cert-source ${c.source}`}>{c.source === "internal" ? "Smart Campus award" : "Self-uploaded"}</span><h3>{c.title}</h3><p>{c.issuerName} · {new Date(c.createdAt).toLocaleDateString()}</p><footer><a href={`${c.imageUrl}?download=1`}><Download size={16} />PNG</a>{owner && canManage && <><button disabled={busy} onClick={() => void change(c.id, c.visibility === "public" ? "private" : "public")}>{c.visibility === "public" ? <Globe2 size={16} /> : <LockKeyhole size={16} />}{c.visibility}</button><button disabled={busy} aria-label={`Remove ${c.title}`} onClick={() => void change(c.id, "deleted")}><Trash2 size={16} /></button></>}</footer></div></article>)}</div>
+    <div className="cert-gallery-grid">{data?.certificates.map(c => <article className="cert-card" key={c.id}><a href={`${c.imageUrl}?download=1`}><img loading="lazy" src={c.imageUrl} alt={c.title} /></a><div><span className={`cert-source ${c.source}`}>{c.source === "internal" ? "Smart Campus award" : "Self-uploaded"}</span><h3>{c.title}</h3><p>{c.issuerName} · {new Date(c.createdAt).toLocaleDateString()}</p><footer><a href={`${c.imageUrl}?download=1`}><Download size={16} />PNG</a>{owner && <button disabled={busy} onClick={() => void shareLinkedIn(c)}><Linkedin size={16} />Share to LinkedIn</button>}{owner && canManage && <><button disabled={busy} onClick={() => void change(c.id, c.visibility === "public" ? "private" : "public")}>{c.visibility === "public" ? <Globe2 size={16} /> : <LockKeyhole size={16} />}{c.visibility}</button><button disabled={busy} aria-label={`Remove ${c.title}`} onClick={() => void change(c.id, "deleted")}><Trash2 size={16} /></button></>}</footer></div></article>)}</div>
     {!data?.certificates.length && !error && <div className="cert-empty"><Award size={40} /><h3>{owner ? "Make room for your next milestone" : "No public certificates yet"}</h3><p>{owner ? "Certificates you receive or upload will live here." : "This member has not shared any certificates publicly."}</p></div>}
     {data?.nextCursor && <button onClick={async () => { try { const next = await certificateRequest<GalleryData>(`${owner ? "" : `/profiles/${userId}`}?cursor=${data.nextCursor}`); setData({ ...next, user: data.user, certificates: [...data.certificates, ...next.certificates] }); } catch (e) { setError((e as Error).message); } }}>Load more certificates</button>}
   </section>;

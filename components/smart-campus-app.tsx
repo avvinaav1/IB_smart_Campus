@@ -500,7 +500,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
         </header>
 
         <main>
-          {view === "certificates" && <CertificatePortal preview={previewMode} events={events} appRole={authUser.appRole} initialCode={initialVerificationCode} />}
+          {view === "certificates" && <CertificatePortal preview={previewMode} events={events} appRole={authUser.appRole} userId={authUser.id} initialCode={initialVerificationCode} />}
           {view === "home" && <HomeView user={authUser} posts={posts} events={events.filter((event) => event.status === "APPROVED")} communities={communities} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} />}
           {view === "explore" && <ExploreView user={authUser} items={communities} setItems={setCommunities} posts={posts} setPosts={setPosts} vote={persistVote} votePending={votePending} notify={setToast} onMembership={persistCommunityMembership} onEvents={() => go("events")} openComments={setCommentPostId} openComposer={(community = "c/campuslife") => { setComposerCommunity(community); setComposerOpen(true); }} initialCommunityId={initialCommunityId} />}
           {view === "events" && <EventsView events={events} communities={communities} defaultCampus={authUser.campus || ""} onEvent={setEventOpen} onCreated={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setEventOpen(event); }} notify={setToast} />}
