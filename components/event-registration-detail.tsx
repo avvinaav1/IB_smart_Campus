@@ -1,11 +1,12 @@
 "use client";
 
 import Image from "next/image";
-import { Check, ClipboardPlus, Download, ExternalLink, KeyRound, LoaderCircle, MapPin, Pencil, ScanLine, Search, ShieldCheck, TicketCheck, UserPlus, Users, X } from "lucide-react";
+import { CalendarCheck, Check, ClipboardCheck, ClipboardPlus, Download, ExternalLink, KeyRound, LoaderCircle, MapPin, Pencil, ScanLine, Search, ShieldCheck, TicketCheck, UserPlus, Users, X } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { coverImageStyle, eventWhen } from "@/lib/event-format";
+import { coverImageStyle, eventHasEnded, eventWhen } from "@/lib/event-format";
 import type { CampusEvent, CustomFormAnswers, CustomFormField, EventAdmin, EventAttendee, UserSearchResult } from "@/lib/types";
 import { announceDataChange, mutationSucceeded } from "@/lib/client-data-sync";
+import { EventShare } from "@/components/event-share";
 
 async function requestJson<T>(url: string, init?: RequestInit) {
   const response = await fetch(url, init);
@@ -237,20 +238,51 @@ export function EventRegistrationDetail({ event, close, notify, onChange, onEdit
   const [busy, setBusy] = useState(false);
   const [registrationOpen, setRegistrationOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
-  const [answers, setAnswers] = useState<CustomFormAnswers>({});
+  const [answers, setAnswers] = useState<CustomFormAnswers>(() => event.viewerRegistrationAnswers || {});
   const nearlyFull = event.going >= event.capacity;
+  const hasQuestions = event.customFormSchema.fields.length > 0;
+  const ended = eventHasEnded(event);
 
+  // Step 1: answer the organizer's questions. Step 2 (rsvp) uses these saved answers.
   async function submitRegistration(submission?: React.FormEvent<HTMLFormElement>) {
     submission?.preventDefault();
     if (busy) return;
     setBusy(true);
     try {
-      const data = await requestJson<{ event: CampusEvent }>(`/api/events/${event.id}/rsvp`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers }) });
+      const wasRegistered = event.viewerRegistered;
+      const data = await requestJson<{ event: CampusEvent }>(`/api/events/${event.id}/register`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers }) });
       if (!data?.event) throw new Error("The server did not return your registration.");
       onChange(data.event); setRegistrationOpen(false);
-      notify(data.event.viewerRsvpStatus === "waitlisted" ? "You joined the waitlist" : "Registration confirmed — your ticket is ready");
+      notify(wasRegistered ? "Registration answers updated" : "You’re registered — now RSVP to save your spot");
     } catch (error) { notify(error instanceof Error ? error.message : "Could not complete your registration."); }
     finally { setBusy(false); }
+  }
+
+  async function withdrawRegistration() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const data = await requestJson<{ event: CampusEvent }>(`/api/events/${event.id}/register`, { method: "DELETE" });
+      if (!data?.event) throw new Error("The server did not return your updated registration.");
+      onChange(data.event); setAnswers({}); setRegistrationOpen(false); notify("Registration withdrawn");
+    } catch (error) { notify(error instanceof Error ? error.message : "Could not withdraw your registration."); }
+    finally { setBusy(false); }
+  }
+
+  async function rsvp() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const data = await requestJson<{ event: CampusEvent }>(`/api/events/${event.id}/rsvp`, { method: "POST" });
+      if (!data?.event) throw new Error("The server did not return your RSVP.");
+      onChange(data.event);
+      notify(data.event.viewerRsvpStatus === "waitlisted" ? "You joined the waitlist" : "You’re going — your ticket is ready");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not RSVP to this event.";
+      // The organizer edited the form after this user registered: reopen it.
+      if (hasQuestions && message.startsWith("The registration form has changed")) setRegistrationOpen(true);
+      notify(message);
+    } finally { setBusy(false); }
   }
 
   async function cancelRsvp() {
@@ -259,28 +291,32 @@ export function EventRegistrationDetail({ event, close, notify, onChange, onEdit
     try {
       const data = await requestJson<{ event: CampusEvent }>(`/api/events/${event.id}/rsvp`, { method: "DELETE" });
       if (!data?.event) throw new Error("The server did not return your updated RSVP.");
-      onChange(data.event); setAnswers({}); notify("RSVP cancelled");
+      onChange(data.event); notify("RSVP cancelled — you’re still registered");
     } catch (error) { notify(error instanceof Error ? error.message : "Could not cancel your RSVP."); }
     finally { setBusy(false); }
   }
 
-  function beginRegistration() {
-    if (event.customFormSchema.fields.length) setRegistrationOpen(true);
+  function primaryAction() {
+    if (event.viewerRsvpStatus) void cancelRsvp();
+    else if (event.viewerRegistered) void rsvp();
+    else if (hasQuestions) setRegistrationOpen(true);
     else void submitRegistration();
   }
 
   if (event.status !== "APPROVED") return <div className="overlay" onMouseDown={mouse => mouse.target === mouse.currentTarget && close()}><section className="event-modal" role="dialog" aria-modal="true" aria-label={event.title}><div className={`event-modal-image ${event.coverFit === "fit" ? "cover-fit" : ""}`}><Image src={event.imageUrl} alt="" fill sizes="760px" unoptimized={event.imageUrl.startsWith("/api/")} style={coverImageStyle(event)} /><button className="icon-button" type="button" onClick={close} aria-label="Close"><X size={20} /></button><span>{event.status}</span>{event.isCreator && onEdit && <button className="event-edit-button" type="button" onClick={onEdit}><Pencil size={14} /> Edit and resubmit</button>}</div><div className="event-modal-copy"><span className="eyebrow pink">{eventWhen(event)}</span><h2>{event.title}</h2><p className="event-location"><MapPin size={18} /><span><b>{event.venueName}</b><small>{event.venueAddress} · {event.campus}</small></span></p><p>{event.description}</p><div className={`event-review-notice ${event.status.toLowerCase()}`}><ShieldCheck size={19} /><p><b>{event.status === "PENDING" ? "Awaiting community review" : "This submission was rejected"}</b><span>{event.status === "PENDING" ? "It remains hidden from public feeds until a moderator approves it." : "Edit the event to submit it for review again."}</span></p></div></div></section></div>;
 
-  return <div className="overlay" onMouseDown={mouse => mouse.target === mouse.currentTarget && close()}><section className={`event-modal ${adminOpen ? "admin-mode" : ""}`} role="dialog" aria-modal="true" aria-label={event.title}><div className={`event-modal-image ${event.coverFit === "fit" ? "cover-fit" : ""}`}><Image src={event.imageUrl} alt="" fill sizes="760px" unoptimized={event.imageUrl.startsWith("/api/")} style={coverImageStyle(event)} /><button className="icon-button" type="button" onClick={close} aria-label="Close"><X size={20} /></button><span>{event.isCreator ? "YOUR EVENT" : event.isEventAdmin ? "YOU’RE AN ADMIN" : event.category}</span>{event.isCreator && onEdit && <button className="event-edit-button" type="button" onClick={onEdit}><Pencil size={14} /> Edit event</button>}</div><div className="event-modal-copy"><span className="eyebrow pink">{eventWhen(event)}</span><h2>{event.title}</h2><p className="event-location"><MapPin size={18} /><span><b>{event.venueName}</b><small>{event.venueAddress} · {event.campus}</small></span>{event.directionsUrl && <a href={event.directionsUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} /> Directions</a>}</p><p>{event.description || "The details are set. Bring your campus energy and show up for the people making it happen."}</p><div className="capacity-row"><div><Users size={19} /><span><b>{event.going} going</b><small>{Math.max(0, event.capacity - event.going)} spots left{event.waitlisted ? ` · ${event.waitlisted} waitlisted` : ""}</small></span></div><div className="progress"><i style={{ width: `${Math.min(100, event.going / event.capacity * 100)}%` }} /></div></div>
+  return <div className="overlay" onMouseDown={mouse => mouse.target === mouse.currentTarget && close()}><section className={`event-modal ${adminOpen ? "admin-mode" : ""}`} role="dialog" aria-modal="true" aria-label={event.title}><div className={`event-modal-image ${event.coverFit === "fit" ? "cover-fit" : ""}`}><Image src={event.imageUrl} alt="" fill sizes="760px" unoptimized={event.imageUrl.startsWith("/api/")} style={coverImageStyle(event)} /><button className="icon-button" type="button" onClick={close} aria-label="Close"><X size={20} /></button><span>{event.isCreator ? "YOUR EVENT" : event.isEventAdmin ? "YOU’RE AN ADMIN" : event.category}</span>{ended && <em className="event-completed-badge"><Check size={12} /> Completed</em>}{event.isCreator && onEdit && <button className="event-edit-button" type="button" onClick={onEdit}><Pencil size={14} /> Edit event</button>}</div><div className="event-modal-copy"><span className="eyebrow pink">{eventWhen(event)}</span><h2>{event.title}</h2><p className="event-location"><MapPin size={18} /><span><b>{event.venueName}</b><small>{event.venueAddress} · {event.campus}</small></span>{event.directionsUrl && <a href={event.directionsUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} /> Directions</a>}</p><p>{event.description || "The details are set. Bring your campus energy and show up for the people making it happen."}</p><EventShare event={event} notify={notify} /><div className="capacity-row"><div><Users size={19} /><span><b>{event.going} going</b><small>{Math.max(0, event.capacity - event.going)} spots left{event.waitlisted ? ` · ${event.waitlisted} waitlisted` : ""}</small></span></div><div className="progress"><i style={{ width: `${Math.min(100, event.going / event.capacity * 100)}%` }} /></div></div>
     {event.viewerRsvpStatus && event.viewerCheckInCode && <section className={`event-ticket ${event.viewerCheckInStatus === "CHECKED_IN" ? "used" : ""}`}><div><span>{event.viewerRsvpStatus === "waitlisted" ? "WAITLIST TICKET" : "ADMIT ONE"}</span><b>{event.title}</b><small>{eventWhen(event)}</small></div><strong>{event.viewerCheckInCode}</strong><em>{event.viewerCheckInStatus === "CHECKED_IN" ? "CHECKED IN" : "SHOW AT ENTRY"}</em><figure className="event-ticket-qr">
       {/* eslint-disable-next-line @next/next/no-img-element -- server-rendered SVG from our API, not a static asset for next/image */}
       <img src={`/api/events/${event.id}/ticket-qr`} width={128} height={128} alt={`Attendance QR code for ${event.viewerCheckInCode}`} />
       <figcaption>{event.viewerCheckInStatus === "CHECKED_IN" ? "Already scanned" : "Scan to check in"}</figcaption>
     </figure></section>}
-    {registrationOpen && !event.viewerRsvpStatus && <form className="registration-form" onSubmit={submitRegistration}><header><div><span className="eyebrow violet">REGISTRATION</span><h3>A few details before you&apos;re in</h3></div><button type="button" onClick={() => setRegistrationOpen(false)} aria-label="Close registration form"><X size={16} /></button></header>{event.customFormSchema.fields.map(field => <RegistrationQuestion field={field} value={answers[field.id]} onChange={value => setAnswers(current => { const next = { ...current }; if (value === undefined || value === "") delete next[field.id]; else next[field.id] = value; return next; })} key={field.id} />)}<button className="registration-submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <TicketCheck size={18} />} {nearlyFull ? "Join waitlist" : "Confirm registration"}</button></form>}
-    <div className="disclosure"><ShieldCheck size={19} /><p>Your verified email and registration answers are shared only with this event&apos;s creator and assigned event admins.</p></div>
+    {ended && <div className="event-completed-notice"><CalendarCheck size={19} /><p><b>This event has ended</b><span>{event.viewerCheckInStatus === "CHECKED_IN" ? "Thanks for attending!" : event.viewerRsvpStatus ? "You RSVP’d to this event." : "Registration and RSVPs are closed."}</span></p></div>}
+    {!ended && !event.viewerRsvpStatus && <ol className="attend-steps" aria-label="How to attend"><li className={event.viewerRegistered ? "done" : "current"}><span>{event.viewerRegistered ? <Check size={12} /> : 1}</span> Register</li><li className={event.viewerRegistered ? "current" : ""}><span>2</span> RSVP</li></ol>}
+    {!ended && event.viewerRegistered && !event.viewerRsvpStatus && !registrationOpen && <div className="registration-status"><ClipboardCheck size={19} /><p><b>You&apos;re registered</b><span>RSVP below to save your spot{nearlyFull ? " on the waitlist" : ""}.</span></p><div>{hasQuestions && <button type="button" disabled={busy} onClick={() => { setAnswers(event.viewerRegistrationAnswers || {}); setRegistrationOpen(true); }}><Pencil size={13} /> Edit answers</button>}<button type="button" disabled={busy} onClick={() => void withdrawRegistration()}>Withdraw</button></div></div>}
+    {!ended && registrationOpen && !event.viewerRsvpStatus && <form className="registration-form" onSubmit={submitRegistration}><header><div><span className="eyebrow violet">STEP 1 · REGISTRATION</span><h3>{event.viewerRegistered ? "Update your registration" : "Register for this event"}</h3><p>Answer the organizer&apos;s questions. You&apos;ll RSVP in the next step.</p></div><button type="button" onClick={() => setRegistrationOpen(false)} aria-label="Close registration form"><X size={16} /></button></header>{event.customFormSchema.fields.map(field => <RegistrationQuestion field={field} value={answers[field.id]} onChange={value => setAnswers(current => { const next = { ...current }; if (value === undefined || value === "") delete next[field.id]; else next[field.id] = value; return next; })} key={field.id} />)}<button className="registration-submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <ClipboardCheck size={18} />} {event.viewerRegistered ? "Save answers" : "Complete registration"}</button></form>}
     {event.canManageEvent && <div className="creator-event-actions"><button type="button" onClick={() => setAdminOpen(current => !current)}><Users size={17} /> {adminOpen ? "Close dashboard" : "Admin dashboard"}</button><a href={`/api/events/${event.id}/rsvps/export`} download><Download size={17} /> Export CSV</a></div>}
     {adminOpen && event.canManageEvent && <EventAdminDashboard event={event} notify={notify} onChange={onChange} />}
-    {!registrationOpen && <button className={event.viewerRsvpStatus ? "rsvp-button going" : "rsvp-button"} disabled={busy || event.viewerCheckInStatus === "CHECKED_IN"} onClick={() => event.viewerRsvpStatus ? void cancelRsvp() : beginRegistration()}>{busy ? <><LoaderCircle className="spin" size={20} /> Updating…</> : event.viewerCheckInStatus === "CHECKED_IN" ? <><Check size={20} /> Checked in</> : event.viewerRsvpStatus ? <><Check size={20} /> {event.viewerRsvpStatus === "waitlisted" ? "Leave waitlist" : "Cancel RSVP"}</> : <><TicketCheck size={20} /> {nearlyFull ? "Join waitlist" : "RSVP now"}</>}</button>}
+    {!ended && !registrationOpen && <button className={event.viewerRsvpStatus ? "rsvp-button going" : "rsvp-button"} disabled={busy || event.viewerCheckInStatus === "CHECKED_IN"} onClick={primaryAction}>{busy ? <><LoaderCircle className="spin" size={20} /> Updating…</> : event.viewerCheckInStatus === "CHECKED_IN" ? <><Check size={20} /> Checked in</> : event.viewerRsvpStatus ? <><Check size={20} /> {event.viewerRsvpStatus === "waitlisted" ? "Leave waitlist" : "Cancel RSVP"}</> : event.viewerRegistered ? <><TicketCheck size={20} /> {nearlyFull ? "Join waitlist" : "RSVP now"}</> : <><ClipboardCheck size={20} /> Register</>}</button>}
   </div></section></div>;
 }

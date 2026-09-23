@@ -5,6 +5,7 @@ import { getCommunityAccess, getCommunitySummary } from "@/lib/community-store";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import { events as initialEvents } from "@/lib/data";
 import type { CampusEvent, CoverFit, CustomFormAnswers, CustomFormField, CustomFormSchema, EventStatus } from "@/lib/types";
+import { eventHasEnded } from "@/lib/event-format";
 import { canManageEventAttendance, eventStatusForCommunity, normalizeEventStatus } from "@/lib/moderation-policy";
 import { getInstitute, getInstituteMembership } from "@/lib/institute-store";
 
@@ -62,6 +63,17 @@ export type RsvpRecord = {
   updatedAt: number;
 };
 
+/** Step one of attending: the user has answered the event's registration
+ * questions. An RSVP (step two) is only accepted once this exists. Keyed by
+ * `eventId:userId`. */
+export type RegistrationRecord = {
+  eventId: string;
+  userId: string;
+  customFormAnswers: CustomFormAnswers;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type EventAdminRecord = {
   id: string;
   eventId: string;
@@ -74,6 +86,7 @@ type EventDatabase = {
   version: 5;
   events: Record<string, StoredEvent>;
   rsvps: Record<string, RsvpRecord>;
+  registrations: Record<string, RegistrationRecord>;
   eventAdmins: Record<string, EventAdminRecord>;
   rsvpIndex: Record<string, string>;
   checkInCodeIndex: Record<string, string>;
@@ -84,6 +97,7 @@ type LegacyEventDatabase = {
   version?: number;
   events?: Record<string, Partial<StoredEvent>>;
   rsvps?: Record<string, Omit<Partial<RsvpRecord>, "status"> & { status?: string }>;
+  registrations?: Record<string, Partial<RegistrationRecord>>;
   eventAdmins?: Record<string, Partial<EventAdminRecord>>;
 };
 
@@ -179,6 +193,12 @@ function normalizeFormSchema(value: unknown): CustomFormSchema {
   return validateCustomFormSchema(value) ? { ...EMPTY_FORM_SCHEMA } : value as CustomFormSchema;
 }
 
+function storedAnswers(value: unknown): CustomFormAnswers {
+  return isPlainObject(value)
+    ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string | number | boolean] => ["string", "number", "boolean"].includes(typeof entry[1])))
+    : {};
+}
+
 function normalizeAnswers(schema: CustomFormSchema, input: unknown): { answers: CustomFormAnswers } | { error: string } {
   if (!isPlainObject(input)) return { error: "Submit your registration answers as an object." };
   const fieldsById = new Map(schema.fields.map((field) => [field.id, field]));
@@ -229,12 +249,12 @@ function seededDatabase(): EventDatabase {
   return {
     version: 5,
     events: Object.fromEntries(initialEvents.map((event, index) => [event.id, { ...event, creatorId: "system", status: "APPROVED", customFormSchema: { ...EMPTY_FORM_SCHEMA }, createdAt: seedTime - index * 1_000, updatedAt: seedTime - index * 1_000 }])),
-    rsvps: {}, eventAdmins: {}, rsvpIndex: {}, checkInCodeIndex: {}, eventAdminIndex: {},
+    rsvps: {}, registrations: {}, eventAdmins: {}, rsvpIndex: {}, checkInCodeIndex: {}, eventAdminIndex: {},
   };
 }
 
 function normalizeDatabase(stored: LegacyEventDatabase): EventDatabase {
-  const database: EventDatabase = { version: 5, events: {}, rsvps: {}, eventAdmins: {}, rsvpIndex: {}, checkInCodeIndex: {}, eventAdminIndex: {} };
+  const database: EventDatabase = { version: 5, events: {}, rsvps: {}, registrations: {}, eventAdmins: {}, rsvpIndex: {}, checkInCodeIndex: {}, eventAdminIndex: {} };
   for (const [id, rawEvent] of Object.entries(stored.events || {})) {
     if (!rawEvent || typeof rawEvent.creatorId !== "string") continue;
     const event = rawEvent as StoredEvent;
@@ -261,9 +281,7 @@ function normalizeDatabase(stored: LegacyEventDatabase): EventDatabase {
     const status: CheckInStatus = rawRsvp.status === "CHECKED_IN" ? "CHECKED_IN" : "REGISTERED";
     let checkInCode = typeof rawRsvp.checkInCode === "string" ? rawRsvp.checkInCode.trim().toUpperCase() : "";
     if (!/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/.test(checkInCode) || database.checkInCodeIndex[checkInCode]) checkInCode = generateUniqueCheckInCode(database);
-    const answers = isPlainObject(rawRsvp.customFormAnswers)
-      ? Object.fromEntries(Object.entries(rawRsvp.customFormAnswers).filter((entry): entry is [string, string | number | boolean] => ["string", "number", "boolean"].includes(typeof entry[1])))
-      : {};
+    const answers = storedAnswers(rawRsvp.customFormAnswers);
     const rsvp: RsvpRecord = {
       id, eventId: rawRsvp.eventId, userId: rawRsvp.userId, rsvpStatus, customFormAnswers: answers, checkInCode, status,
       registrationSource: rawRsvp.registrationSource === "MANUAL_WALK_IN" ? "MANUAL_WALK_IN" : "ONLINE",
@@ -280,6 +298,15 @@ function normalizeDatabase(stored: LegacyEventDatabase): EventDatabase {
     database.rsvps[id] = rsvp;
     database.rsvpIndex[rsvpKey(rsvp.eventId, rsvp.userId)] = id;
     database.checkInCodeIndex[checkInCode] = id;
+  }
+  for (const rawRegistration of Object.values(stored.registrations || {})) {
+    if (!rawRegistration || typeof rawRegistration.eventId !== "string" || typeof rawRegistration.userId !== "string" || !database.events[rawRegistration.eventId]) continue;
+    const now = Date.now();
+    database.registrations[rsvpKey(rawRegistration.eventId, rawRegistration.userId)] = {
+      eventId: rawRegistration.eventId, userId: rawRegistration.userId, customFormAnswers: storedAnswers(rawRegistration.customFormAnswers),
+      createdAt: typeof rawRegistration.createdAt === "number" ? rawRegistration.createdAt : now,
+      updatedAt: typeof rawRegistration.updatedAt === "number" ? rawRegistration.updatedAt : now,
+    };
   }
   for (const [id, rawAdmin] of Object.entries(stored.eventAdmins || {})) {
     if (!rawAdmin || typeof rawAdmin.eventId !== "string" || typeof rawAdmin.userId !== "string" || typeof rawAdmin.addedBy !== "string") continue;
@@ -322,6 +349,7 @@ function canManage(database: EventDatabase, event: StoredEvent, userId: string, 
 function publicEvent(database: EventDatabase, event: StoredEvent, viewerId: string, globalModerator = false): CampusEvent {
   const rsvps = Object.values(database.rsvps).filter((rsvp) => rsvp.eventId === event.id);
   const viewerRsvp = rsvps.find((rsvp) => rsvp.userId === viewerId);
+  const viewerRegistration = database.registrations[rsvpKey(event.id, viewerId)];
   const start = new Date(event.startsAt);
   const end = event.endsAt ? new Date(event.endsAt) : null;
   const isCreator = event.creatorId === viewerId;
@@ -336,6 +364,8 @@ function publicEvent(database: EventDatabase, event: StoredEvent, viewerId: stri
     ...event,
     going: rsvps.filter((rsvp) => rsvp.rsvpStatus === "going").length,
     waitlisted: rsvps.filter((rsvp) => rsvp.rsvpStatus === "waitlisted").length,
+    viewerRegistered: Boolean(viewerRegistration || viewerRsvp),
+    viewerRegistrationAnswers: viewerRegistration?.customFormAnswers || viewerRsvp?.customFormAnswers,
     viewerRsvpStatus: viewerRsvp?.rsvpStatus,
     viewerCheckInCode: viewerRsvp?.checkInCode,
     viewerCheckInStatus: viewerRsvp?.status,
@@ -391,6 +421,16 @@ export async function listEvents(viewerId: string, options?: { globalModerator?:
   await writeQueue;
   const database = await loadDatabase();
   return Object.values(database.events).filter((event) => event.status === "APPROVED" || event.creatorId === viewerId).sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime() || b.createdAt - a.createdAt).map((event) => publicEvent(database, event, viewerId, options?.globalModerator));
+}
+
+/** An approved event as anyone (signed in or not) may see it — used by the
+ * public share page. No viewer-specific fields are filled in. */
+export async function getPublicEvent(eventId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const event = database.events[eventId];
+  if (!event || event.status !== "APPROVED") return null;
+  return publicEvent(database, event, "");
 }
 
 export async function getEvent(eventId: string, viewerId: string) {
@@ -533,22 +573,61 @@ export async function updateEvent(eventId: string, userId: string, patch: EventU
   });
 }
 
-export async function setEventRsvp(eventId: string, userId: string, submittedAnswers: unknown) {
+/** Step one: save (or update) the viewer's answers to the registration form.
+ * Answers are locked once they have RSVP'd. */
+export async function registerForEvent(eventId: string, userId: string, submittedAnswers: unknown) {
   return mutate((database) => {
     const event = database.events[eventId];
     if (!event) return { error: "Event not found.", status: 404 } as const;
     if (event.status !== "APPROVED") return { error: "Registration opens after this event is approved.", status: 409 } as const;
-    const existingId = database.rsvpIndex[rsvpKey(eventId, userId)];
+    if (eventHasEnded(event)) return { error: "This event has ended — registration is closed.", status: 409 } as const;
+    const key = rsvpKey(eventId, userId);
+    if (database.rsvpIndex[key]) return { error: "You have already RSVP’d — cancel your RSVP to change your registration.", status: 409 } as const;
+    const answerResult = normalizeAnswers(event.customFormSchema, submittedAnswers ?? {});
+    if ("error" in answerResult) return { error: answerResult.error, status: 400 } as const;
+    const now = Date.now();
+    const existing = database.registrations[key];
+    database.registrations[key] = { eventId, userId, customFormAnswers: answerResult.answers, createdAt: existing?.createdAt ?? now, updatedAt: now };
+    return { event: publicEvent(database, event, userId), alreadyExisted: Boolean(existing) } as const;
+  });
+}
+
+export async function withdrawEventRegistration(eventId: string, userId: string) {
+  return mutate((database) => {
+    const event = database.events[eventId];
+    if (!event) return { error: "Event not found.", status: 404 } as const;
+    const key = rsvpKey(eventId, userId);
+    if (database.rsvpIndex[key]) return { error: "Cancel your RSVP before withdrawing your registration.", status: 409 } as const;
+    if (!database.registrations[key]) return { error: "You have not registered for this event.", status: 404 } as const;
+    delete database.registrations[key];
+    return { event: publicEvent(database, event, userId) } as const;
+  });
+}
+
+/** Step two: RSVP using the answers saved at registration. */
+export async function setEventRsvp(eventId: string, userId: string) {
+  return mutate((database) => {
+    const event = database.events[eventId];
+    if (!event) return { error: "Event not found.", status: 404 } as const;
+    if (event.status !== "APPROVED") return { error: "Registration opens after this event is approved.", status: 409 } as const;
+    if (eventHasEnded(event)) return { error: "This event has ended — registration is closed.", status: 409 } as const;
+    const key = rsvpKey(eventId, userId);
+    const existingId = database.rsvpIndex[key];
     const existing = existingId ? database.rsvps[existingId] : undefined;
     if (existing) return { event: publicEvent(database, event, userId), rsvp: existing, alreadyExisted: true } as const;
-    const answerResult = normalizeAnswers(event.customFormSchema, submittedAnswers);
-    if ("error" in answerResult) return { error: answerResult.error, status: 400 } as const;
+    const registration = database.registrations[key];
+    if (!registration) return { error: "Register for this event before you RSVP.", status: 409 } as const;
+    // The organizer may have edited the form since this user registered:
+    // drop answers to removed questions and re-check the rest.
+    const currentAnswers = Object.fromEntries(Object.entries(registration.customFormAnswers).filter(([id]) => event.customFormSchema.fields.some((field) => field.id === id)));
+    const answerResult = normalizeAnswers(event.customFormSchema, currentAnswers);
+    if ("error" in answerResult) return { error: `The registration form has changed — update your registration, then RSVP. ${answerResult.error}`, status: 409 } as const;
     const goingCount = Object.values(database.rsvps).filter((rsvp) => rsvp.eventId === eventId && rsvp.rsvpStatus === "going").length;
     const now = Date.now();
     const checkInCode = generateUniqueCheckInCode(database);
     const rsvp: RsvpRecord = { id: randomUUID(), eventId, userId, rsvpStatus: goingCount >= event.capacity ? "waitlisted" : "going", customFormAnswers: answerResult.answers, checkInCode, status: "REGISTERED", registrationSource: "ONLINE", createdAt: now, updatedAt: now };
     database.rsvps[rsvp.id] = rsvp;
-    database.rsvpIndex[rsvpKey(eventId, userId)] = rsvp.id;
+    database.rsvpIndex[key] = rsvp.id;
     database.checkInCodeIndex[checkInCode] = rsvp.id;
     return { event: publicEvent(database, event, userId), rsvp, alreadyExisted: false } as const;
   });
@@ -565,6 +644,8 @@ export async function cancelEventRsvp(eventId: string, userId: string) {
     const removedRsvp = database.rsvps[rsvpId];
     if (removedRsvp.status === "CHECKED_IN") return { error: "A checked-in registration cannot be cancelled.", status: 409 } as const;
     delete database.rsvps[rsvpId]; delete database.rsvpIndex[key]; delete database.checkInCodeIndex[removedRsvp.checkInCode];
+    // Cancelling an RSVP keeps the registration so the user can RSVP again.
+    if (!database.registrations[key]) database.registrations[key] = { eventId, userId, customFormAnswers: removedRsvp.customFormAnswers, createdAt: removedRsvp.createdAt, updatedAt: Date.now() };
     if (removedRsvp.rsvpStatus === "going") {
       const waitlisted = Object.values(database.rsvps).filter((rsvp) => rsvp.eventId === eventId && rsvp.rsvpStatus === "waitlisted").sort((a, b) => a.createdAt - b.createdAt)[0];
       if (waitlisted) { waitlisted.rsvpStatus = "going"; waitlisted.updatedAt = Date.now(); }
@@ -711,6 +792,9 @@ function removeEventFromDatabase(database: EventDatabase, eventId: string) {
     delete database.rsvps[rsvp.id];
     delete database.rsvpIndex[rsvpKey(eventId, rsvp.userId)];
     delete database.checkInCodeIndex[rsvp.checkInCode];
+  }
+  for (const [key, registration] of Object.entries(database.registrations)) {
+    if (registration.eventId === eventId) delete database.registrations[key];
   }
   for (const admin of Object.values(database.eventAdmins)) {
     if (admin.eventId !== eventId) continue;
@@ -863,6 +947,9 @@ export async function deleteUserEventData(userId: string) {
       delete database.rsvps[rsvp.id];
       delete database.rsvpIndex[rsvpKey(rsvp.eventId, userId)];
       delete database.checkInCodeIndex[rsvp.checkInCode];
+    }
+    for (const [key, registration] of Object.entries(database.registrations)) {
+      if (registration.userId === userId) delete database.registrations[key];
     }
     for (const admin of Object.values(database.eventAdmins)) {
       if (admin.userId !== userId && admin.addedBy !== userId) continue;

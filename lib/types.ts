@@ -187,6 +187,8 @@ export type CampusEvent = {
   customFormSchema: CustomFormSchema;
   going: number;
   waitlisted: number;
+  viewerRegistered: boolean;
+  viewerRegistrationAnswers?: CustomFormAnswers;
   viewerRsvpStatus?: "going" | "waitlisted";
   viewerCheckInCode?: string;
   viewerCheckInStatus?: "REGISTERED" | "CHECKED_IN";

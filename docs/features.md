@@ -28,10 +28,13 @@ A guide to what you can do on IB Smart Campus.
 - Track your own karma, post count, followers, and streak on your dashboard
 
 ## Events
-- Discover and RSVP to events happening on campus
+- Discover events happening on campus: register first (answering any organizer questions), then RSVP
 - Get put on a waitlist automatically if an event is full
 - Fill out custom registration forms set by event organizers
 - Get a QR check-in code for events you're going to
+- Share any event with its full details (date, venue, description, link) to WhatsApp, X, Facebook, LinkedIn, Telegram, Instagram, email, or any app on your phone
+- See every event you registered for, and its status, in your profile
+- Past events are marked Completed and drop out of "Happening soon"
 - Organize your own events: set date/time, venue, capacity, cover image, and a custom RSVP form
 - Add co-admins to help manage your event
 - Check people in at the door (including walk-ins who didn't RSVP online) and export the attendee list

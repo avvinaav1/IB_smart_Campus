@@ -17,7 +17,7 @@ import { EventRegistrationDetail } from "@/components/event-registration-detail"
 import { ProfileEditor } from "@/components/profile-editor";
 import { ProfileSetup } from "@/components/profile-setup";
 import { CommunityModerationPanel, GlobalAdminDashboard, InstituteDashboard } from "@/components/moderation-dashboard";
-import { coverImageStyle, eventWhen } from "@/lib/event-format";
+import { coverImageStyle, eventHasEnded, eventWhen } from "@/lib/event-format";
 import type { CampusEvent, ChatRequestView, Community, CommunityType, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, InstituteSummary, Post, SessionUser, UserDashboard, UserNotification, UserSearchResult, View } from "@/lib/types";
 import { announceDataChange, mutationSucceeded, subscribeToDataChanges } from "@/lib/client-data-sync";
 
@@ -89,7 +89,7 @@ function Toast({ message }: { message: string }) {
   return <div className="toast" role="status"><Check size={17} strokeWidth={3} />{message}</div>;
 }
 
-export function SmartCampusApp({ previewUser, initialView = "home", initialCommunityId = "", initialChatRequests = false, initialVerificationCode = "", claimEmail = "" }: { previewUser?: SessionUser; initialView?: View; initialCommunityId?: string; initialChatRequests?: boolean; initialVerificationCode?: string; claimEmail?: string }) {
+export function SmartCampusApp({ previewUser, initialView = "home", initialCommunityId = "", initialEventId = "", initialChatRequests = false, initialVerificationCode = "", claimEmail = "" }: { previewUser?: SessionUser; initialView?: View; initialCommunityId?: string; initialEventId?: string; initialChatRequests?: boolean; initialVerificationCode?: string; claimEmail?: string }) {
   const [authUser, setAuthUser] = useState<SessionUser | null | undefined>(previewUser);
   const previewMode = Boolean(previewUser && authUser?.id === previewUser.id);
   const [view, setView] = useState<View>(initialView);
@@ -105,6 +105,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerCommunity, setComposerCommunity] = useState("c/campuslife");
   const [eventOpen, setEventOpen] = useState<CampusEvent | null>(null);
+  const pendingEventId = useRef(initialEventId);
   const [editingEvent, setEditingEvent] = useState<CampusEvent | null>(null);
   const [instituteCommunityTarget, setInstituteCommunityTarget] = useState<InstituteSummary | null>(null);
   const [instituteEventTarget, setInstituteEventTarget] = useState<InstituteSummary | null>(null);
@@ -232,6 +233,12 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
         const nextEvents = data?.events || [];
         setEvents(nextEvents);
         setEventOpen((current) => current ? nextEvents.find((event) => event.id === current.id) || current : null);
+        // Deep link from a shared event page (/?view=events&event=<id>): open it once.
+        if (pendingEventId.current) {
+          const linked = nextEvents.find((event) => event.id === pendingEventId.current);
+          pendingEventId.current = "";
+          if (linked) setEventOpen(linked);
+        }
       } catch {
         if (active) setToast("Could not refresh the global events feed.");
       }
@@ -506,7 +513,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
           {view === "events" && <EventsView events={events} communities={communities} defaultCampus={authUser.campus || ""} onEvent={setEventOpen} onCreated={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setEventOpen(event); }} notify={setToast} />}
           {view === "rewards" && <RewardsView user={authUser} notify={setToast} />}
           {view === "chat" && <ChatView user={authUser} notify={setToast} onDiscover={() => setSearchOpen(true)} initialRequests={initialChatRequests} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
-          {view === "profile" && <ProfileView user={authUser} dashboard={dashboard} theme={theme} toggleTheme={toggleTheme} privacyPending={privacyPending} onPrivacyChange={changePrivacy} onRewards={() => go("rewards")} onEdit={() => setProfileEditorOpen(true)} onLogout={logout} />}
+          {view === "profile" && <ProfileView user={authUser} dashboard={dashboard} events={events} onEvent={setEventOpen} theme={theme} toggleTheme={toggleTheme} privacyPending={privacyPending} onPrivacyChange={changePrivacy} onRewards={() => go("rewards")} onEdit={() => setProfileEditorOpen(true)} onLogout={logout} />}
           {view === "profile" && <CertificateGallery userId={authUser.id} preview={previewMode} canManage={authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN"} onBuild={() => go("certificates")} />}
           {view === "admin" && (authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN") && <GlobalAdminDashboard user={authUser} notify={setToast} />}
           {view === "institute" && <InstituteDashboard user={authUser} communities={communities} notify={setToast} onCreateCommunity={setInstituteCommunityTarget} onCreateEvent={setInstituteEventTarget} onCommunityChanged={(community) => setCommunities((current) => [community, ...current.filter((item) => item.id !== community.id)])} />}
@@ -548,7 +555,13 @@ function HomeView({ user, posts, events, communities, setPosts, vote, votePendin
   const premiumRemaining = Math.max(0, 60 - user.points);
   const invitesRemaining = Math.ceil(premiumRemaining / 10);
   const rewardProgress = Math.min(100, user.points / 60 * 100);
-  const featuredEvent = events.find(event => new Date(event.endsAt || event.startsAt).getTime() >= now) || events[0];
+  const upcomingEvents = events
+    .filter(event => event.status === "APPROVED" && !eventHasEnded(event, now))
+    .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
+  const featuredEvent = upcomingEvents[0];
+  const pastEvents = events
+    .filter(event => event.status === "APPROVED" && eventHasEnded(event, now))
+    .sort((a, b) => new Date(b.startsAt).getTime() - new Date(a.startsAt).getTime());
 
   function save(id: number) {
     setPosts(current => current.map(post => post.id === id ? { ...post, saved: !post.saved } : post));
@@ -580,10 +593,14 @@ function HomeView({ user, posts, events, communities, setPosts, vote, votePendin
       </div>
     </section>
     <aside className="right-rail">
+      {pastEvents.length > 0 && <div className="rail-card events-rail past-events-rail">
+        <div className="section-heading"><div><span className="eyebrow violet">IN CASE YOU MISSED IT</span><h2>Past events</h2></div><button onClick={onEvents}>View all <ArrowRight size={15} /></button></div>
+        {pastEvents.slice(0, 2).map(event => <button className="mini-event" key={event.id} onClick={() => onEvent(event)}><span><b>{event.day}</b><small>{event.month}</small></span><div><b>{event.title}</b><small><Check size={13} /> Completed · {event.location}</small></div></button>)}
+      </div>}
       <div className="rail-card events-rail">
         <div className="section-heading"><div><span className="eyebrow pink">DON&apos;T MISS OUT</span><h2>Happening soon</h2></div><button onClick={onEvents}>View all <ArrowRight size={15} /></button></div>
-        {events.slice(0, 3).map(event => <button className="mini-event" key={event.id} onClick={() => onEvent(event)}><span><b>{event.day}</b><small>{event.month}</small></span><div><b>{event.title}</b><small><Clock3 size={13} /> {event.time} · {event.location}</small></div></button>)}
-        {!events.length && <p className="rail-empty">Events published by campus creators will appear here.</p>}
+        {upcomingEvents.slice(0, 3).map(event => <button className="mini-event" key={event.id} onClick={() => onEvent(event)}><span><b>{event.day}</b><small>{event.month}</small></span><div><b>{event.title}</b><small><Clock3 size={13} /> {event.time} · {event.location}</small></div></button>)}
+        {!upcomingEvents.length && <p className="rail-empty">No upcoming events right now. New events from campus creators will appear here.</p>}
       </div>
       <div className="rail-card progress-card">
         <div className="section-heading"><div><span className="eyebrow cyan">LEVEL UP</span><h2>Your rewards</h2></div><Gift size={24} /></div>
@@ -834,12 +851,20 @@ function EventsView({ events, communities, defaultCampus, onEvent, onCreated, no
   const [creating, setCreating] = useState(false);
   const liveEvents = events.filter((event) => event.status === "APPROVED");
   const submissions = events.filter((event) => event.isCreator && event.status !== "APPROVED");
-  const filtered = filter === "All" ? liveEvents : liveEvents.filter(event => event.category === filter);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const startOf = (event: CampusEvent) => new Date(event.startsAt).getTime();
+  const filtered = (filter === "All" ? liveEvents : liveEvents.filter(event => event.category === filter))
+    .map(event => ({ event, ended: eventHasEnded(event, now) }))
+    .sort((a, b) => Number(a.ended) - Number(b.ended) || (a.ended ? startOf(b.event) - startOf(a.event) : startOf(a.event) - startOf(b.event)));
   return <div className="content-page">
     <section className="page-hero events-hero"><div><span className="eyebrow pink">GET OUT THERE</span><h1>Plans worth leaving your room for.</h1><p>From tiny workshops to very loud nights.</p></div><div className="ticket-doodle"><span>ADMIT<br />ONE</span><b>SC-0826</b></div></section>
     <div className="events-toolbar"><div className="category-chips">{["All", "Music", "Tech", "Culture", "Sports"].map(x => <button className={filter === x ? "active" : ""} onClick={() => setFilter(x)} key={x}>{x}</button>)}</div><div className="toolbar-actions"><button className="outline-button"><CalendarDays size={18} /> This month <ChevronDown size={15} /></button><button className="primary-action" onClick={() => setCreating(true)}><Plus size={18} /> Create event</button></div></div>
     {submissions.length > 0 && <section className="event-submissions"><header><div><span className="eyebrow violet">MY SUBMISSIONS</span><h2>Waiting on verification</h2></div><b>{submissions.length}</b></header><div>{submissions.map((event) => <button key={event.id} onClick={() => onEvent(event)}><span><b>{event.title}</b><small>{event.community || (event.instituteId ? "Institute event" : "Standalone event")} · {eventWhen(event)}</small></span><em className={event.status.toLowerCase()}>{event.status}</em><ArrowRight size={16} /></button>)}</div></section>}
-    <div className="event-grid">{filtered.map(event => <article key={event.id} onClick={() => onEvent(event)} tabIndex={0} onKeyDown={e => e.key === "Enter" && onEvent(event)}><div className={`event-image ${event.coverFit === "fit" ? "cover-fit" : ""}`}><Image src={event.imageUrl} alt="" fill sizes="(max-width: 700px) 100vw, 420px" unoptimized={event.imageUrl.startsWith("/api/")} style={coverImageStyle(event)} /><span>{event.isCreator ? "YOUR EVENT" : event.isEventAdmin ? "ADMIN" : event.category}</span><div><b>{event.day}</b><small>{event.month}</small></div></div><div className="event-copy"><h2>{event.title}</h2><p><Clock3 size={16} /> {eventWhen(event)}</p><p><MapPin size={16} /> {event.location}</p><div><span className="face-stack"><i>KA</i><i>ZO</i><i>MI</i></span><small>{event.going} going{event.waitlisted ? ` · ${event.waitlisted} waitlisted` : ""}</small><button>View event <ArrowRight size={16} /></button></div></div></article>)}</div>
+    <div className="event-grid">{filtered.map(({ event, ended }) => <article key={event.id} className={ended ? "completed" : undefined} onClick={() => onEvent(event)} tabIndex={0} onKeyDown={e => e.key === "Enter" && onEvent(event)}><div className={`event-image ${event.coverFit === "fit" ? "cover-fit" : ""}`}><Image src={event.imageUrl} alt="" fill sizes="(max-width: 700px) 100vw, 420px" unoptimized={event.imageUrl.startsWith("/api/")} style={coverImageStyle(event)} /><span>{event.isCreator ? "YOUR EVENT" : event.isEventAdmin ? "ADMIN" : event.category}</span>{ended && <em className="event-completed-badge"><Check size={12} /> Completed</em>}<div><b>{event.day}</b><small>{event.month}</small></div></div><div className="event-copy"><h2>{event.title}</h2><p><Clock3 size={16} /> {eventWhen(event)}</p><p><MapPin size={16} /> {event.location}</p><div><span className="face-stack"><i>KA</i><i>ZO</i><i>MI</i></span><small>{event.going} {ended ? "RSVP’d" : "going"}{!ended && event.waitlisted ? ` · ${event.waitlisted} waitlisted` : ""}</small><button>{ended ? "View details" : "View event"} <ArrowRight size={16} /></button></div></div></article>)}</div>
     {!filtered.length && <div className="events-empty"><CalendarDays size={31} /><h2>No events here yet</h2><p>Publish the first event in this category.</p></div>}
     {creating && <CreateEventModal communities={communities} defaultCampus={defaultCampus} close={() => setCreating(false)} onCreate={(event) => { onCreated(event); setCreating(false); setFilter("All"); notify(event.status === "PENDING" ? "Event submitted for verification" : "Event published to the global campus feed"); }} />}
   </div>;
@@ -926,7 +951,7 @@ function RegistrationFormBuilder({ fields, onChange }: { fields: CustomFormField
   }
 
   return <section className="form-builder">
-    <header><div><span className="eyebrow violet">REGISTRATION FORM</span><h3>Ask attendees what you need</h3><p>Build a lightweight form. Required answers are checked before an RSVP is accepted.</p></div><b>{fields.length}/30</b></header>
+    <header><div><span className="eyebrow violet">REGISTRATION FORM</span><h3>Ask attendees what you need</h3><p>Attendees answer these when they register. They can RSVP only after registering.</p></div><b>{fields.length}/30</b></header>
     {fields.length > 0 && <div className="form-builder-list">{fields.map((field, index) => <article key={field.id}>
       <div className="form-builder-question-head"><span>{index + 1}</span><b>{field.type.replace("_", " ")}</b><button type="button" onClick={() => onChange(fields.filter((item) => item.id !== field.id))} aria-label={`Remove question ${index + 1}`}><X size={15} /></button></div>
       <label className="field"><span>Question</span><input value={field.label} onChange={event => update(field.id, { label: event.target.value })} maxLength={120} placeholder={field.type === "checkbox" ? "I agree to the event guidelines" : "What would you like to ask?"} required /></label>
@@ -935,7 +960,7 @@ function RegistrationFormBuilder({ fields, onChange }: { fields: CustomFormField
       {field.type === "select" && <div className="builder-options"><span>Dropdown options</span>{field.options.map((option, optionIndex) => <div key={option.id}><input value={option.label} onChange={event => updateOption(field, option.id, event.target.value)} maxLength={120} aria-label={`Option ${optionIndex + 1}`} required /><button type="button" disabled={field.options.length <= 2} onClick={() => update(field.id, { options: field.options.filter((item) => item.id !== option.id) } as Partial<CustomFormField>)} aria-label={`Remove option ${optionIndex + 1}`}><X size={14} /></button></div>)}<button type="button" disabled={field.options.length >= 50} onClick={() => update(field.id, { options: [...field.options, { id: formItemId(), label: `Option ${field.options.length + 1}`, value: formItemId() }] } as Partial<CustomFormField>)}><Plus size={14} /> Add option</button></div>}
       <label className="builder-required"><input type="checkbox" checked={field.required} onChange={event => update(field.id, { required: event.target.checked })} /><span>Required question</span></label>
     </article>)}</div>}
-    {!fields.length && <div className="form-builder-empty"><Plus size={22} /><b>No custom questions yet</b><small>Attendees can RSVP with one tap, or you can add questions below.</small></div>}
+    {!fields.length && <div className="form-builder-empty"><Plus size={22} /><b>No custom questions yet</b><small>Attendees register with one tap, then RSVP — or add questions below.</small></div>}
     <div className="form-builder-tools"><span>Add question</span><div>{([ ["short_text", "Short text"], ["long_text", "Long text"], ["number", "Number"], ["select", "Dropdown"], ["checkbox", "Checkbox"] ] as const).map(([type, label]) => <button type="button" onClick={() => add(type)} disabled={fields.length >= 30} key={type}><Plus size={14} /> {label}</button>)}</div></div>
   </section>;
 }
@@ -1250,12 +1275,25 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
   </div>;
 }
 
-function ProfileView({ user, dashboard, theme, toggleTheme, privacyPending, onPrivacyChange, onRewards, onEdit, onLogout }: { user: SessionUser; dashboard: UserDashboard | null; theme: string; toggleTheme: () => void; privacyPending: boolean; onPrivacyChange: (isPrivate: boolean) => void; onRewards: () => void; onEdit: () => void; onLogout: () => void }) {
+function ProfileView({ user, dashboard, events, onEvent, theme, toggleTheme, privacyPending, onPrivacyChange, onRewards, onEdit, onLogout }: { user: SessionUser; dashboard: UserDashboard | null; events: CampusEvent[]; onEvent: (event: CampusEvent) => void; theme: string; toggleTheme: () => void; privacyPending: boolean; onPrivacyChange: (isPrivate: boolean) => void; onRewards: () => void; onEdit: () => void; onLogout: () => void }) {
   const metric = (value?: number) => value === undefined ? "—" : value.toLocaleString();
+  const [now] = useState(() => Date.now());
+  const startOf = (event: CampusEvent) => new Date(event.startsAt).getTime();
+  // Upcoming registrations first (soonest first), then past ones (most recent first).
+  const registeredEvents = events
+    .filter(event => event.viewerRegistered)
+    .map(event => ({ event, ended: eventHasEnded(event, now) }))
+    .sort((a, b) => Number(a.ended) - Number(b.ended) || (a.ended ? startOf(b.event) - startOf(a.event) : startOf(a.event) - startOf(b.event)));
+  const registrationLabel = (event: CampusEvent, ended: boolean) =>
+    event.viewerCheckInStatus === "CHECKED_IN" ? "Attended"
+      : ended ? "Completed"
+      : event.viewerRsvpStatus === "going" ? "Going"
+      : event.viewerRsvpStatus === "waitlisted" ? "Waitlisted"
+      : "Registered · RSVP pending";
   return <div className="content-page profile-page">
     <section className="profile-banner"><div className="profile-pattern">✦ &nbsp; 〰 &nbsp; ★ &nbsp; 〰 &nbsp; ✦</div><div className="profile-identity"><Avatar text={user.username} image={user.avatarUrl} color="#FF5C8A" size={92} /><div><span className="eyebrow lime">CAMPUS CONNECTOR</span><h1>{user.username} <ShieldCheck size={24} fill="#22D3EE" /></h1><p>{user.email} · {user.campus || `ID ${user.id.slice(0, 8)}`}</p></div><button onClick={onEdit}><Settings size={18} /> Edit profile</button></div></section>
     <div className="profile-stats"><div><b>{metric(dashboard?.karma)}</b><small>Karma</small></div><div><b>{metric(dashboard?.postCount)}</b><small>Posts</small></div><div><b>{metric(dashboard?.followers)}</b><small>Followers</small></div><div><b>{metric(dashboard?.streak ?? user.streakCount)}</b><small>24-hour streak</small></div></div>
-    <div className="profile-content"><section><span className="eyebrow violet">ABOUT ME</span><h2>{user.about || "Your campus story starts here. Add a few lines about yourself from Edit profile."}</h2><div className="profile-tags"><span>🎨 Design</span><span>📸 Photography</span><span>☕ Chai</span><span>🎧 Indie music</span></div><div className="profile-own-posts"><span className="eyebrow pink">YOUR POSTS</span>{dashboard?.posts.length ? dashboard.posts.slice(0, 3).map((post) => <article key={post.id}><div><b>{post.title}</b><small>{post.community} · {post.time}</small></div><span>{post.votes.toLocaleString()} karma</span></article>) : <p>You haven&apos;t posted anything yet.</p>}</div></section><aside><span className="eyebrow cyan">PREFERENCES</span><button onClick={onRewards}><Gift size={20} /><span><b>Rewards & Premium</b><small>{user.points} points · {Math.max(0, 60 - user.points)} to your next reward</small></span><ArrowRight size={18} /></button><button onClick={toggleTheme}>{theme === "light" ? <Moon size={20} /> : <Sun size={20} />}<span><b>{theme === "light" ? "Dark mode" : "Light mode"}</b><small>Change your campus vibe</small></span><i /></button><button onClick={onEdit}><KeyRound size={20} /><span><b>Password & email</b><small>{user.hasPassword ? "Password login enabled" : "Add an alternative login method"}</small></span><ArrowRight size={18} /></button><button className="privacy-row" role="switch" aria-checked={user.isPrivate} disabled={privacyPending} onClick={() => onPrivacyChange(!user.isPrivate)}>{user.isPrivate ? <LockKeyhole size={20} /> : <Globe2 size={20} />}<span><b>Private profile</b><small>{user.isPrivate ? "Follow requests require your approval" : "Anyone can follow you instantly"}</small></span><i className={user.isPrivate ? "on" : ""} /></button><button className="logout-row" onClick={onLogout}><LogOut size={20} /><span><b>Log out</b><small>End this session on every layer</small></span><ArrowRight size={18} /></button></aside></div>
+    <div className="profile-content"><section><span className="eyebrow violet">ABOUT ME</span><h2>{user.about || "Your campus story starts here. Add a few lines about yourself from Edit profile."}</h2><div className="profile-tags"><span>🎨 Design</span><span>📸 Photography</span><span>☕ Chai</span><span>🎧 Indie music</span></div><div className="profile-own-posts"><span className="eyebrow pink">YOUR POSTS</span>{dashboard?.posts.length ? dashboard.posts.slice(0, 3).map((post) => <article key={post.id}><div><b>{post.title}</b><small>{post.community} · {post.time}</small></div><span>{post.votes.toLocaleString()} karma</span></article>) : <p>You haven&apos;t posted anything yet.</p>}</div><div className="profile-own-posts profile-registered-events"><span className="eyebrow lime">REGISTERED EVENTS</span>{registeredEvents.length ? registeredEvents.map(({ event, ended }) => <button type="button" className={ended ? "ended" : ""} key={event.id} onClick={() => onEvent(event)}><span className="profile-event-date"><b>{event.day}</b><small>{event.month}</small></span><div><b>{event.title}</b><small>{eventWhen(event)} · {event.venueName}</small></div><span className={`profile-event-status ${event.viewerCheckInStatus === "CHECKED_IN" ? "attended" : ended ? "completed" : event.viewerRsvpStatus || "pending"}`}>{registrationLabel(event, ended)}</span></button>) : <p>You haven&apos;t registered for any events yet.</p>}</div></section><aside><span className="eyebrow cyan">PREFERENCES</span><button onClick={onRewards}><Gift size={20} /><span><b>Rewards & Premium</b><small>{user.points} points · {Math.max(0, 60 - user.points)} to your next reward</small></span><ArrowRight size={18} /></button><button onClick={toggleTheme}>{theme === "light" ? <Moon size={20} /> : <Sun size={20} />}<span><b>{theme === "light" ? "Dark mode" : "Light mode"}</b><small>Change your campus vibe</small></span><i /></button><button onClick={onEdit}><KeyRound size={20} /><span><b>Password & email</b><small>{user.hasPassword ? "Password login enabled" : "Add an alternative login method"}</small></span><ArrowRight size={18} /></button><button className="privacy-row" role="switch" aria-checked={user.isPrivate} disabled={privacyPending} onClick={() => onPrivacyChange(!user.isPrivate)}>{user.isPrivate ? <LockKeyhole size={20} /> : <Globe2 size={20} />}<span><b>Private profile</b><small>{user.isPrivate ? "Follow requests require your approval" : "Anyone can follow you instantly"}</small></span><i className={user.isPrivate ? "on" : ""} /></button><button className="logout-row" onClick={onLogout}><LogOut size={20} /><span><b>Log out</b><small>End this session on every layer</small></span><ArrowRight size={18} /></button></aside></div>
   </div>;
 }
 
