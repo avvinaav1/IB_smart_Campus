@@ -12,7 +12,7 @@ import { jobInputSchema, layoutSchema, MAX_UPLOAD, type JobRow } from "./model";
 import { matchRecipient } from "./matching";
 import { smtpConfigured } from "./email";
 import { mayManageCertificates } from "./access";
-import { processJob } from "./worker";
+import { processJob, streamJobArchive } from "./worker";
 
 class ApiError extends Error { constructor(message: string, public status = 400) { super(message); } }
 // There's no standalone worker process to rely on in a serverless deployment,
@@ -129,7 +129,13 @@ export async function handleCertificates(request: NextRequest, path: string[]) {
     }
     if (path[0] === "jobs" && path.length >= 2) {
       const job = await jobForOwner(path[1], user.id);
-      if (method === "GET" && path[2] === "download") { if (job.archiveStatus !== "ready" || !job.archiveAssetId) throw new ApiError("Archive is not ready", 409); return assetResponse(job.archiveAssetId, "certificates.zip"); }
+      if (method === "GET" && path[2] === "download") {
+        if (job.archiveStatus !== "ready") throw new ApiError("Archive is not ready", 409);
+        // Older batches stored a prebuilt ZIP; newer ones assemble it on demand.
+        if (job.archiveAssetId) return assetResponse(job.archiveAssetId, "certificates.zip");
+        const zip = await streamJobArchive(job.id);
+        return new Response(Readable.toWeb(zip as Readable) as ReadableStream<Uint8Array>, { headers: { "Content-Type": "application/zip", "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Disposition": 'attachment; filename="certificates.zip"' } });
+      }
       if (method === "GET" && path.length === 2) {
         // Each status poll is also this job's chance to make progress: claim
         // and run one bounded chunk (a no-op if another request already holds

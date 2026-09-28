@@ -166,14 +166,17 @@ export async function leaseJobById(id: string, organizerId: string) {
 // Hands a job back to the queue without waiting out its lease, so the next
 // request-scoped chunk can pick it up immediately instead of stalling for up
 // to 120s. Used when a chunk runs out of time budget with rows still pending.
-export async function releaseJobToQueue(job: JobRecord) {
-  await guardedJobWrite(job, { status: "queued", leaseToken: "", leaseExpiresAt: 0 });
+export async function releaseJobToQueue(job: JobRecord, extra: Record<string, unknown> = {}) {
+  await guardedJobWrite(job, { ...extra, status: "queued", leaseToken: "", leaseExpiresAt: 0 });
 }
 export async function guardedJobWrite(job: JobRecord, patch: Record<string, unknown>, rowId?: string, rowPatch?: Record<string, unknown>) {
   await firestore().runTransaction(async tx => {
     const ref = jobs().doc(job.id), doc = await tx.get(ref);
     if (doc.get("leaseToken") !== job.leaseToken || doc.get("status") !== "running" || doc.get("leaseExpiresAt") < Date.now()) throw new Error("Job lease lost");
-    tx.update(ref, { ...patch, updatedAt: Date.now() });
+    // Row-only updates leave the job document untouched: every row makes
+    // several of these, and rewriting one hot document each time causes
+    // Firestore contention errors on large batches.
+    if (Object.keys(patch).length || !rowId) tx.update(ref, { ...patch, updatedAt: Date.now() });
     if (rowId && rowPatch) tx.update(ref.collection("rows").doc(rowId), { ...rowPatch, updatedAt: Date.now() });
   });
 }

@@ -1,13 +1,9 @@
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { createReadStream, createWriteStream } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
 import JSZip from "jszip";
 import { firestore } from "@/lib/firebase-admin";
 import { certificateRecipientDirectory } from "@/lib/auth-store";
 import { getEvent } from "@/lib/event-store";
-import { assetBytes, getAsset, saveAsset } from "./assets";
+import { assetBytes, assetChunks, getAsset, saveAsset } from "./assets";
 import { jobs, leaseJob, guardedJobWrite, internalAward, finishRow, releaseJobToQueue } from "./store";
 import { renderPng } from "./node-render";
 import { certificateMail, certificateTransport, type CertificateMailEvent } from "./email";
@@ -15,6 +11,9 @@ import { recordPendingClaim } from "./claims";
 import { matchRecipient } from "./matching";
 import type { JobRecord, JobRow, Layout } from "./model";
 import { reserveVerification, activateVerification } from "./verification-store";
+
+const MAX_CHUNK_FAILURES = 5;
+const isLeaseLost = (error: unknown) => error instanceof Error && error.message === "Job lease lost";
 
 /**
  * Processes a job's rows. With no `deadline`, runs to completion (the
@@ -27,10 +26,9 @@ import { reserveVerification, activateVerification } from "./verification-store"
  * whole batch in one invocation.
  */
 export async function processJob(job: JobRecord, deadline = Infinity): Promise<"completed" | "partial" | "failed"> {
-  const dir = await mkdtemp(join(tmpdir(), "smart-campus-certificates-"));
   let heartbeatError = false;
-  let timeUp = false;
-  const heartbeat = setInterval(() => { void guardedJobWrite(job, { leaseExpiresAt: Date.now() + 120_000 }).catch(() => { heartbeatError = true; }); }, 25_000);
+  let timeUp = false, progressed = false;
+  const heartbeat = setInterval(() => { void guardedJobWrite(job, { leaseExpiresAt: Date.now() + 120_000 }).catch(error => { if (isLeaseLost(error)) heartbeatError = true; }); }, 25_000);
   let mailer: ReturnType<typeof certificateTransport> | null = null;
   let mailEvent: CertificateMailEvent | undefined;
   try {
@@ -46,103 +44,124 @@ export async function processJob(job: JobRecord, deadline = Infinity): Promise<"
     const background = bg ? await assetBytes(bg) : undefined;
     const users = job.requestedActions.email || job.requestedActions.internalDelivery ? await certificateRecipientDirectory() : [];
     let cursor = "";
-    const archive = new JSZip();
-    const manifest: Array<Record<string, unknown>> = [];
-    let archiveBytes = 0;
     while (true) {
-      let query = jobs().doc(job.id).collection("rows").orderBy("__name__").limit(20);
+      // Only unprocessed rows: a resumed chunk goes straight to new work instead
+      // of re-walking (and re-downloading) everything earlier chunks finished.
+      let query = jobs().doc(job.id).collection("rows").where("processed", "==", false).orderBy("__name__").limit(20);
       if (cursor) query = query.startAfter(cursor);
       const page = await query.get();
       for (const doc of page.docs) {
         if (heartbeatError) throw new Error("Job lease lost");
         if (Date.now() >= deadline) { timeUp = true; break; }
-        await guardedJobWrite(job, { leaseExpiresAt: Date.now() + 120_000 });
         const row = { ...doc.data(), id: doc.id } as JobRow; cursor = row.id;
         const update = async (patch: Partial<JobRow>) => { await guardedJobWrite(job, {}, row.id, patch); Object.assign(row, patch); };
-        if (!row.processed) {
-          if (row.matchStatus === "pending") {
-            const match = matchRecipient(users, row.values[job.columnMapping.email || ""] || "", row.values[job.columnMapping.username || ""] || "");
-            await update({ matchStatus: match.status, matchReason: match.reason, emailNormalized: match.email, ...(match.userId ? { matchedUserId: match.userId } : {}) });
+        if (row.matchStatus === "pending") {
+          const match = matchRecipient(users, row.values[job.columnMapping.email || ""] || "", row.values[job.columnMapping.username || ""] || "");
+          await update({ matchStatus: match.status, matchReason: match.reason, emailNormalized: match.email, ...(match.userId ? { matchedUserId: match.userId } : {}) });
+        }
+        if (row.renderStatus === "pending") {
+          try {
+            Object.assign(row, await reserveVerification(firestore(), job, row));
+            const png = await renderPng(layout, row, background);
+            const asset = await saveAsset(job.organizerId, "certificate", png, "image/png", job.id);
+            await activateVerification(firestore(), job, row, asset.id);
+            Object.assign(row, { renderStatus: "ready", assetId: asset.id });
+          } catch (error) {
+            if (isLeaseLost(error)) throw error;
+            await update({ renderStatus: "failed", lastError: "PNG generation failed. Check image dimensions and template fonts." });
           }
-          if (row.renderStatus === "pending") {
+        }
+        if (row.renderStatus === "ready" && row.internalStatus === "pending") {
+          if (!row.matchedUserId) await update({ internalStatus: "skipped" });
+          else {
+            try { const certificateId = await internalAward(job, row, job.leaseToken); Object.assign(row, { certificateId, internalStatus: "delivered" }); }
+            catch (error) {
+              if (isLeaseLost(error)) throw error;
+              await update({ internalStatus: "failed", lastError: "Could not save the certificate to the recipient profile and inbox." });
+            }
+          }
+        }
+        if (row.emailStatus === "sending") await update({ emailStatus: "unknown", lastError: "Previous SMTP attempt was interrupted; review before retrying to avoid duplicate mail." });
+        if (row.renderStatus === "ready" && row.emailStatus === "pending") {
+          if (!row.emailNormalized) await update({ emailStatus: "skipped", lastError: "No valid recipient email address." });
+          else {
+            // Persist intent before contacting SMTP. A crash after this point
+            // must not silently send the same email again.
+            if (!(await getAsset(row.assetId!))) throw new Error("Rendered artifact missing");
+            // No PNG is attached: recipients without a matching account yet
+            // claim the certificate by registering/signing in with this same
+            // email later (see lib/certificates/claims.ts).
+            if (row.internalStatus !== "delivered") await recordPendingClaim(job, row);
+            const message = certificateMail(job, row, mailEvent);
+            await update({ emailStatus: "sending", emailAttempts: row.emailAttempts + 1, emailMessageId: message.messageId });
             try {
-              Object.assign(row, await reserveVerification(firestore(), job, row));
-              const png = await renderPng(layout, row, background);
-              const asset = await saveAsset(job.organizerId, "certificate", png, "image/png", job.id);
-              await activateVerification(firestore(), job, row, asset.id);
-              Object.assign(row, { renderStatus: "ready", assetId: asset.id });
-            } catch { await update({ renderStatus: "failed", lastError: "PNG generation failed. Check image dimensions and template fonts." }); }
-          }
-          if (row.renderStatus === "ready" && row.internalStatus === "pending") {
-            if (!row.matchedUserId) await update({ internalStatus: "skipped" });
-            else {
-              try { const certificateId = await internalAward(job, row, job.leaseToken); Object.assign(row, { certificateId, internalStatus: "delivered" }); }
-              catch { await update({ internalStatus: "failed", lastError: "Could not save the certificate to the recipient profile and inbox." }); }
+              const result = await mailer!.sendMail(message);
+              await update({ emailStatus: result.accepted.length ? "accepted" : "failed" });
+            } catch (error) {
+              if (isLeaseLost(error)) throw error;
+              // An explicit SMTP rejection is safe to retry; a transport
+              // timeout/disconnect may have happened after server acceptance.
+              const code = (error as { responseCode?: number }).responseCode;
+              const detail = error instanceof Error ? error.message.replace(/[\r\n]/g, " ").trim().slice(0, 200) : "";
+              const summary = code ? "SMTP rejected this message." : "SMTP outcome is unknown; review before retrying.";
+              await update({ emailStatus: code && code >= 400 ? "failed" : "unknown", lastError: detail ? `${summary} (${detail})` : summary });
             }
           }
-          if (row.emailStatus === "sending") await update({ emailStatus: "unknown", lastError: "Previous SMTP attempt was interrupted; review before retrying to avoid duplicate mail." });
-          if (row.renderStatus === "ready" && row.emailStatus === "pending") {
-            if (!row.emailNormalized) await update({ emailStatus: "skipped", lastError: "No valid recipient email address." });
-            else {
-              // Persist intent before contacting SMTP. A crash after this point
-              // must not silently send the same email again.
-              if (!(await getAsset(row.assetId!))) throw new Error("Rendered artifact missing");
-              // No PNG is attached: recipients without a matching account yet
-              // claim the certificate by registering/signing in with this same
-              // email later (see lib/certificates/claims.ts).
-              if (row.internalStatus !== "delivered") await recordPendingClaim(job, row);
-              const message = certificateMail(job, row, mailEvent);
-              await update({ emailStatus: "sending", emailAttempts: row.emailAttempts + 1, emailMessageId: message.messageId });
-              try {
-                const result = await mailer!.sendMail(message);
-                await update({ emailStatus: result.accepted.length ? "accepted" : "failed" });
-              } catch (error) {
-                // An explicit SMTP rejection is safe to retry; a transport
-                // timeout/disconnect may have happened after server acceptance.
-                const code = (error as { responseCode?: number }).responseCode;
-                const detail = error instanceof Error ? error.message.replace(/[\r\n]/g, " ").trim().slice(0, 200) : "";
-                const summary = code ? "SMTP rejected this message." : "SMTP outcome is unknown; review before retrying.";
-                await update({ emailStatus: code && code >= 400 ? "failed" : "unknown", lastError: detail ? `${summary} (${detail})` : summary });
-              }
-            }
-          }
-          if (row.renderStatus === "failed") await update({ ...(row.internalStatus === "pending" ? { internalStatus: "failed" } : {}), ...(row.emailStatus === "pending" ? { emailStatus: "failed" } : {}) });
-          const failed = row.renderStatus === "failed" || row.internalStatus === "failed" || ["failed", "unknown", "skipped"].includes(row.emailStatus);
-          await finishRow(job, row, failed);
         }
-        manifest.push({ row: row.rowNumber, verificationCode: row.verificationCode, rendered: row.renderStatus, match: row.matchStatus, internal: row.internalStatus, email: row.emailStatus });
-        if (job.requestedActions.archive && row.assetId && row.renderStatus === "ready") {
-          const asset = await getAsset(row.assetId);
-          if (asset) {
-            archiveBytes += asset.byteSize;
-            if (archiveBytes > 500 * 1024 * 1024) throw new Error("Archive exceeds 500 MB; split this batch");
-            const path = join(dir, `${row.id}.png`);
-            await writeFile(path, await assetBytes(asset));
-            archive.file(`certificate-${row.rowNumber}.png`, createReadStream(path));
-          }
-        }
+        if (row.renderStatus === "failed") await update({ ...(row.internalStatus === "pending" ? { internalStatus: "failed" } : {}), ...(row.emailStatus === "pending" ? { emailStatus: "failed" } : {}) });
+        const failed = row.renderStatus === "failed" || row.internalStatus === "failed" || ["failed", "unknown", "skipped"].includes(row.emailStatus);
+        await finishRow(job, row, failed);
+        progressed = true;
       }
       if (timeUp || page.size < 20) break;
     }
-    if (timeUp) { await releaseJobToQueue(job); return "partial"; }
-    if (job.requestedActions.archive) {
-      await guardedJobWrite(job, { archiveStatus: "running" });
-      archive.file("delivery-report.json", JSON.stringify(manifest, null, 2));
-      const path = join(dir, "certificates.zip");
-      await pipeline(archive.generateNodeStream({ streamFiles: true, compression: "STORE" }), createWriteStream(path));
-      const asset = await saveAsset(job.organizerId, "archive", path, "application/zip", job.id);
-      await guardedJobWrite(job, { archiveStatus: "ready", archiveAssetId: asset.id });
-    }
+    if (timeUp) { await releaseJobToQueue(job, progressed ? { chunkFailures: 0, lastError: "" } : {}); return "partial"; }
+    // The ZIP is assembled on demand by the download route (streamJobArchive)
+    // from the per-row PNGs, so finishing a batch never has to re-download and
+    // re-store hundreds of megabytes inside one time-bounded request.
     const fresh = await jobs().doc(job.id).get();
-    await guardedJobWrite(job, { status: fresh.get("failedRows") ? "completed_with_errors" : "completed", leaseExpiresAt: 0, completedAt: Date.now() });
+    await guardedJobWrite(job, { status: fresh.get("failedRows") ? "completed_with_errors" : "completed", leaseExpiresAt: 0, completedAt: Date.now(), chunkFailures: 0, lastError: "", ...(job.requestedActions.archive ? { archiveStatus: "ready" } : {}) });
     return "completed";
   } catch (error) {
-    if (!heartbeatError) {
-      const message = error instanceof Error && error.message.includes("500 MB") ? error.message : "Processing interrupted. Check worker configuration and retry the job.";
-      await guardedJobWrite(job, { status: "failed", lastError: message, leaseExpiresAt: 0, ...(job.requestedActions.archive ? { archiveStatus: "failed" } : {}) }).catch(() => undefined);
+    const detail = error instanceof Error ? error.message.replace(/[\r\n]/g, " ").trim().slice(0, 160) : "unknown error";
+    console.error(`Certificate job ${job.id} chunk failed`, error);
+    if (heartbeatError || isLeaseLost(error)) return "failed";
+    // A transient Firestore/SMTP/network error must not kill a large batch:
+    // hand the job back to the queue with a backoff so the next poll (or the
+    // standalone worker) resumes from the first unprocessed row. Only give up
+    // after several consecutive chunks fail without finishing a single row.
+    const failures = progressed ? 1 : (job.chunkFailures || 0) + 1;
+    if (failures < MAX_CHUNK_FAILURES) {
+      await guardedJobWrite(job, { status: "queued", leaseToken: "", leaseExpiresAt: 0, nextAttemptAt: Date.now() + 10_000 * failures, chunkFailures: failures, lastError: `Temporary problem (${detail}); retrying automatically.` }).catch(() => undefined);
+      return "partial";
     }
+    await guardedJobWrite(job, { status: "failed", chunkFailures: failures, lastError: `Processing stopped after repeated errors: ${detail}. Retry the job to resume from where it left off.`, leaseExpiresAt: 0, ...(job.requestedActions.archive ? { archiveStatus: "failed" } : {}) }).catch(() => undefined);
     return "failed";
-  } finally { clearInterval(heartbeat); mailer?.close(); await rm(dir, { recursive: true, force: true }); }
+  } finally { clearInterval(heartbeat); mailer?.close(); }
+}
+
+/**
+ * Builds a batch's ZIP on demand from its per-row PNGs. Each PNG is pulled from
+ * storage lazily as the archive streams, so memory stays bounded regardless of
+ * batch size.
+ */
+export async function streamJobArchive(jobId: string) {
+  const archive = new JSZip(), manifest: Array<Record<string, unknown>> = [];
+  let cursor = "";
+  while (true) {
+    let query = jobs().doc(jobId).collection("rows").orderBy("__name__").limit(100);
+    if (cursor) query = query.startAfter(cursor);
+    const page = await query.get();
+    for (const doc of page.docs) {
+      const row = { ...doc.data(), id: doc.id } as JobRow; cursor = row.id;
+      manifest.push({ row: row.rowNumber, verificationCode: row.verificationCode, rendered: row.renderStatus, match: row.matchStatus, internal: row.internalStatus, email: row.emailStatus });
+      const asset = row.assetId && row.renderStatus === "ready" ? await getAsset(row.assetId) : null;
+      if (asset) archive.file(`certificate-${row.rowNumber}.png`, Readable.from(assetChunks(asset)));
+    }
+    if (page.size < 100) break;
+  }
+  archive.file("delivery-report.json", JSON.stringify(manifest, null, 2));
+  return archive.generateNodeStream({ streamFiles: true, compression: "STORE" });
 }
 
 export async function runWorker(once = false) {
