@@ -17,6 +17,7 @@ type StoredUser = Omit<SessionUser, "isPrivate" | "campus" | "profileSetupComple
   streakLastActivityAt: number | null;
   streakLastAwardAt: number | null;
   streakActionKeys: Record<string, true>;
+  lastLoginAt?: number;
 };
 type OtpRecord = { digest: string; intent: AuthIntent; referralCode?: string; expiresAt: number; attempts: number };
 type EmailChangeRecord = { digest: string; userId: string; newEmail: string; expiresAt: number; attempts: number };
@@ -204,7 +205,9 @@ function publicUser(user: StoredUser): SessionUser {
 
 function createSession(state: AuthState, userId: string) {
   const token = randomBytes(32).toString("base64url");
-  state.sessions[sessionKey(token)] = { userId, expiresAt: Date.now() + SESSION_TTL_MS };
+  const now = Date.now();
+  state.sessions[sessionKey(token)] = { userId, expiresAt: now + SESSION_TTL_MS };
+  if (state.users[userId]) state.users[userId].lastLoginAt = now;
   return { token, maxAge: Math.floor(SESSION_TTL_MS / 1000) };
 }
 
@@ -462,6 +465,74 @@ export async function listAdminUsers(query = "") {
     .filter((user) => !normalized || user.username.toLowerCase().includes(normalized) || user.email.toLowerCase().includes(normalized) || (user.campus || "").toLowerCase().includes(normalized))
     .sort((a, b) => b.createdAt - a.createdAt || a.username.localeCompare(b.username))
     .map(adminUser);
+}
+
+export type UserStats = {
+  total: number;
+  profileComplete: number;
+  withPassword: number;
+  moderators: number;
+  signedIn: number;
+  newUsers: { today: number; last7Days: number; last30Days: number };
+  activeUsers: { last24Hours: number; last7Days: number; last30Days: number };
+  daily: Array<{ day: string; signups: number; active: number }>;
+  recentUsers: AdminUser[];
+  topCampuses: Array<{ campus: string; users: number }>;
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Aggregate account stats for the admin overview. "Active" means the user
+// signed in (lastLoginAt, or the start of a still-live session for accounts
+// that predate lastLoginAt) or earned streak activity within the window.
+export async function getUserStats(now = Date.now()): Promise<UserStats> {
+  await mutationQueue;
+  const state = await loadState({ fresh: true });
+  const users = Object.values(state.users);
+  const sessionStart = new Map<string, number>();
+  for (const session of Object.values(state.sessions)) {
+    if (session.expiresAt <= now) continue;
+    const started = session.expiresAt - SESSION_TTL_MS;
+    if (started > (sessionStart.get(session.userId) || 0)) sessionStart.set(session.userId, started);
+  }
+  const lastActive = (user: StoredUser) => Math.max(user.lastLoginAt || 0, sessionStart.get(user.id) || 0, user.streakLastActivityAt || 0);
+  const since = (days: number) => now - days * DAY_MS;
+  const startOfToday = new Date(now); startOfToday.setUTCHours(0, 0, 0, 0);
+  const dayKey = (time: number) => new Date(time).toISOString().slice(0, 10);
+  const daily = new Map<string, { day: string; signups: number; active: number }>();
+  for (let offset = 29; offset >= 0; offset -= 1) {
+    const day = dayKey(startOfToday.getTime() - offset * DAY_MS);
+    daily.set(day, { day, signups: 0, active: 0 });
+  }
+  const campuses = new Map<string, number>();
+  for (const user of users) {
+    const signup = daily.get(dayKey(user.createdAt));
+    if (signup) signup.signups += 1;
+    const active = lastActive(user);
+    const activeDay = active ? daily.get(dayKey(active)) : undefined;
+    if (activeDay) activeDay.active += 1;
+    if (user.campus) campuses.set(user.campus, (campuses.get(user.campus) || 0) + 1);
+  }
+  return {
+    total: users.length,
+    profileComplete: users.filter((user) => user.profileSetupComplete !== false).length,
+    withPassword: users.filter((user) => user.passwordHash).length,
+    moderators: users.filter((user) => effectiveAppRole(user) !== "USER").length,
+    signedIn: sessionStart.size,
+    newUsers: {
+      today: users.filter((user) => user.createdAt >= startOfToday.getTime()).length,
+      last7Days: users.filter((user) => user.createdAt >= since(7)).length,
+      last30Days: users.filter((user) => user.createdAt >= since(30)).length,
+    },
+    activeUsers: {
+      last24Hours: users.filter((user) => lastActive(user) >= since(1)).length,
+      last7Days: users.filter((user) => lastActive(user) >= since(7)).length,
+      last30Days: users.filter((user) => lastActive(user) >= since(30)).length,
+    },
+    daily: [...daily.values()],
+    recentUsers: [...users].sort((a, b) => b.createdAt - a.createdAt).slice(0, 8).map(adminUser),
+    topCampuses: [...campuses].map(([campus, count]) => ({ campus, users: count })).sort((a, b) => b.users - a.users).slice(0, 6),
+  };
 }
 
 export async function setUserAppRole(userId: string, appRole: Exclude<AppRole, "SUPER_ADMIN">) {

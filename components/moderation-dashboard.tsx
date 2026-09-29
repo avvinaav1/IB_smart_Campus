@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Check, ChevronDown, LoaderCircle, Plus, Search, ShieldCheck, Trash2, UserCog, X } from "lucide-react";
 import type { AppRole, CampusEvent, Community, CommunityRole, EventAttendee, EventStatus, Institute, InstituteRole, InstituteSummary, Post, SessionUser, UserSearchResult } from "@/lib/types";
 import { announceDataChange, mutationSucceeded } from "@/lib/client-data-sync";
+import { AdminOverview, CertificateClaimsPanel } from "@/components/admin-overview";
 
 type Page<T> = { items: T[]; nextCursor: string | null };
 type AdminUser = { id: string; username: string; email: string; campus: string; createdAt: number; appRole: AppRole; protected: boolean };
@@ -42,7 +43,7 @@ function StatusBadge({ value }: { value: string }) {
 }
 
 export function GlobalAdminDashboard({ user, notify }: { user: SessionUser; notify: (message: string) => void }) {
-  const [tab, setTab] = useState<"users" | "communities" | "events" | "posts">("users");
+  const [tab, setTab] = useState<"overview" | "claims" | "users" | "communities" | "events" | "posts">("overview");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<EventStatus | "">("");
   const [items, setItems] = useState<Array<AdminUser | AdminCommunity | CampusEvent | Post>>([]);
@@ -53,6 +54,7 @@ export function GlobalAdminDashboard({ user, notify }: { user: SessionUser; noti
   const [detail, setDetail] = useState<{ event: CampusEvent; attendees: Array<EventAttendee & { username: string; email: string }> } | null>(null);
 
   const load = useCallback(async (append = false, next?: string | null) => {
+    if (tab === "overview" || tab === "claims") return;
     setBusy(true); setError("");
     try {
       const params = new URLSearchParams({ query, limit: "25" });
@@ -121,8 +123,11 @@ export function GlobalAdminDashboard({ user, notify }: { user: SessionUser; noti
   }
 
   return <div className="content-page moderation-page">
-    <section className="page-hero moderation-hero"><div><span className="eyebrow lime">GLOBAL CONTROL</span><h1>Admin dashboard.</h1><p>Review hidden events, manage roles, and remove unsafe content across Smart Campus.</p></div><ShieldCheck size={58} /></section>
-    <nav className="moderation-tabs" aria-label="Admin resources">{(["users", "communities", "events", "posts"] as const).map((value) => <button key={value} className={tab === value ? "active" : ""} onClick={() => { setTab(value); setItems([]); setCursor(null); }}>{value}</button>)}</nav>
+    <section className="page-hero moderation-hero"><div><span className="eyebrow lime">GLOBAL CONTROL</span><h1>Admin dashboard.</h1><p>Track growth and certificate claims, review hidden events, manage roles, and remove unsafe content across Smart Campus.</p></div><ShieldCheck size={58} /></section>
+    <nav className="moderation-tabs" aria-label="Admin resources">{(["overview", "claims", "users", "communities", "events", "posts"] as const).map((value) => <button key={value} className={tab === value ? "active" : ""} onClick={() => { setTab(value); setItems([]); setCursor(null); }}>{value}</button>)}</nav>
+    {tab === "overview" && <AdminOverview />}
+    {tab === "claims" && <CertificateClaimsPanel />}
+    {tab !== "overview" && tab !== "claims" && <>
     <div className="moderation-toolbar"><label><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${tab}`} /></label>{tab === "events" && <label><select value={status} onChange={(event) => setStatus(event.target.value as EventStatus | "")}><option value="">All statuses</option><option>PENDING</option><option>APPROVED</option><option>REJECTED</option></select><ChevronDown size={15} /></label>}</div>
     {error && <p className="form-error" role="alert">{error}</p>}
     {busy && !items.length ? <div className="moderation-loading"><LoaderCircle className="spin" /> Loading…</div> : <div className="moderation-list">
@@ -133,6 +138,7 @@ export function GlobalAdminDashboard({ user, notify }: { user: SessionUser; noti
       {!items.length && !busy && <div className="moderation-empty"><ShieldCheck /><b>Nothing to review</b><span>No {tab} match these filters.</span></div>}
     </div>}
     {cursor && <button className="load-more" disabled={busy} onClick={() => void load(true, cursor)}>{busy ? "Loading…" : "Load more"}</button>}
+    </>}
     {detail && <div className="overlay" onMouseDown={(event) => event.target === event.currentTarget && setDetail(null)}><section className="moderation-detail" role="dialog" aria-modal="true" aria-label={`Private details for ${detail.event.title}`}><header><div><span className="eyebrow pink">PRIVILEGED EVENT DATA</span><h2>{detail.event.title}</h2></div><button onClick={() => setDetail(null)} aria-label="Close"><X /></button></header><p>{detail.event.description}</p><dl><div><dt>Status</dt><dd>{detail.event.status}</dd></div><div><dt>Venue</dt><dd>{detail.event.venueName}, {detail.event.venueAddress}</dd></div><div><dt>Reviewer</dt><dd>{detail.event.reviewedBy || "Not reviewed"}</dd></div></dl><h3>Registration form</h3>{detail.event.customFormSchema.fields.length ? detail.event.customFormSchema.fields.map((field) => <p key={field.id}>{field.label} {field.required ? "(required)" : ""}</p>) : <p>No custom questions.</p>}<h3>Attendees and private answers</h3>{detail.attendees.length ? detail.attendees.map((attendee) => <article className="attendee-private" key={attendee.rsvpId}><b>{attendee.username}</b><small>{attendee.email} · {attendee.checkInCode} · {attendee.status}</small><pre>{JSON.stringify(attendee.customFormAnswers, null, 2)}</pre></article>) : <p>No registrations.</p>}</section></div>}
   </div>;
 }

@@ -966,3 +966,20 @@ export function answerForCsv(field: CustomFormField, answer: string | number | b
   if (field.type === "checkbox") return answer ? "Yes" : "No";
   return String(answer);
 }
+
+export async function getEventStats(since: number, now = Date.now()) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const events = Object.values(database.events);
+  const rsvps = Object.values(database.rsvps);
+  return {
+    total: events.length,
+    pending: events.filter((event) => event.status === "PENDING").length,
+    approved: events.filter((event) => event.status === "APPROVED").length,
+    rejected: events.filter((event) => event.status === "REJECTED").length,
+    upcoming: events.filter((event) => event.status === "APPROVED" && new Date(event.startsAt).getTime() > now).length,
+    newSince: events.filter((event) => event.createdAt >= since).length,
+    registrations: rsvps.length,
+    checkedIn: rsvps.filter((rsvp) => rsvp.status === "CHECKED_IN").length,
+  };
+}

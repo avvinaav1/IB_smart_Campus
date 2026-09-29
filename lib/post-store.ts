@@ -282,3 +282,13 @@ export async function deleteUserPostData(userId: string) {
     return removed.flatMap((post) => post.images || (post.image ? [post.image] : []));
   });
 }
+
+export async function getPostStats(since: number) {
+  await writeQueue;
+  const database = await loadDatabase();
+  return {
+    total: database.posts.length,
+    newSince: database.posts.filter((post) => post.createdAt >= since).length,
+    comments: database.posts.reduce((sum, post) => sum + post.comments, 0),
+  };
+}

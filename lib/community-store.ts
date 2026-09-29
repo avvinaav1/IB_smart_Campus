@@ -520,3 +520,15 @@ export async function deleteCommunityRecord(communityId: string) {
     return { deleted: true, imageUrls: [community.iconUrl, community.bannerUrl].filter(Boolean) } as const;
   });
 }
+
+export async function getCommunityStats(since: number) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const communities = Object.values(database.communities);
+  return {
+    total: communities.length,
+    pending: communities.filter((community) => community.status === "PENDING").length,
+    newSince: communities.filter((community) => community.createdAt >= since).length,
+    memberships: Object.keys(database.members).length,
+  };
+}
