@@ -58,8 +58,9 @@ export function CertificateInbox({ preview = false }: { preview?: boolean }) {
   const [messages, setMessages] = useState<InboxMessage[]>([]), [cursor, setCursor] = useState<string | null>(null), [error, setError] = useState("");
   useEffect(() => {
     if (preview) return;
-    let active = true, first = true;
-    const refresh = async () => { try { const data = await certificateRequest<{ messages: InboxMessage[]; nextCursor: string | null }>("/inbox"); if (active) { setMessages(current => current.length > 24 ? [...data.messages, ...current.slice(24)] : data.messages); if (first) { setCursor(data.nextCursor); first = false; } } } catch (e) { if (active) setError((e as Error).message); } };
+    let active = true, first = true, newest = 0;
+    // First load fetches a page; later polls only ask for messages newer than the newest one held.
+    const refresh = async () => { try { const data = await certificateRequest<{ messages: InboxMessage[]; nextCursor: string | null }>(first ? "/inbox" : `/inbox?after=${newest}`); if (!active) return; newest = Math.max(newest, ...data.messages.map(m => m.createdAt)); if (first) { setMessages(data.messages); setCursor(data.nextCursor); first = false; } else if (data.messages.length) setMessages(current => { const fresh = new Set(data.messages.map(m => m.id)); return [...data.messages, ...current.filter(m => !fresh.has(m.id))]; }); } catch (e) { if (active) setError((e as Error).message); } };
     void refresh(); const timer = setInterval(() => { if (!document.hidden) void refresh(); }, 5000);
     return () => { active = false; clearInterval(timer); };
   }, [preview]);

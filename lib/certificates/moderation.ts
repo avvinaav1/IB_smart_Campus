@@ -2,6 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { firestore } from "@/lib/firebase-admin";
+import { forgetAsset } from "./assets";
 
 function localDataStoreEnabled() {
   return process.env.NODE_ENV === "development" && process.env.LOCAL_DATA_STORE === "true";
@@ -58,6 +59,7 @@ export async function detachDeletedUserFromCertificates(userId: string) {
   ]);
 
   for (const asset of assetPage.docs) {
+    forgetAsset(asset.id);
     if (retainedAssetIds.has(asset.id)) {
       await asset.ref.update({ ownerId: "system" });
       continue;

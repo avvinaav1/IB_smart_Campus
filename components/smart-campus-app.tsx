@@ -19,7 +19,7 @@ import { ProfileSetup } from "@/components/profile-setup";
 import { CommunityModerationPanel, GlobalAdminDashboard, InstituteDashboard } from "@/components/moderation-dashboard";
 import { coverImageStyle, eventHasEnded, eventWhen } from "@/lib/event-format";
 import type { CampusEvent, ChatRequestView, Community, CommunityType, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, InstituteSummary, Post, SessionUser, UserDashboard, UserNotification, UserSearchResult, View } from "@/lib/types";
-import { announceDataChange, mutationSucceeded, subscribeToDataChanges } from "@/lib/client-data-sync";
+import { announceDataChange, mutationSucceeded, pollWhileVisible, subscribeToDataChanges } from "@/lib/client-data-sync";
 
 const CertificatePortal = dynamic(() => import("@/components/certificates/certificate-portal"), { ssr: false });
 
@@ -169,12 +169,10 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       }
     }
     void refreshGlobalFeed();
-    const interval = window.setInterval(refreshGlobalFeed, 5_000);
-    window.addEventListener("focus", refreshGlobalFeed);
+    const stopPolling = pollWhileVisible(() => void refreshGlobalFeed(), 5_000);
     return () => {
       active = false;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", refreshGlobalFeed);
+      stopPolling();
     };
   }, [authUser, previewMode, dataRevision]);
 
@@ -193,12 +191,10 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       }
     }
     void refreshNotifications();
-    const interval = window.setInterval(refreshNotifications, 5_000);
-    window.addEventListener("focus", refreshNotifications);
+    const stopPolling = pollWhileVisible(() => void refreshNotifications(), 5_000);
     return () => {
       active = false;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", refreshNotifications);
+      stopPolling();
     };
   }, [authUser, notificationsOpen, previewMode, dataRevision]);
 
@@ -214,12 +210,10 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       }
     }
     void refreshCommunities();
-    const interval = window.setInterval(refreshCommunities, 5_000);
-    window.addEventListener("focus", refreshCommunities);
+    const stopPolling = pollWhileVisible(() => void refreshCommunities(), 5_000);
     return () => {
       active = false;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", refreshCommunities);
+      stopPolling();
     };
   }, [authUser, previewMode, dataRevision]);
 
@@ -244,12 +238,10 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       }
     }
     void refreshGlobalEvents();
-    const interval = window.setInterval(refreshGlobalEvents, 5_000);
-    window.addEventListener("focus", refreshGlobalEvents);
+    const stopPolling = pollWhileVisible(() => void refreshGlobalEvents(), 5_000);
     return () => {
       active = false;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", refreshGlobalEvents);
+      stopPolling();
     };
   }, [authUser, previewMode, dataRevision]);
 
@@ -265,12 +257,10 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       }
     }
     void refreshDashboard();
-    const interval = window.setInterval(refreshDashboard, 5_000);
-    window.addEventListener("focus", refreshDashboard);
+    const stopPolling = pollWhileVisible(() => void refreshDashboard(), 5_000);
     return () => {
       active = false;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", refreshDashboard);
+      stopPolling();
     };
   }, [authUser, previewMode, dataRevision]);
 

@@ -9,6 +9,7 @@
 
 import { readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
@@ -47,7 +48,12 @@ for (const { file, doc } of STORES) {
     throw error;
   }
   const parsed = JSON.parse(raw);
-  await db.collection(COLLECTION).doc(doc).set({ json: JSON.stringify(parsed), updatedAt: Date.now() });
+  // Stamp `_versions` too, so running servers' read caches notice the import.
+  const version = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+  const batch = db.batch();
+  batch.set(db.collection(COLLECTION).doc(doc), { json: JSON.stringify(parsed), updatedAt: Date.now(), version });
+  batch.set(db.collection(COLLECTION).doc("_versions"), { [doc]: version }, { merge: true });
+  await batch.commit();
   console.log(`wrote ${file} -> ${COLLECTION}/${doc}`);
 }
 

@@ -6,7 +6,7 @@ import type { NextRequest } from "next/server";
 import { firestore } from "@/lib/firebase-admin";
 import { getSession, certificateRecipientDirectory, getDirectoryUser } from "@/lib/auth-store";
 import { isSameOrigin, SESSION_COOKIE } from "@/lib/auth-http";
-import { assetBytes, assetChunks, getAsset, saveAsset } from "./assets";
+import { assetBytes, assetChunks, getAsset, isCacheableAsset, saveAsset } from "./assets";
 import { addExternal, canViewProfile, changeCertificate, createJob, getCertificate, jobForOwner, jobs, leaseJobById, listCertificates, mayViewCertificate, statsFor } from "./store";
 import { jobInputSchema, layoutSchema, MAX_UPLOAD, type JobRow } from "./model";
 import { matchRecipient } from "./matching";
@@ -43,9 +43,13 @@ async function boundedBody(request: Request, max: number) {
 }
 async function bodyJson(request: Request) { try { return JSON.parse((await boundedBody(request, 6 * 1024 * 1024)).toString("utf8")); } catch (error) { if (error instanceof ApiError) throw error; throw new ApiError("Invalid JSON"); } }
 function safeId(id: string) { if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new ApiError("Invalid identifier"); return id; }
-async function assetResponse(id: string, filename?: string) {
+// Asset ids are never reused, so the browser may keep an image it was allowed
+// to see; `private` keeps it out of shared caches. Archives stay uncached.
+async function assetResponse(id: string, filename?: string, cacheControl = "private, no-store") {
   const asset = await getAsset(id); if (!asset) throw new ApiError("Image or archive not found", 404);
-  return new Response(Readable.toWeb(Readable.from(assetChunks(asset))) as ReadableStream<Uint8Array>, { headers: { "Content-Type": asset.contentType, "Content-Length": String(asset.byteSize), "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", ...(filename ? { "Content-Disposition": `attachment; filename="${filename}"` } : {}) } });
+  const headers = { "Content-Type": asset.contentType, "Content-Length": String(asset.byteSize), "Cache-Control": cacheControl, "X-Content-Type-Options": "nosniff", ...(filename ? { "Content-Disposition": `attachment; filename="${filename}"` } : {}) };
+  if (isCacheableAsset(asset)) return new Response(new Uint8Array(await assetBytes(asset)), { headers });
+  return new Response(Readable.toWeb(Readable.from(assetChunks(asset))) as ReadableStream<Uint8Array>, { headers });
 }
 
 export async function handleCertificates(request: NextRequest, path: string[]) {
@@ -62,7 +66,8 @@ export async function handleCertificates(request: NextRequest, path: string[]) {
     }
     if (method === "GET" && path.length === 2 && path[1] === "image") {
       const c = await getCertificate(path[0]); if (!c || !await mayViewCertificate(c, user?.id)) throw new ApiError("Certificate not found", 404);
-      return assetResponse(c.assetId, request.nextUrl.searchParams.has("download") ? `certificate-${c.id}.png` : undefined);
+      // Short browser cache: visibility can be switched back to private.
+      return assetResponse(c.assetId, request.nextUrl.searchParams.has("download") ? `certificate-${c.id}.png` : undefined, "private, max-age=600");
     }
     if (!user) throw new ApiError("Sign in to save or deliver certificates. Local preview supports editing and ZIP export.", 401);
     if (method === "GET" && path[0] === "access" && path.length === 1) return json({ canManage: await mayManageCertificates(user) });
@@ -71,6 +76,9 @@ export async function handleCertificates(request: NextRequest, path: string[]) {
       const messages = firestore().collection("certificateInboxes").doc(user.id).collection("messages");
       if (method === "GET" && path.length === 1) {
         let query = messages.orderBy("createdAt", "desc").orderBy("__name__", "desc");
+        // Polls pass `after` (newest createdAt they hold) and only pay for new messages.
+        const after = Number(request.nextUrl.searchParams.get("after"));
+        if (Number.isFinite(after) && after > 0) query = query.where("createdAt", ">", after);
         const cursor = request.nextUrl.searchParams.get("cursor"); if (cursor) { const doc = await messages.doc(safeId(cursor)).get(); if (doc.exists) query = query.startAfter(doc); }
         const page = await query.limit(24).get();
         return json({ messages: page.docs.map(d => ({ ...d.data(), id: d.id, imageUrl: `/api/certificates/${d.get("certificateId")}/image` })), nextCursor: page.size === 24 ? page.docs.at(-1)!.id : null });
@@ -91,7 +99,7 @@ export async function handleCertificates(request: NextRequest, path: string[]) {
     }
     if (path[0] === "assets" && method === "GET" && path.length === 2) {
       const asset = await getAsset(path[1]); if (!asset || asset.ownerId !== user.id) throw new ApiError("Asset not found", 404);
-      return assetResponse(asset.id);
+      return assetResponse(asset.id, undefined, isCacheableAsset(asset) ? "private, max-age=86400, immutable" : "private, no-store");
     }
     if (path[0] === "external" && method === "POST" && path.length === 1) {
       const data = z.object({ assetId: keySchema, title: z.string().trim().min(1).max(160), issuerName: z.string().trim().min(1).max(160), key: keySchema }).parse(await bodyJson(request));

@@ -80,60 +80,153 @@ const STORES_COLLECTION = process.env.FIRESTORE_STORES_COLLECTION || "smartCampu
  * across requests and overwrite the whole document from that snapshot — a second
  * process (extra `next dev`, a mid-request restart, a serverless instance) would
  * clobber concurrent writes, silently dropping freshly created sessions, posts,
- * memberships, etc. Reads may use the short per-process TTL cache below; writes
+ * memberships, etc. Reads may use the version-validated cache below; writes
  * never may.
+ *
+ * Read-quota note: every store write also stamps a fresh version token into one
+ * shared `_versions` document (inside the same transaction). A process keeps
+ * each store's raw JSON in memory with the version it was read at, and only
+ * re-reads a store when `_versions` says it changed. So an idle poll costs at
+ * most ONE Firestore read per `STORE_READ_TTL_MS` window per process (the
+ * `_versions` check), shared by every request and every store, instead of one
+ * read per store per request.
  */
 
-const READ_TTL_MS = Math.max(0, Number(process.env.STORE_READ_TTL_MS ?? 3000));
-type CacheEntry = { at: number; value: unknown };
-const readCache = new Map<string, CacheEntry>();
+// How often a process re-checks `_versions`; bounds cross-process staleness.
+const VERSION_TTL_MS = Math.max(0, Number(process.env.STORE_READ_TTL_MS ?? 5000));
+// Safety net for out-of-band edits (e.g. the Firebase console) that don't bump
+// `_versions`: a cached store is re-read at least this often.
+const MAX_CACHE_AGE_MS = Math.max(0, Number(process.env.STORE_CACHE_MAX_AGE_MS ?? 10 * 60_000));
+const VERSIONS_DOC = "_versions";
 
-function parseDocument<T>(snapshot: DocumentSnapshot): T | null {
-  if (!snapshot.exists) return null;
-  const raw = snapshot.get("json");
-  if (typeof raw !== "string" || !raw) return null;
+type Versions = Record<string, string>;
+type CacheEntry = { fetchedAt: number; updatedAt: number; version?: string; raw: string | null };
+const storeCache = new Map<string, CacheEntry>();
+const storeReads = new Map<string, Promise<CacheEntry>>();
+let versionsCache: { at: number; value: Versions } | undefined;
+let versionsRead: Promise<Versions> | undefined;
+
+function newVersion() { return `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`; }
+
+function parseRaw<T>(raw: string | null): T | null {
+  if (!raw) return null;
   try {
+    // Parse per call: callers get their own object, so mutating a read result
+    // can never corrupt the shared cache.
     return JSON.parse(raw) as T;
   } catch {
     return null;
   }
 }
 
-function primeCache(name: string, value: unknown) {
-  if (READ_TTL_MS > 0) readCache.set(name, { at: Date.now(), value });
+function parseDocument<T>(snapshot: DocumentSnapshot): T | null {
+  return parseRaw<T>(snapshot.exists ? rawOf(snapshot) : null);
+}
+
+function rawOf(snapshot: DocumentSnapshot) {
+  const raw = snapshot.get("json");
+  return typeof raw === "string" && raw ? raw : null;
+}
+
+function cacheEntry(name: string, entry: CacheEntry) {
+  const existing = storeCache.get(name);
+  // A slow read that started before a local write must not overwrite the newer committed value.
+  if (existing && existing.updatedAt > entry.updatedAt) { existing.fetchedAt = Math.max(existing.fetchedAt, entry.fetchedAt); return existing; }
+  storeCache.set(name, entry);
+  return entry;
+}
+
+async function withRetry<T>(action: () => Promise<T>): Promise<T> {
+  try { return await action(); } catch { return action(); }
+}
+
+let forcedRead: { started: boolean; promise: Promise<Versions> } | undefined;
+
+function readVersions(): Promise<Versions> {
+  return withRetry(async () => {
+    const at = Date.now();
+    const snapshot = await firestore().collection(STORES_COLLECTION).doc(VERSIONS_DOC).get();
+    const value = { ...(snapshot.data() || {}) } as Versions;
+    if (!versionsCache || at >= versionsCache.at) versionsCache = { at, value };
+    return value;
+  });
+}
+
+function loadVersions(force = false): Promise<Versions> {
+  if (force) {
+    // A `fresh` caller needs a read that starts after it was called. Callers
+    // arriving in the same tick, before that read starts, safely share it.
+    if (forcedRead && !forcedRead.started) return forcedRead.promise;
+    const pending: { started: boolean; promise: Promise<Versions> } = { started: false, promise: Promise.resolve({}) };
+    pending.promise = Promise.resolve().then(() => { pending.started = true; return readVersions(); });
+    forcedRead = pending;
+    return pending.promise;
+  }
+  if (versionsCache && Date.now() - versionsCache.at < VERSION_TTL_MS) return Promise.resolve(versionsCache.value);
+  if (!versionsRead) {
+    const read = readVersions();
+    versionsRead = read;
+    void read.finally(() => { if (versionsRead === read) versionsRead = undefined; }).catch(() => undefined);
+  }
+  return versionsRead;
+}
+
+function fetchStore(name: string, force = false): Promise<CacheEntry> {
+  const inflight = storeReads.get(name);
+  if (inflight && !force) return inflight;
+  const read = withRetry(async () => {
+    const fetchedAt = Date.now();
+    const snapshot = await firestore().collection(STORES_COLLECTION).doc(name).get();
+    const version = snapshot.get("version");
+    return cacheEntry(name, {
+      fetchedAt,
+      updatedAt: Number(snapshot.get("updatedAt")) || 0,
+      version: typeof version === "string" ? version : undefined,
+      raw: snapshot.exists ? rawOf(snapshot) : null,
+    });
+  });
+  if (force) return read;
+  storeReads.set(name, read);
+  void read.finally(() => { if (storeReads.get(name) === read) storeReads.delete(name); }).catch(() => undefined);
+  return read;
+}
+
+function recordWrite(name: string, raw: string, version: string, updatedAt: number) {
+  cacheEntry(name, { fetchedAt: Date.now(), updatedAt, version, raw });
+  if (versionsCache) versionsCache.value = { ...versionsCache.value, [name]: version };
 }
 
 /**
- * Read a store document. Served from a short per-process TTL cache unless
- * `fresh` is set. The cache only ever bounds cross-process staleness to
- * `STORE_READ_TTL_MS` (default 3s); it is refreshed on every successful write.
+ * Read a store document from the version-validated cache. The store is only
+ * fetched from Firestore when `_versions` shows it changed (or it isn't cached
+ * yet). `fresh` forces the `_versions` check to hit Firestore now instead of
+ * using the last check — still one read, and no store read if nothing changed.
  */
 export async function readDocument<T>(name: string, options?: { fresh?: boolean }): Promise<T | null> {
   if (localStoreEnabled()) return readLocal<T>(name);
-  if (!options?.fresh && READ_TTL_MS > 0) {
-    const hit = readCache.get(name);
-    if (hit && Date.now() - hit.at < READ_TTL_MS) return hit.value as T | null;
+  if (VERSION_TTL_MS === 0) return parseRaw<T>((await fetchStore(name, true)).raw);
+  const versions = await loadVersions(options?.fresh);
+  const hit = storeCache.get(name);
+  const known = versions[name];
+  if (hit && Date.now() - hit.fetchedAt < MAX_CACHE_AGE_MS) {
+    // Stores last written before `_versions` existed have no token yet; fall
+    // back to plain TTL caching for them until their next write.
+    if (known ? hit.version === known : !options?.fresh && Date.now() - hit.fetchedAt < VERSION_TTL_MS) return parseRaw<T>(hit.raw);
   }
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const snapshot = await firestore().collection(STORES_COLLECTION).doc(name).get();
-      const value = parseDocument<T>(snapshot);
-      primeCache(name, value);
-      return value;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError;
+  return parseRaw<T>((await fetchStore(name, options?.fresh)).raw);
 }
 
 /** Overwrite a store document wholesale. Prefer `mutateDocument` — this is a
  * last-write-wins blind write, kept only for one-shot seeding/imports. */
 export async function writeDocument(name: string, value: unknown): Promise<void> {
   if (localStoreEnabled()) { await serializeLocal(name, () => writeLocal(name, value)); return; }
-  await firestore().collection(STORES_COLLECTION).doc(name).set({ json: JSON.stringify(value), updatedAt: Date.now() });
-  primeCache(name, value);
+  const raw = JSON.stringify(value), version = newVersion(), updatedAt = Date.now();
+  const collection = firestore().collection(STORES_COLLECTION);
+  const batch = firestore().batch();
+  batch.set(collection.doc(name), { json: raw, updatedAt, version });
+  batch.set(collection.doc(VERSIONS_DOC), { [name]: version }, { merge: true });
+  await batch.commit();
+  recordWrite(name, raw, version, updatedAt);
 }
 
 /**
@@ -148,13 +241,17 @@ export async function mutateDocument<Current, Next>(
   mutator: (current: Current | null) => Next | Promise<Next>,
 ): Promise<Next> {
   if (localStoreEnabled()) return serializeLocal(name, async () => { const next = await mutator(await readLocal<Current>(name)); await writeLocal(name, next); return next; });
-  const ref = firestore().collection(STORES_COLLECTION).doc(name);
+  const collection = firestore().collection(STORES_COLLECTION);
+  const ref = collection.doc(name);
   const committed = await firestore().runTransaction(async (tx) => {
     const snapshot = await tx.get(ref);
     const next = await mutator(parseDocument<Current>(snapshot));
-    tx.set(ref, { json: JSON.stringify(next), updatedAt: Date.now() });
-    return next;
+    const raw = JSON.stringify(next), version = newVersion(), updatedAt = Date.now();
+    tx.set(ref, { json: raw, updatedAt, version });
+    // Blind merge (never read in the txn), so writes to different stores don't contend on it.
+    tx.set(collection.doc(VERSIONS_DOC), { [name]: version }, { merge: true });
+    return { next, raw, version, updatedAt };
   });
-  primeCache(name, committed);
-  return committed;
+  recordWrite(name, committed.raw, committed.version, committed.updatedAt);
+  return committed.next;
 }

@@ -28,3 +28,24 @@ export function subscribeToDataChanges(listener: () => void) {
 export function mutationSucceeded(init?: RequestInit) {
   return Boolean(init?.method && !["GET", "HEAD", "OPTIONS"].includes(init.method.toUpperCase()));
 }
+
+/**
+ * Calls `refresh` every `intervalMs` while the tab is visible — a hidden tab
+ * makes no requests — and immediately when the tab is focused/shown again, so
+ * returning users still see current data. Returns the cleanup function.
+ */
+export function pollWhileVisible(refresh: () => void, intervalMs: number) {
+  let lastRun = Date.now();
+  const run = () => { lastRun = Date.now(); refresh(); };
+  const tick = () => { if (!document.hidden) run(); };
+  // focus and visibilitychange usually fire together on tab switch; refresh once.
+  const resume = () => { if (!document.hidden && Date.now() - lastRun > 1_000) run(); };
+  const interval = window.setInterval(tick, intervalMs);
+  window.addEventListener("focus", resume);
+  document.addEventListener("visibilitychange", resume);
+  return () => {
+    window.clearInterval(interval);
+    window.removeEventListener("focus", resume);
+    document.removeEventListener("visibilitychange", resume);
+  };
+}

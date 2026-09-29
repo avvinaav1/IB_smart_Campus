@@ -1,6 +1,7 @@
 import "server-only";
 
 import { firestore } from "@/lib/firebase-admin";
+import { dedupe, LruCache } from "@/lib/memory-cache";
 
 /**
  * The free Firebase plan has no Cloud Storage, so uploaded images live in
@@ -11,6 +12,10 @@ import { firestore } from "@/lib/firebase-admin";
  */
 const IMAGES_COLLECTION = process.env.FIRESTORE_IMAGES_COLLECTION || "smartCampusImages";
 const CHUNK_BYTES = 700_000;
+// Every chunk read is billed, and the same avatar/cover is served to every
+// viewer, so keep recently served images in memory (default 64 MB).
+const imageCache = new LruCache<Uint8Array<ArrayBuffer>>(Math.max(0, Number(process.env.IMAGE_CACHE_MAX_BYTES ?? 64 * 1024 * 1024)), (bytes) => bytes.byteLength);
+const imageReads = dedupe<Uint8Array<ArrayBuffer> | null>();
 
 function docId(objectPath: string) {
   return objectPath.replace(/\//g, "__");
@@ -33,22 +38,28 @@ export async function putImage(objectPath: string, bytes: Buffer | Uint8Array, c
   }
   batch.set(ref, { contentType, size: source.length, chunkCount, path: objectPath, updatedAt: Date.now() });
   await batch.commit();
+  imageCache.delete(objectPath);
 }
 
 export async function getImage(objectPath: string): Promise<Uint8Array<ArrayBuffer> | null> {
-  const db = firestore();
-  const ref = db.collection(IMAGES_COLLECTION).doc(docId(objectPath));
-  const snapshot = await ref.get();
-  if (!snapshot.exists) return null;
-  const chunks = await ref.collection("chunks").orderBy("__name__").get();
-  if (chunks.empty) return null;
-  const buffer = Buffer.concat(chunks.docs.map((chunk) => Buffer.from(chunk.get("data") as string, "base64")));
-  const copy = new Uint8Array(buffer.length);
-  copy.set(buffer);
-  return copy;
+  const cached = imageCache.get(objectPath);
+  if (cached) return cached;
+  return imageReads(objectPath, async () => {
+    // The chunks alone tell us whether the image exists; skipping the metadata
+    // doc saves a read per image.
+    const ref = firestore().collection(IMAGES_COLLECTION).doc(docId(objectPath));
+    const chunks = await ref.collection("chunks").orderBy("__name__").get();
+    if (chunks.empty) return null;
+    const buffer = Buffer.concat(chunks.docs.map((chunk) => Buffer.from(chunk.get("data") as string, "base64")));
+    const copy = new Uint8Array(buffer.length);
+    copy.set(buffer);
+    imageCache.set(objectPath, copy);
+    return copy;
+  });
 }
 
 export async function deleteImage(objectPath: string) {
+  imageCache.delete(objectPath);
   try {
     const db = firestore();
     const ref = db.collection(IMAGES_COLLECTION).doc(docId(objectPath));

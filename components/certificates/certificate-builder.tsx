@@ -6,6 +6,7 @@ import { FONTS, FONT_FILES, INITIAL_LAYOUT, MAX_ROWS, effectiveElements, jobInpu
 import { replaceVariable, resolveColumn } from "@/lib/certificates/columns";
 import { isVerificationVariable, VERIFICATION_VARIABLE } from "@/lib/certificates/verification-code";
 import { certificateRequest, downloadBlob, jsonRequest, uploadCertificateAsset } from "./client";
+import { subscribeToDataChanges } from "@/lib/client-data-sync";
 import type { CampusEvent } from "@/lib/types";
 
 const CertificateCanvas = dynamic(() => import("./certificate-canvas"), { ssr: false, loading: () => <div className="cert-empty">Loading editor…</div> });
@@ -42,18 +43,27 @@ export default function CertificateBuilder({ preview = false, events = [] }: { p
   useEffect(() => { if (!background) return; const url = URL.createObjectURL(background); const frame = requestAnimationFrame(() => setBackgroundUrl(url)); return () => { cancelAnimationFrame(frame); URL.revokeObjectURL(url); }; }, [background]);
   useEffect(() => {
     if (preview || tab !== "history") return;
-    let active = true, first = true;
+    let active = true, first = true, working = true, lastRun = 0;
+    const inProgress = (j: JobStatus) => ["queued", "running", "retrying"].includes(j.status) || ["queued", "running"].includes(j.archiveStatus);
     const refresh = async () => {
+      lastRun = Date.now();
       try {
         const data = await certificateRequest<{ jobs: JobStatus[] }>("/jobs"); if (active) setHistory(data.jobs);
+        let busyNow = data.jobs.some(inProgress);
         if (jobId) {
           const detail = await certificateRequest<{ job: JobStatus; rows: RowStatus[]; nextCursor: string | null }>(`/jobs/${jobId}`);
+          busyNow ||= inProgress(detail.job);
           if (active) { setJob(detail.job); setJobRows(current => current.length > 50 ? [...detail.rows, ...current.slice(50)] : detail.rows); if (first) { setRowCursor(detail.nextCursor); first = false; } }
         }
+        working = busyNow;
       } catch (e) { if (active) setError((e as Error).message); }
     };
-    void refresh(); const timer = setInterval(() => { if (!document.hidden) void refresh(); }, 5000);
-    return () => { active = false; clearInterval(timer); };
+    // Every poll re-reads the job list and rows from Firestore, so poll every 5s
+    // only while a batch is actually moving (polls also drive processing); once
+    // everything is settled, check back every 30s. A retry/cancel refreshes at once.
+    void refresh(); const timer = setInterval(() => { if (!document.hidden && (working || Date.now() - lastRun >= 30_000)) void refresh(); }, 5000);
+    const unsubscribe = subscribeToDataChanges(() => { working = true; void refresh(); });
+    return () => { active = false; clearInterval(timer); unsubscribe(); };
   }, [preview, tab, jobId]);
   const selectedEvent = events.find(e => e.id === eventId);
   const row = rows[rowIndex] || { values: {}, overrides: {} }, activeElement = effectiveElements(layout, row).find(e => e.id === selected);
