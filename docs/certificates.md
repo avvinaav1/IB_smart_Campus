@@ -73,6 +73,16 @@ Profiles have private-by-default certificate galleries and an external PNG/JPEG/
 
 Badge tiers count active internal and external certificates together: zero = no badge, 1–2 = Beginner, 3–5 = Intermediate, 6+ = Expert. The tier is derived from stored counters at read time, so it cannot become inconsistent with a separately stored tier. Self-uploaded certificates are labeled as such.
 
+## Reminders for unclaimed certificates
+
+**Admin dashboard → claims → Remind everyone who hasn't claimed** starts a reminder run (global moderators only). One click is all it takes: the run walks every `certificateClaims` doc with `claimed == false` created more than `REMINDER_MIN_AGE_HOURS` (default 24) ago, and sends each distinct address one reminder listing all its pending certificates. Only one run can be active at a time; **Stop run** cancels it.
+
+To stay inside Firestore's free-tier read quota (50k/day), the run is processed in batches: each request reads at most `REMINDER_BATCH_SIZE` (default 50) claims plus ~3 bookkeeping docs, saves a cursor in `certificateReminders/campaign`, and stops for the day after `REMINDER_DAILY_LIMIT` (default 450, Gmail-safe) emails. Addresses already emailed in the run are deduped with `certificateReminderLog` markers created via `create()`, which costs writes, not reads. Reminded claims get `reminderCount` and `lastRemindedAt`.
+
+Batches advance while the claims tab is open (every ~3s) and from `GET /api/cron/certificate-reminders`, which requires `Authorization: Bearer $CRON_SECRET`. `vercel.json` schedules it daily (the Hobby plan's limit); on a paid plan or with an external scheduler (e.g. cron-job.org), call it more often to finish faster.
+
+Reminders are sent from the same address and SMTP login as certificate emails (`CERTIFICATE_FROM_EMAIL`, else `AUTH_FROM_EMAIL`), so no extra setup is needed. To use a separate mailbox, set any of `REMINDER_FROM_EMAIL`, `REMINDER_SMTP_USER`, `REMINDER_SMTP_PASS`, `REMINDER_SMTP_HOST`, `REMINDER_SMTP_PORT`, `REMINDER_SMTP_SECURE`; each overrides its `SMTP_*` counterpart. An SMTP authentication/connection error marks the run failed so it doesn't burn through the list.
+
 ## API map
 
 All endpoints are under `/api/certificates`. GET profiles and certificate images can be public only when their ownership/visibility rules allow it. Other endpoints require a real session. Mutations enforce the app's same-origin policy.

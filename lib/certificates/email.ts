@@ -7,19 +7,30 @@ export function certificateTransport() {
   if (!smtpConfigured()) throw new Error("Configure SMTP_HOST, SMTP_USER, SMTP_PASS and CERTIFICATE_FROM_EMAIL before emailing certificates");
   return nodemailer.createTransport({ pool: true, maxConnections: 2, maxMessages: 50, host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT || 587), secure: process.env.SMTP_SECURE === "true", auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 45000 });
 }
-const escapeHtml = (value: string) => value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+export const escapeHtml = (value: string) => value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 function siteOrigin() { return (process.env.APP_BASE_URL || "https://ibcampus.icebrkr.space").replace(/\/+$/, ""); }
-function absoluteAssetUrl(path: string) { return /^https?:\/\//.test(path) ? path : `${siteOrigin()}${path.startsWith("/") ? path : `/${path}`}`; }
-const LOGO_CID = "icebrkr-logo";
+export function absoluteAssetUrl(path: string) { return /^https?:\/\//.test(path) ? path : `${siteOrigin()}${path.startsWith("/") ? path : `/${path}`}`; }
+export const LOGO_CID = "icebrkr-logo";
 let logoBuffer: Buffer | undefined;
 // Embedded as a CID attachment rather than a hosted <img src>: it's a fixed,
 // bundled asset, so this renders correctly regardless of whether APP_BASE_URL
 // (or the production domain's static files) are actually deployed and
 // reachable — unlike the event banner below, which is genuinely per-organizer
 // content and has no local file to embed.
-function logoAttachment() {
+export function logoAttachment() {
   if (!logoBuffer) logoBuffer = readFileSync(join(process.cwd(), "public", "logo.jpeg"));
   return { filename: "icebrkr.jpeg", content: logoBuffer, contentType: "image/jpeg", cid: LOGO_CID };
+}
+// Spam filters penalise Message-IDs on a domain other than the sender's, and
+// Gmail/Yahoo expect an unsubscribe route on bulk mail. Both derive from the
+// From address, so the sender itself never changes.
+export function senderAddress(from: string | undefined) { return from?.match(/<([^>]+)>/)?.[1] || from?.trim() || ""; }
+export function bulkMailHeaders(from: string | undefined, idPrefix: string) {
+  const address = senderAddress(from), domain = address.split("@")[1] || "localhost";
+  return {
+    messageId: `<${idPrefix}@${domain}>`,
+    headers: address ? { "List-Unsubscribe": `<mailto:${address}?subject=unsubscribe>` } : undefined,
+  };
 }
 export type CertificateMailEvent = { title: string; imageUrl: string };
 export function certificateMail(job: Pick<JobRecord, "id" | "emailTemplate">, row: Pick<JobRow, "id" | "emailNormalized" | "values" | "verificationCode">, event?: CertificateMailEvent) {
@@ -68,5 +79,6 @@ export function certificateMail(job: Pick<JobRecord, "id" | "emailTemplate">, ro
 </td></tr>
 </table>
 </body></html>`;
-  return { from: process.env.CERTIFICATE_FROM_EMAIL || process.env.AUTH_FROM_EMAIL, to: row.emailNormalized, subject, text, html, messageId: `<certificate-${job.id}-${row.id}@smart-campus.local>`, attachments: [logoAttachment()] };
+  const from = process.env.CERTIFICATE_FROM_EMAIL || process.env.AUTH_FROM_EMAIL;
+  return { from, to: row.emailNormalized, subject, text, html, ...bulkMailHeaders(from, `certificate-${job.id}-${row.id}`), attachments: [logoAttachment()] };
 }

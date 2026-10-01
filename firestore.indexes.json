@@ -11,7 +11,6 @@
   ],
   "fieldOverrides": [
     { "collectionGroup": "certificates", "fieldPath": "verificationCode", "indexes": [{ "order": "ASCENDING", "queryScope": "COLLECTION" }] },
-    { "collectionGroup": "certificateVerificationLimits", "fieldPath": "expiresAt", "ttl": true, "indexes": [] },
     { "collectionGroup": "rows", "fieldPath": "values", "indexes": [] },
     { "collectionGroup": "rows", "fieldPath": "overrides", "indexes": [] },
     { "collectionGroup": "revisions", "fieldPath": "elements", "indexes": [] },

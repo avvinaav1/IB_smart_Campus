@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://ibcampus.icebrkr.space"),
 
   title: {  
-    default: "IB Smart Campus — Digital Campus Platform",
+    default: "IB Smart Campus - Digital Campus Platform",
     template: "%s | IB Smart Campus",
   },
 

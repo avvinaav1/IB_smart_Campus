@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Award, CalendarDays, CheckCircle2, Clock, FileText, LoaderCircle, RefreshCw, Users } from "lucide-react";
+import { Award, BellRing, CalendarDays, CheckCircle2, Clock, FileText, LoaderCircle, RefreshCw, Square, Users } from "lucide-react";
 import type { AppRole } from "@/lib/types";
 
 type AdminUser = { id: string; username: string; email: string; campus: string; createdAt: number; appRole: AppRole; protected: boolean };
@@ -26,6 +26,15 @@ type AdminStats = {
 type AdminClaim = {
   id: string; email: string; title: string; issuerName: string; eventId: string | null; verificationCode: string | null;
   claimed: boolean; createdAt: number; claimedAt: number | null; claimedBy: { id: string; username: string } | null;
+};
+
+type ReminderOverview = {
+  configured: boolean; from: string | null; batchSize: number; dailyLimit: number; minAgeHours: number;
+  campaign: null | {
+    status: "running" | "completed" | "cancelled" | "failed"; startedAt: number; totalAtStart: number;
+    scanned: number; sent: number; skipped: number; failed: number; sentToday: number; dailyLimit: number;
+    limitReached: boolean; resumesAt: number; finishedAt: number | null; error: string | null;
+  };
 };
 
 async function get<T>(url: string): Promise<T> {
@@ -128,6 +137,65 @@ export function AdminOverview() {
   </div>;
 }
 
+async function post<T>(url: string, body: unknown): Promise<T> {
+  const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const result = await response.json() as { data?: T; error?: string };
+  if (!response.ok) throw new Error(result.error || "The admin request failed.");
+  return result.data as T;
+}
+
+// One click starts a run; while it's active this panel keeps asking the server
+// to process the next batch. Each batch is capped (and so is each day), so the
+// run stays well inside Firestore's daily read quota. The cron route continues
+// it when nobody has the dashboard open.
+function ReminderPanel() {
+  const [overview, setOverview] = useState<ReminderOverview | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const campaign = overview?.campaign;
+  const active = campaign?.status === "running" && !campaign.limitReached;
+
+  const call = useCallback(async (action?: "start" | "tick" | "cancel") => {
+    setBusy(true); setError("");
+    try { setOverview(action ? await post<ReminderOverview>("/api/admin/certificate-reminders", { action }) : await get<ReminderOverview>("/api/admin/certificate-reminders")); }
+    catch (callError) { setError(callError instanceof Error ? callError.message : "Reminder request failed."); }
+    finally { setBusy(false); }
+  }, []);
+
+  useEffect(() => { const timer = window.setTimeout(() => void call(), 0); return () => window.clearTimeout(timer); }, [call]);
+  useEffect(() => {
+    if (!active || busy) return;
+    const timer = window.setTimeout(() => void call("tick"), error ? 15000 : 3000);
+    return () => window.clearTimeout(timer);
+  }, [active, busy, error, call, overview]);
+
+  if (!overview) return null;
+  const processed = campaign ? campaign.scanned : 0;
+  const progress = campaign?.totalAtStart ? Math.min(100, Math.round((processed / campaign.totalAtStart) * 100)) : 100;
+  return <div className="admin-card admin-reminders">
+    <h3><BellRing size={15} /> Unclaimed certificate reminders</h3>
+    {!overview.configured ? <small>Configure <code>SMTP_HOST</code>, <code>SMTP_USER</code>, <code>SMTP_PASS</code> and <code>AUTH_FROM_EMAIL</code> to enable reminders.</small> : <>
+      <small>Emails every address with a certificate emailed over {overview.minAgeHours}h ago and still unclaimed — once per address per run, from {overview.from}. Runs in batches of {overview.batchSize}, at most {number.format(overview.dailyLimit)} emails/day, and continues automatically.</small>
+      {campaign && <>
+        <div className="admin-progress" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress}%` }} /></div>
+        <p className="admin-row"><span>{campaign.status === "running" ? (campaign.limitReached ? `Daily limit reached — resumes after ${when(campaign.resumesAt)}` : "Sending…") : campaign.status === "completed" ? `Finished${campaign.finishedAt ? ` ${when(campaign.finishedAt)}` : ""}` : campaign.status === "cancelled" ? "Stopped" : "Failed"}</span><b>{number.format(processed)} / {number.format(campaign.totalAtStart)}</b></p>
+        <small>{number.format(campaign.sent)} emails sent · {number.format(campaign.skipped)} duplicate addresses skipped · {number.format(campaign.failed)} failed · {number.format(campaign.sentToday)}/{number.format(campaign.dailyLimit)} today · started {when(campaign.startedAt)}</small>
+        {campaign.error && <p className="form-error" role="alert">{campaign.error}</p>}
+      </>}
+      <div className="admin-reminder-actions">
+        {campaign?.status === "running"
+          ? <button onClick={() => void call("cancel")} disabled={busy}><Square size={13} /> Stop run</button>
+          : confirming
+            ? <><button className="approve-action" onClick={() => { setConfirming(false); void call("start"); }} disabled={busy}>Yes, send reminders</button><button onClick={() => setConfirming(false)}>Cancel</button></>
+            : <button className="approve-action" onClick={() => setConfirming(true)} disabled={busy}><BellRing size={13} /> Remind everyone who hasn&apos;t claimed</button>}
+        {busy && <LoaderCircle size={15} className="spin" />}
+      </div>
+    </>}
+    {error && <p className="form-error" role="alert">{error}</p>}
+  </div>;
+}
+
 export function CertificateClaimsPanel() {
   const [status, setStatus] = useState<"all" | "claimed" | "pending">("all");
   const [items, setItems] = useState<AdminClaim[]>([]);
@@ -150,6 +218,7 @@ export function CertificateClaimsPanel() {
   useEffect(() => { const timer = window.setTimeout(() => void load(), 0); return () => window.clearTimeout(timer); }, [load]);
 
   return <>
+    <ReminderPanel />
     <nav className="moderation-tabs admin-subtabs" aria-label="Claim status">{(["all", "claimed", "pending"] as const).map((value) => <button key={value} className={status === value ? "active" : ""} onClick={() => { setStatus(value); setItems([]); setCursor(null); }}>{value}</button>)}</nav>
     {error && <p className="form-error" role="alert">{error}</p>}
     {busy && !items.length ? <div className="moderation-loading"><LoaderCircle className="spin" /> Loading…</div> : <div className="moderation-list">

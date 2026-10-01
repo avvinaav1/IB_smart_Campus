@@ -8,11 +8,11 @@ export type CampusRecord = {
 };
 
 export const starterIndianCampuses: CampusRecord[] = [
-  { id: "TN-U-SRM-KTR", name: "SRM Institute of Science and Technology — Kattankulathur", city: "Chengalpattu", state: "Tamil Nadu", type: "Deemed University", aliases: ["SRM University", "SRM KTR", "SRM Chennai"] },
-  { id: "TN-U-SRM-RMP", name: "SRM Institute of Science and Technology — Ramapuram", city: "Chennai", state: "Tamil Nadu", type: "Deemed University", aliases: ["SRM University Ramapuram", "SRM Chennai"] },
-  { id: "TN-U-SRM-VDP", name: "SRM Institute of Science and Technology — Vadapalani", city: "Chennai", state: "Tamil Nadu", type: "Deemed University", aliases: ["SRM University Vadapalani", "SRM Chennai"] },
-  { id: "TN-U-VIT-CHE", name: "Vellore Institute of Technology — Chennai", city: "Chennai", state: "Tamil Nadu", type: "Deemed University", aliases: ["VIT Chennai", "VIT University Chennai"] },
-  { id: "TN-U-VIT-VEL", name: "Vellore Institute of Technology — Vellore", city: "Vellore", state: "Tamil Nadu", type: "Deemed University", aliases: ["VIT Vellore", "VIT University"] },
+  { id: "TN-U-SRM-KTR", name: "SRM Institute of Science and Technology - Kattankulathur", city: "Chengalpattu", state: "Tamil Nadu", type: "Deemed University", aliases: ["SRM University", "SRM KTR", "SRM Chennai"] },
+  { id: "TN-U-SRM-RMP", name: "SRM Institute of Science and Technology - Ramapuram", city: "Chennai", state: "Tamil Nadu", type: "Deemed University", aliases: ["SRM University Ramapuram", "SRM Chennai"] },
+  { id: "TN-U-SRM-VDP", name: "SRM Institute of Science and Technology - Vadapalani", city: "Chennai", state: "Tamil Nadu", type: "Deemed University", aliases: ["SRM University Vadapalani", "SRM Chennai"] },
+  { id: "TN-U-VIT-CHE", name: "Vellore Institute of Technology - Chennai", city: "Chennai", state: "Tamil Nadu", type: "Deemed University", aliases: ["VIT Chennai", "VIT University Chennai"] },
+  { id: "TN-U-VIT-VEL", name: "Vellore Institute of Technology - Vellore", city: "Vellore", state: "Tamil Nadu", type: "Deemed University", aliases: ["VIT Vellore", "VIT University"] },
   { id: "AP-U-VIT", name: "VIT-AP University", city: "Amaravati", state: "Andhra Pradesh", type: "Private University", aliases: ["VIT AP"] },
   { id: "MP-U-VIT", name: "VIT Bhopal University", city: "Bhopal", state: "Madhya Pradesh", type: "Private University", aliases: ["VIT Bhopal"] },
   { id: "TN-U-ANNA", name: "Anna University", city: "Chennai", state: "Tamil Nadu", type: "State Public University" },
