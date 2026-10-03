@@ -2,14 +2,17 @@ import type { NextRequest } from "next/server";
 import { getDirectoryUsers } from "@/lib/auth-store";
 import { listRequest, pageItems } from "@/lib/admin-http";
 import { noStoreJson } from "@/lib/auth-http";
-import { listCommunityMemberRecords } from "@/lib/community-store";
-import { requireCommunityAdmin } from "@/lib/moderation-auth";
+import { canViewCommunityMembers, listCommunityMemberRecords } from "@/lib/community-store";
+import { requireAuthenticatedUser } from "@/lib/moderation-auth";
 
 export const runtime = "nodejs";
 export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id: communityId } = await context.params;
-  const auth = await requireCommunityAdmin(request, communityId);
+  const auth = await requireAuthenticatedUser(request);
   if ("response" in auth) return auth.response;
+  const canView = await canViewCommunityMembers(communityId, auth.user.id);
+  if (canView === null) return noStoreJson({ error: "Community not found." }, { status: 404 });
+  if (!canView) return noStoreJson({ error: "Only members can see who is in this private community." }, { status: 403 });
   const records = await listCommunityMemberRecords(communityId);
   if (!records) return noStoreJson({ error: "Community not found." }, { status: 404 });
   const users = await getDirectoryUsers(records.map((record) => record.userId));

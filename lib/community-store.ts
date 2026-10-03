@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { communities as initialCommunities } from "@/lib/data";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import { communityHierarchyDeletionOrder, effectiveCommunityMemberCount, effectiveCommunityMemberRecords, isCommunityType, normalizeCommunityType, parentCommunityAdminMemberships, resolveCommunityHierarchyAccess, validateCommunityParent } from "@/lib/community-hierarchy";
@@ -26,6 +26,7 @@ type StoredCommunity = {
   iconUrl: string;
   bannerUrl: string;
   privacy: CommunityPrivacy;
+  inviteToken?: string;
   memberCount: number;
   createdAt: number;
   updatedAt: number;
@@ -180,10 +181,17 @@ function mutate<T>(action: (database: CommunityDatabase) => T | Promise<T>): Pro
   return operation;
 }
 
+function newInviteToken() {
+  return randomBytes(18).toString("base64url");
+}
+
 function publicCommunity(database: CommunityDatabase, community: StoredCommunity, viewerId: string): Community {
   const access = resolveCommunityHierarchyAccess(database, community, viewerId);
+  // The invite token is a join credential for private communities; only the invite route hands it out.
+  const visible = { ...community };
+  delete visible.inviteToken;
   return {
-    ...community,
+    ...visible,
     members: formatMemberCount(effectiveCommunityMemberCount(database, community)),
     joined: access.joined,
     role: access.role,
@@ -239,7 +247,7 @@ export async function createCommunity(creatorId: string, input: NewCommunityInpu
     if (parentError) return parentError;
     const now = Date.now();
     const id = randomUUID();
-    const community: StoredCommunity = { id, name, slug: identity?.slug || name, instituteId, status: instituteId ? "PENDING" : "APPROVED", type: input.type, parentId: input.parentId, description: input.description.trim(), creatorId, color: input.color.toUpperCase(), emoji: input.emoji.trim(), iconUrl: "", bannerUrl: "", privacy: input.privacy, memberCount: 1, createdAt: now, updatedAt: now };
+    const community: StoredCommunity = { id, name, slug: identity?.slug || name, instituteId, status: instituteId ? "PENDING" : "APPROVED", type: input.type, parentId: input.parentId, description: input.description.trim(), creatorId, color: input.color.toUpperCase(), emoji: input.emoji.trim(), iconUrl: "", bannerUrl: "", privacy: input.privacy, inviteToken: newInviteToken(), memberCount: 1, createdAt: now, updatedAt: now };
     const membership: CommunityMember = { id: randomUUID(), communityId: id, userId: creatorId, role: "COMMUNITY_ADMIN", createdAt: now };
     database.communities[id] = community;
     database.nameIndex[name.toLowerCase()] = id;
@@ -298,13 +306,16 @@ export async function reviewInstituteCommunity(instituteId: string, communityId:
   });
 }
 
-export async function setCommunityMembership(communityId: string, userId: string, joined: boolean) {
+export async function setCommunityMembership(communityId: string, userId: string, joined: boolean, inviteToken = "") {
   return mutate((database) => {
     const community = database.communities[communityId];
     if (!community) return { error: "Community not found.", status: 404 } as const;
     const access = resolveCommunityHierarchyAccess(database, community, userId);
     if (joined && community.status !== "APPROVED" && access.role !== "COMMUNITY_ADMIN") {
       return { error: "This community is not open until its institute approves it.", status: 409 } as const;
+    }
+    if (joined && !access.joined && community.privacy === "private" && (!inviteToken || inviteToken !== community.inviteToken)) {
+      return { error: "This community is invite-only. Ask a community admin for an invite link.", status: 403 } as const;
     }
     if (!joined && access.role === "COMMUNITY_ADMIN") {
       return { error: access.membershipSource === "PARENT" ? "Parent community admins cannot leave inherited sub-community membership." : "Community admins cannot leave their own community.", status: 400 } as const;
@@ -354,6 +365,26 @@ export async function updateCommunityImage(communityId: string, userId: string, 
     else community.bannerUrl = imageUrl;
     community.updatedAt = Date.now();
     return { community: publicCommunity(database, community, userId), previousUrl } as const;
+  });
+}
+
+function canInvite(database: CommunityDatabase, community: StoredCommunity, userId: string) {
+  const role = resolveCommunityHierarchyAccess(database, community, userId).role;
+  return role === "COMMUNITY_ADMIN" || role === "COMMUNITY_MODERATOR";
+}
+
+/** Returns the community's invite token for admins/moderators, creating one for communities that predate invites. */
+export async function getCommunityInvite(communityId: string, userId: string, rotate = false) {
+  return mutate((database) => {
+    const community = database.communities[communityId];
+    if (!community) return { error: "Community not found.", status: 404 } as const;
+    if (!canInvite(database, community, userId)) return { error: "Only community admins and moderators can invite members.", status: 403 } as const;
+    if (community.status !== "APPROVED") return { error: "Invites open once the institute approves this community.", status: 409 } as const;
+    if (rotate || !community.inviteToken) {
+      community.inviteToken = newInviteToken();
+      community.updatedAt = Date.now();
+    }
+    return { community: { id: community.id, name: community.name, description: community.description, privacy: community.privacy }, token: community.inviteToken } as const;
   });
 }
 
@@ -430,6 +461,15 @@ export async function getCommunityAccess(communityId: string, userId: string) {
   if (!community) return null;
   const access = resolveCommunityHierarchyAccess(database, community, userId);
   return { communityId, creatorId: community.creatorId, ...access };
+}
+
+/** Members of public/restricted communities are visible to everyone; private rosters only to members. */
+export async function canViewCommunityMembers(communityId: string, userId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const community = database.communities[communityId];
+  if (!community) return null;
+  return community.privacy !== "private" || resolveCommunityHierarchyAccess(database, community, userId).joined;
 }
 
 export async function listCommunityMemberRecords(communityId: string) {

@@ -16,6 +16,7 @@ import { defaultCoverFor, EventCoverField } from "@/components/event-cover-field
 import { EventRegistrationDetail } from "@/components/event-registration-detail";
 import { ProfileEditor } from "@/components/profile-editor";
 import { ProfileSetup } from "@/components/profile-setup";
+import { CommunityMembersList, InviteMembersModal } from "@/components/community-invite";
 import { CommunityModerationPanel, GlobalAdminDashboard, InstituteDashboard } from "@/components/moderation-dashboard";
 import { coverImageStyle, eventHasEnded, eventWhen } from "@/lib/event-format";
 import type { CampusEvent, ChatRequestView, Community, CommunityType, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, InstituteSummary, Post, SessionUser, UserDashboard, UserNotification, UserSearchResult, View } from "@/lib/types";
@@ -89,7 +90,7 @@ function Toast({ message }: { message: string }) {
   return <div className="toast" role="status"><Check size={17} strokeWidth={3} />{message}</div>;
 }
 
-export function SmartCampusApp({ previewUser, initialView = "home", initialCommunityId = "", initialEventId = "", initialChatRequests = false, initialVerificationCode = "", claimEmail = "" }: { previewUser?: SessionUser; initialView?: View; initialCommunityId?: string; initialEventId?: string; initialChatRequests?: boolean; initialVerificationCode?: string; claimEmail?: string }) {
+export function SmartCampusApp({ previewUser, initialView = "home", initialCommunityId = "", initialInviteToken = "", initialEventId = "", initialChatRequests = false, initialVerificationCode = "", claimEmail = "" }: { previewUser?: SessionUser; initialView?: View; initialCommunityId?: string; initialInviteToken?: string; initialEventId?: string; initialChatRequests?: boolean; initialVerificationCode?: string; claimEmail?: string }) {
   const [authUser, setAuthUser] = useState<SessionUser | null | undefined>(previewUser);
   const previewMode = Boolean(previewUser && authUser?.id === previewUser.id);
   const [view, setView] = useState<View>(initialView);
@@ -106,6 +107,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   const [composerCommunity, setComposerCommunity] = useState("c/campuslife");
   const [eventOpen, setEventOpen] = useState<CampusEvent | null>(null);
   const pendingEventId = useRef(initialEventId);
+  const pendingInvite = useRef(initialInviteToken && initialCommunityId ? { communityId: initialCommunityId, token: initialInviteToken } : null);
   const [editingEvent, setEditingEvent] = useState<CampusEvent | null>(null);
   const [instituteCommunityTarget, setInstituteCommunityTarget] = useState<InstituteSummary | null>(null);
   const [instituteEventTarget, setInstituteEventTarget] = useState<InstituteSummary | null>(null);
@@ -197,6 +199,22 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       stopPolling();
     };
   }, [authUser, notificationsOpen, previewMode, dataRevision]);
+
+  useEffect(() => {
+    const invite = pendingInvite.current;
+    if (previewMode || !authUser?.profileSetupComplete || !invite) return;
+    pendingInvite.current = null;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("invite");
+    window.history.replaceState(null, "", url);
+    requestJson<{ community: Community; changed: boolean }>(`/api/communities/${encodeURIComponent(invite.communityId)}/membership`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ inviteToken: invite.token }) })
+      .then((data) => {
+        if (!data?.community) return;
+        setCommunities((current) => [data.community, ...current.filter((item) => item.id !== data.community.id)]);
+        setToast(data.changed ? `Welcome to ${data.community.name}!` : `You're already in ${data.community.name}`);
+      })
+      .catch((inviteError) => setToast(inviteError instanceof Error ? inviteError.message : "This invite link is no longer valid."));
+  }, [authUser, previewMode]);
 
   useEffect(() => {
     if (previewMode || !authUser?.profileSetupComplete) return;
@@ -707,7 +725,7 @@ function CommunityCard({ item, index, communities, onOpen, onMembership }: { ite
     <div className="community-art">{item.bannerUrl ? <Image src={item.bannerUrl} alt={`${item.name} banner`} fill sizes="370px" unoptimized /> : <><span>{item.emoji}</span><i>{index % 2 ? "✦ ✦" : "〰 〰"}</i></>}</div><Avatar text={item.emoji} image={item.iconUrl} color={item.color} size={54} />
     <div className="community-card-badges"><span>{communityTypeLabel(item.type)}</span><span className={item.parentId ? "child" : "parent"}>{item.parentId ? `Sub-community of ${parent?.name || "parent"}` : "Top-level community"}</span></div>
     <h2>{item.name}</h2><p>{item.description}</p>
-    <div><span><Users size={16} /> {item.members}</span>{item.membershipSource === "PARENT" ? <button type="button" className="joined inherited-admin" disabled><ShieldCheck size={15} /> Inherited admin</button> : <button className={item.joined ? "joined" : ""} onClick={() => void onMembership(item)}>{item.joined ? <><Check size={16} /> Joined</> : "Join"}</button>}</div>
+    <div><span><Users size={16} /> {item.members}</span>{item.membershipSource === "PARENT" ? <button type="button" className="joined inherited-admin" disabled><ShieldCheck size={15} /> Inherited admin</button> : !item.joined && item.privacy === "private" ? <button type="button" className="invite-only" disabled><LockKeyhole size={14} /> Invite only</button> : <button className={item.joined ? "joined" : ""} onClick={() => void onMembership(item)}>{item.joined ? <><Check size={16} /> Joined</> : "Join"}</button>}</div>
   </article>;
 }
 
@@ -733,7 +751,8 @@ function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending
 
 function CommunityDetail({ user, community, communities, posts, setPosts, vote, votePending, goBack, onOpenCommunity, onMembership, toggleMembership, notify, openComments, openComposer, onUpdated, onCommunityCreated }: { user: SessionUser; community: Community; communities: Community[]; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; goBack: () => void; onOpenCommunity: (id: string) => void; onMembership: (community: Community) => Promise<void>; toggleMembership: () => void; notify: (message: string) => void; openComments: (id: number) => void; openComposer: () => void; onUpdated: (community: Community) => void; onCommunityCreated: (community: Community) => void }) {
   const [sort, setSort] = useState("Hot");
-  const [activeTab, setActiveTab] = useState<"feed" | "children">("feed");
+  const [activeTab, setActiveTab] = useState<"feed" | "children" | "members">("feed");
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [brandingOpen, setBrandingOpen] = useState(false);
   const [moderationOpen, setModerationOpen] = useState(false);
   const [creatingChild, setCreatingChild] = useState(false);
@@ -743,6 +762,8 @@ function CommunityDetail({ user, community, communities, posts, setPosts, vote, 
   const canCreateChildren = !community.parentId && community.role === "COMMUNITY_ADMIN";
   const isGlobalModerator = user.appRole === "APP_MODERATOR" || user.appRole === "SUPER_ADMIN";
   const canModerate = community.role === "COMMUNITY_ADMIN" || community.role === "COMMUNITY_MODERATOR" || community.instituteRole === "INSTITUTE_ADMIN" || community.instituteRole === "INSTITUTE_MODERATOR" || isGlobalModerator;
+  const canInvite = community.status === "APPROVED" && (community.role === "COMMUNITY_ADMIN" || community.role === "COMMUNITY_MODERATOR");
+  const canSeeMembers = community.privacy !== "private" || community.joined;
   const canApproveEvents = isGlobalModerator || community.role === "COMMUNITY_ADMIN" || (!community.instituteId && community.role === "COMMUNITY_MODERATOR") || community.instituteRole === "INSTITUTE_ADMIN" || community.instituteRole === "INSTITUTE_MODERATOR";
 
   function save(id: number) {
@@ -754,13 +775,14 @@ function CommunityDetail({ user, community, communities, posts, setPosts, vote, 
     <button className="back-button" onClick={() => parent ? onOpenCommunity(parent.id) : goBack()}><ArrowRight size={17} /> {parent ? `Back to ${parent.name}` : "Back to communities"}</button>
     <section className="community-detail-hero" style={{ "--community-color": community.color } as React.CSSProperties}>
       <div className={`community-detail-pattern ${community.bannerUrl ? "has-image" : ""}`}>{community.bannerUrl ? <Image src={community.bannerUrl} alt={`${community.name} banner`} fill sizes="1120px" unoptimized /> : <>〰 &nbsp; ✦ &nbsp; 〰 &nbsp; ✦</>}</div>
-      <div className="community-detail-identity"><Avatar text={community.emoji} image={community.iconUrl} color={community.color} size={84} /><div>{parent && <div className="community-breadcrumb"><button type="button" onClick={() => onOpenCommunity(parent.id)}>{parent.name}</button><span>›</span><b>{community.name}</b></div>}<div className="community-header-badges"><span>{communityTypeLabel(community.type)}</span><span>{community.parentId ? "Sub-community" : "Top-level community"}</span><span>{community.privacy || "public"}</span></div><h1>{community.name}</h1><p>{community.description}</p></div><div className="community-detail-actions">{community.role === "COMMUNITY_ADMIN" && <button className="branding-button" onClick={() => setBrandingOpen(true)}><Settings size={17} /> Branding</button>}{canCreateChildren && <button className="branding-button" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}{canModerate && <button className="branding-button" onClick={() => setModerationOpen((current) => !current)}><ShieldCheck size={17} /> {moderationOpen ? "Close moderation" : "Moderation"}</button>}{community.membershipSource === "PARENT" ? <button type="button" className="joined inherited-admin" disabled><ShieldCheck size={16} /> Inherited admin</button> : <button className={community.joined ? "joined" : ""} onClick={toggleMembership}>{community.joined ? <><Check size={17} /> Joined</> : <><Plus size={17} /> Join community</>}</button>}<button onClick={openComposer}><Plus size={17} /> Create post</button></div></div>
+      <div className="community-detail-identity"><Avatar text={community.emoji} image={community.iconUrl} color={community.color} size={84} /><div>{parent && <div className="community-breadcrumb"><button type="button" onClick={() => onOpenCommunity(parent.id)}>{parent.name}</button><span>›</span><b>{community.name}</b></div>}<div className="community-header-badges"><span>{communityTypeLabel(community.type)}</span><span>{community.parentId ? "Sub-community" : "Top-level community"}</span><span>{community.privacy || "public"}</span></div><h1>{community.name}</h1><p>{community.description}</p></div><div className="community-detail-actions">{community.role === "COMMUNITY_ADMIN" && <button className="branding-button" onClick={() => setBrandingOpen(true)}><Settings size={17} /> Branding</button>}{canCreateChildren && <button className="branding-button" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}{canInvite && <button className="branding-button" onClick={() => setInviteOpen(true)}><UserPlus size={17} /> Invite</button>}{canModerate && <button className="branding-button" onClick={() => setModerationOpen((current) => !current)}><ShieldCheck size={17} /> {moderationOpen ? "Close moderation" : "Moderation"}</button>}{community.membershipSource === "PARENT" ? <button type="button" className="joined inherited-admin" disabled><ShieldCheck size={16} /> Inherited admin</button> : !community.joined && community.privacy === "private" ? <button type="button" className="invite-only" disabled><LockKeyhole size={16} /> Invite only</button> : <button className={community.joined ? "joined" : ""} onClick={toggleMembership}>{community.joined ? <><Check size={17} /> Joined</> : <><Plus size={17} /> Join community</>}</button>}<button onClick={openComposer}><Plus size={17} /> Create post</button></div></div>
     </section>
     {moderationOpen && <CommunityModerationPanel community={community} posts={communityPosts} canApproveEvents={canApproveEvents} onPostDeleted={(id) => setPosts((current) => current.filter((post) => post.id !== id))} onCommentDeleted={(postId, commentId) => setPosts((current) => current.map((post) => post.id === postId ? { ...post, commentItems: (post.commentItems || []).filter((comment) => comment.id !== commentId), comments: Math.max(0, post.comments - 1) } : post))} notify={notify} />}
     <div className="community-stats"><span><b>{community.members}</b><small>Members</small></span><span><b>{communityPosts.length}</b><small>Posts</small></span><span><b>{communityPosts.reduce((total, post) => total + post.votes, 0).toLocaleString()}</b><small>Community karma</small></span></div>
-    {!community.parentId && <nav className="community-detail-tabs" role="tablist" aria-label={`${community.name} sections`}><button role="tab" aria-selected={activeTab === "feed"} className={activeTab === "feed" ? "active" : ""} onClick={() => setActiveTab("feed")}>Feed</button><button role="tab" aria-selected={activeTab === "children"} className={activeTab === "children" ? "active" : ""} onClick={() => setActiveTab("children")}>Sub-Communities <b>{children.length}</b></button></nav>}
-    {activeTab === "feed" || community.parentId ? <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div> : <section className="subcommunity-section"><header><div><span className="eyebrow violet">SUB-COMMUNITIES</span><h2>Spaces inside {community.name}</h2><p>Focused communities managed under this parent.</p></div>{canCreateChildren && <button className="primary-action" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</header>{children.length ? <div className="community-grid">{children.map((child, index) => <CommunityCard key={child.id} item={child} index={index} communities={communities} onOpen={onOpenCommunity} onMembership={onMembership} />)}</div> : <div className="community-empty"><span>🪆</span><h3>No sub-communities yet.</h3><p>Create a focused space inside {community.name}.</p>{canCreateChildren && <button onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</div>}</section>}
+    <nav className="community-detail-tabs" role="tablist" aria-label={`${community.name} sections`}><button role="tab" aria-selected={activeTab === "feed"} className={activeTab === "feed" ? "active" : ""} onClick={() => setActiveTab("feed")}>Feed</button>{!community.parentId && <button role="tab" aria-selected={activeTab === "children"} className={activeTab === "children" ? "active" : ""} onClick={() => setActiveTab("children")}>Sub-Communities <b>{children.length}</b></button>}{canSeeMembers && <button role="tab" aria-selected={activeTab === "members"} className={activeTab === "members" ? "active" : ""} onClick={() => setActiveTab("members")}>Members <b>{community.members}</b></button>}</nav>
+    {activeTab === "members" && canSeeMembers ? <CommunityMembersList community={community} canInvite={canInvite} onInvite={() => setInviteOpen(true)} /> : activeTab !== "children" || community.parentId ? <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div> : <section className="subcommunity-section"><header><div><span className="eyebrow violet">SUB-COMMUNITIES</span><h2>Spaces inside {community.name}</h2><p>Focused communities managed under this parent.</p></div>{canCreateChildren && <button className="primary-action" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</header>{children.length ? <div className="community-grid">{children.map((child, index) => <CommunityCard key={child.id} item={child} index={index} communities={communities} onOpen={onOpenCommunity} onMembership={onMembership} />)}</div> : <div className="community-empty"><span>🪆</span><h3>No sub-communities yet.</h3><p>Create a focused space inside {community.name}.</p>{canCreateChildren && <button onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</div>}</section>}
     {brandingOpen && <CommunityBrandingModal community={community} close={() => setBrandingOpen(false)} onUpdated={onUpdated} notify={notify} />}
+    {inviteOpen && <InviteMembersModal community={community} close={() => setInviteOpen(false)} notify={notify} />}
     {creatingChild && <CreateCommunityModal parent={community} existingNames={communities.map((item) => item.name)} close={() => setCreatingChild(false)} onCreate={(created) => { onCommunityCreated(created); setCreatingChild(false); setActiveTab("children"); notify(`${created.name} is now part of ${community.name}`); }} />}
   </div>;
 }
@@ -869,6 +891,7 @@ function CreateCommunityModal({ close, onCreate, existingNames, parent, institut
   const [privacy, setPrivacy] = useState<"public" | "restricted" | "private">("public");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [created, setCreated] = useState<Community | null>(null);
   const slug = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
   const instituteId = institute?.id || parent?.instituteId || null;
   const communityPrefix = instituteId ? "ic\\" : "c/";
@@ -888,13 +911,16 @@ function CreateCommunityModal({ close, onCreate, existingNames, parent, institut
         body: JSON.stringify({ name: slug, description: description.trim(), emoji: emoji.trim() || "✨", color, privacy, type: communityType, parentId: parent?.id || null, instituteId }),
       });
       if (!data?.community) throw new Error("The server did not return the new community.");
-      onCreate(data.community);
+      if (data.community.privacy === "private" && data.community.status === "APPROVED") setCreated(data.community);
+      else onCreate(data.community);
     } catch (creationError) {
       setError(creationError instanceof Error ? creationError.message : "Could not create this community.");
     } finally {
       setBusy(false);
     }
   }
+
+  if (created) return <InviteMembersModal community={created} intro={`${created.name} is private, so only people you invite can join. Share a link, pick people, or send an email.`} close={() => onCreate(created)} />;
 
   return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}>
     <form className="creation-modal community-creation" onSubmit={submit} aria-label={parent ? `Create a sub-community in ${parent.name}` : institute ? `Create a community in ${institute.name}` : "Create a community"}>

@@ -678,3 +678,40 @@ main { min-height: calc(100vh - 70px); }
 .profile-event-status { flex: 0 0 auto; padding: 4px 7px; border-radius: 999px; background: var(--lime); color: #14121a; font: 800 8px monospace; text-transform: uppercase; }.profile-event-status.pending { background: var(--panel); color: var(--violet); border: 1px solid var(--violet); }.profile-event-status.waitlisted { background: #ffe7a8; }.profile-event-status.attended { background: var(--violet); color: white; }.profile-event-status.completed { background: var(--line); color: var(--muted); }
 .profile-registered-events > button.ended { opacity: .8; }
 .past-events-rail .mini-event > span { background: var(--line); }.past-events-rail .mini-event > div b { color: var(--muted); }.past-events-rail .mini-event > div small svg { color: var(--violet); }
+
+/* Community invites and member roster */
+.invite-tabs { margin: 18px 0 14px; }
+.invite-tabs button { flex: 1; justify-content: center; }
+.invite-pane { display: grid; gap: 12px; }
+.invite-pane > footer { display: flex; justify-content: flex-end; }
+.invite-modal > footer { margin-top: 14px; display: flex; justify-content: flex-end; }
+.invite-hint { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; display: flex; align-items: center; gap: 6px; }
+.invite-results .invite-hint { padding: 12px; }
+.invite-link-row { display: flex; gap: 8px; }
+.invite-link-row input { min-width: 0; flex: 1; min-height: 42px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--soft); font: 600 11px monospace; }
+.invite-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.invite-actions button { display: flex; align-items: center; gap: 6px; }
+.invite-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.invite-chips button { min-height: 28px; padding: 0 10px; border: 1px solid var(--violet); border-radius: 20px; color: var(--violet); background: color-mix(in srgb, var(--violet) 10%, var(--panel)); display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 800; }
+.invite-results { max-height: 260px; margin-top: 0; overflow-y: auto; }
+.invite-results > button[aria-pressed="true"] { background: color-mix(in srgb, var(--violet) 10%, var(--panel)); }
+.invite-results > button > svg { flex: 0 0 auto; color: var(--violet); }
+.invite-notice { margin: 12px 0 0; color: var(--violet); font-size: 10px; font-weight: 800; display: flex; align-items: center; gap: 6px; }
+button.invite-only { opacity: .75; cursor: not-allowed; display: inline-flex; align-items: center; gap: 5px; }
+.community-members > header { margin-bottom: 14px; display: flex; align-items: end; justify-content: space-between; gap: 15px; }
+.community-members > header h2 { margin: 8px 0 0; font: 550 28px/1 var(--font-serif); }
+.community-members > header .primary-action { flex: 0 0 auto; }
+.community-members-search { min-height: 42px; margin-bottom: 12px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); display: flex; align-items: center; gap: 8px; }
+.community-members-search input { min-width: 0; flex: 1; border: 0; outline: 0; color: var(--ink); background: transparent; }
+.community-members-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 9px; }
+.community-members-list > a { min-height: 62px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; color: var(--ink); background: var(--panel); display: flex; align-items: center; gap: 10px; text-decoration: none; }
+.community-members-list > a:hover { border-color: var(--violet); }
+.community-members-list > a > span:nth-child(2) { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.community-members-list b { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.community-members-list small { color: var(--muted); font-size: 9px; }
+.community-members-list em { padding: 3px 7px; border-radius: 20px; color: var(--violet); background: color-mix(in srgb, var(--violet) 12%, var(--panel)); display: flex; align-items: center; gap: 4px; font: normal 800 8px monospace; text-transform: uppercase; }
+@media (max-width: 700px) {
+  .community-members > header { align-items: stretch; flex-direction: column; }
+  .invite-tabs button { padding: 0 8px; }
+  .invite-link-row { flex-direction: column; }
+}

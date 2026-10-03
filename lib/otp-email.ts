@@ -3,7 +3,7 @@ import type { AuthIntent } from "@/lib/auth-store";
 
 let transporter: Transporter | undefined;
 
-function getTransporter() {
+export function getTransporter() {
   if (transporter) return transporter;
   const host = process.env.SMTP_HOST;
   const port = Number(process.env.SMTP_PORT || 587);
