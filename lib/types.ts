@@ -263,7 +263,7 @@ export type Community = {
   bannerUrl: string;
   description: string;
   joined: boolean;
-  joinRequestStatus: "none" | "pending" | "rejected";
+  joinRequestStatus?: "none" | "pending" | "rejected";
   membershipSource: CommunityMembershipSource | null;
   privacy?: "public" | "restricted" | "private";
   role?: CommunityRole;
