@@ -4,10 +4,10 @@ import Image from "next/image";
 import dynamic from "next/dynamic";
 import { CertificateGallery, CertificateInbox } from "@/components/certificates/certificate-gallery";
 import {
-  Award, ArrowRight, Bell, Bookmark, CalendarDays, Check, ChevronDown, CircleUserRound,
+  Award, ArrowRight, Bell, Bookmark, CalendarDays, Check, CheckCheck, ChevronDown, CircleUserRound,
   Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Link2, LoaderCircle, LockKeyhole, MapPin,
   LogOut, Menu, MessageCircle, MessageSquare, Moon, Plus, Search, Send, Settings, Share2,
-  Download, ExternalLink, ShieldCheck, Star, Sun, TicketCheck, TrendingUp, Trophy, UserCheck, UserPlus, Users, X,
+  Download, ExternalLink, ShieldCheck, Star, Sun, TicketCheck, TrendingUp, Trophy, UserCheck, UserPlus, Users, X, XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthLoading, AuthScreen } from "@/components/auth-screen";
@@ -19,7 +19,7 @@ import { ProfileSetup } from "@/components/profile-setup";
 import { CommunityMembersList, InviteMembersModal } from "@/components/community-invite";
 import { CommunityModerationPanel, GlobalAdminDashboard, InstituteDashboard } from "@/components/moderation-dashboard";
 import { coverImageStyle, eventHasEnded, eventWhen } from "@/lib/event-format";
-import type { CampusEvent, ChatRequestView, Community, CommunityType, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, InstituteSummary, Post, SessionUser, UserDashboard, UserNotification, UserSearchResult, View } from "@/lib/types";
+import type { CampusEvent, ChatRequestView, Community, CommunityJoinRequest, CommunityType, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, InstituteSummary, Post, SessionUser, UserDashboard, UserNotification, UserSearchResult, View } from "@/lib/types";
 import { announceDataChange, mutationSucceeded, pollWhileVisible, subscribeToDataChanges } from "@/lib/client-data-sync";
 
 const CertificatePortal = dynamic(() => import("@/components/certificates/certificate-portal"), { ssr: false });
@@ -72,7 +72,8 @@ async function requestJson<T>(url: string, init?: RequestInit) {
 }
 
 function Avatar({ text, image, color = "#6C3BFF", size = 38 }: { text: string; image?: string; color?: string; size?: number }) {
-  return <span className="avatar" style={{ background: color, width: size, height: size }}>{image ? <Image src={image} alt="" fill sizes={`${size}px`} unoptimized /> : text.slice(0, 2).toUpperCase()}</span>;
+  const label = (text || "?").slice(0, 2).toUpperCase();
+  return <span className="avatar" style={{ background: color, width: size, height: size }}>{image ? <Image src={image} alt="" fill sizes={`${size}px`} unoptimized /> : label}</span>;
 }
 
 function BrandLogo({ size = 38 }: { size?: number }) {
@@ -98,6 +99,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   const [events, setEvents] = useState<CampusEvent[]>([]);
   const [dashboard, setDashboard] = useState<UserDashboard | null>(null);
   const [communities, setCommunities] = useState<Community[]>([]);
+  const [joinRequests, setJoinRequests] = useState<CommunityJoinRequest[]>([]);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [searchOpen, setSearchOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -229,6 +231,25 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
     }
     void refreshCommunities();
     const stopPolling = pollWhileVisible(() => void refreshCommunities(), 5_000);
+    return () => {
+      active = false;
+      stopPolling();
+    };
+  }, [authUser, previewMode, dataRevision]);
+
+  useEffect(() => {
+    if (previewMode || !authUser?.profileSetupComplete) return;
+    let active = true;
+    async function refreshJoinRequests() {
+      try {
+        const data = await requestJson<{ requests: CommunityJoinRequest[] }>("/api/communities/join-requests", { cache: "no-store" });
+        if (active) setJoinRequests(data?.requests || []);
+      } catch {
+        if (active) setJoinRequests([]);
+      }
+    }
+    void refreshJoinRequests();
+    const stopPolling = pollWhileVisible(() => void refreshJoinRequests(), 8_000);
     return () => {
       active = false;
       stopPolling();
@@ -395,14 +416,39 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   }
 
   async function persistCommunityMembership(community: Community) {
+    const cancellingRequest = !community.joined && community.joinRequestStatus === "pending";
     try {
-      const data = await requestJson<{ community: Community }>(`/api/communities/${encodeURIComponent(community.id)}/membership`, { method: community.joined ? "DELETE" : "POST" });
+      const data = await requestJson<{ community: Community }>(`/api/communities/${encodeURIComponent(community.id)}/membership`, { method: community.joined || cancellingRequest ? "DELETE" : "POST" });
       if (!data?.community) throw new Error("The server did not return the updated community.");
       setCommunities((current) => current.map((item) => item.id === community.id ? data.community : item));
-      void requestUserDashboard().then(setDashboard).catch(() => undefined);
-      setToast(community.joined ? `Left ${community.name}` : `Joined ${community.name}`);
+
+      const next = data.community;
+      if (community.joined) setToast(`Left ${next.name}`);
+      else if (cancellingRequest) setToast(`Cancelled request to join ${next.name}`);
+      else if (next.joinRequestStatus === "pending") setToast(`Requested to join ${next.name}`);
+      else if (next.joined) {
+        setToast(`Joined ${next.name}`);
+        void requestUserDashboard().then(setDashboard).catch(() => undefined);
+      } else setToast(`Updated ${next.name}`);
     } catch (membershipError) {
       setToast(membershipError instanceof Error ? membershipError.message : "Could not update your community membership.");
+    }
+  }
+
+  async function resolveJoinRequest(communityId: string, requesterId: string, decision: "accepted" | "rejected") {
+    try {
+      const data = await requestJson<{ community: Community }>(`/api/communities/${encodeURIComponent(communityId)}/join-requests/${encodeURIComponent(requesterId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+      setJoinRequests((current) => current.filter((req) => !(req.communityId === communityId && req.requesterId === requesterId)));
+      if (data?.community) {
+        setCommunities((current) => current.map((item) => item.id === data.community.id ? data.community : item));
+      }
+      setToast(decision === "accepted" ? "Request accepted" : "Request rejected");
+    } catch (requestError) {
+      setToast(requestError instanceof Error ? requestError.message : "Could not update the request.");
     }
   }
 
@@ -516,7 +562,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
 
         <main>
           {view === "certificates" && <CertificatePortal preview={previewMode} events={events} appRole={authUser.appRole} userId={authUser.id} initialCode={initialVerificationCode} />}
-          {view === "home" && <HomeView user={authUser} posts={posts} events={events.filter((event) => event.status === "APPROVED")} communities={communities} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} />}
+          {view === "home" && <HomeView user={authUser} posts={posts} events={events.filter((event) => event.status === "APPROVED")} communities={communities} joinRequests={joinRequests} resolveJoinRequest={resolveJoinRequest} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} />}
           {view === "explore" && <ExploreView user={authUser} items={communities} setItems={setCommunities} posts={posts} setPosts={setPosts} vote={persistVote} votePending={votePending} notify={setToast} onMembership={persistCommunityMembership} onEvents={() => go("events")} openComments={setCommentPostId} openComposer={(community = "c/campuslife") => { setComposerCommunity(community); setComposerOpen(true); }} initialCommunityId={initialCommunityId} />}
           {view === "events" && <EventsView events={events} communities={communities} defaultCampus={authUser.campus || ""} onEvent={setEventOpen} onCreated={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setEventOpen(event); }} notify={setToast} />}
           {view === "rewards" && <RewardsView user={authUser} notify={setToast} />}
@@ -552,7 +598,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   );
 }
 
-function HomeView({ user, posts, events, communities, setPosts, vote, votePending, onExplore, onEvents, onEvent, openComments, notify }: { user: SessionUser; posts: Post[]; events: CampusEvent[]; communities: Community[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; onExplore: () => void; onEvents: () => void; onEvent: (e: CampusEvent) => void; openComments: (id: number) => void; notify: (s: string) => void }) {
+function HomeView({ user, posts, events, communities, joinRequests, resolveJoinRequest, setPosts, vote, votePending, onExplore, onEvents, onEvent, openComments, notify }: { user: SessionUser; posts: Post[]; events: CampusEvent[]; communities: Community[]; joinRequests: CommunityJoinRequest[]; resolveJoinRequest: (communityId: string, requesterId: string, decision: "accepted" | "rejected") => Promise<void>; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; onExplore: () => void; onEvents: () => void; onEvent: (e: CampusEvent) => void; openComments: (id: number) => void; notify: (s: string) => void }) {
   const [feed, setFeed] = useState("Home");
   const [today, setToday] = useState(todayLabel);
   const [now, setNow] = useState(() => Date.now());
@@ -617,6 +663,51 @@ function HomeView({ user, posts, events, communities, setPosts, vote, votePendin
         <p>{premiumRemaining ? `Invite ${invitesRemaining} more verified ${invitesRemaining === 1 ? "friend" : "friends"} to unlock 30 days of Premium.` : "You reached the Premium reward milestone."}</p>
         <button onClick={() => { navigator.clipboard?.writeText(user.referralCode); notify("Referral code copied"); }}><Copy size={16} /> Copy referral code</button>
       </div>
+      {joinRequests.length > 0 && (
+        <div className="rail-card join-requests-rail">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow violet">WAITING ON YOU</span>
+              <h2>Join requests</h2>
+            </div>
+            <b className="join-requests-count">{joinRequests.length}</b>
+          </div>
+          <div className="join-requests-list">
+            {joinRequests.slice(0, 5).map((req) => (
+              <div className="join-request-row" key={`${req.communityId}:${req.requesterId}`}>
+                <Avatar text={req.requesterUsername} image={req.requesterAvatarUrl} color={req.communityColor || "#6C3BFF"} size={36} />
+                <div className="join-request-info">
+                  <b>{req.requesterUsername}</b>
+                  <small>wants to join {req.communityName}</small>
+                </div>
+                <div className="join-request-actions">
+                  <button
+                    type="button"
+                    className="join-accept"
+                    aria-label={`Accept ${req.requesterUsername}`}
+                    onClick={() => void resolveJoinRequest(req.communityId, req.requesterId, "accepted")}
+                  >
+                    <CheckCheck size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className="join-reject"
+                    aria-label={`Reject ${req.requesterUsername}`}
+                    onClick={() => void resolveJoinRequest(req.communityId, req.requesterId, "rejected")}
+                  >
+                    <XCircle size={15} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          {joinRequests.length > 5 && (
+            <button className="text-button" onClick={onExplore}>
+              View all {joinRequests.length} requests <ArrowRight size={16} />
+            </button>
+          )}
+        </div>
+      )}
       <div className="rail-card communities-rail">
         <div className="section-heading"><div><span className="eyebrow lime">TRENDING NOW</span><h2>Communities</h2></div></div>
         {communities.slice(0, 4).map((community, index) => <div className="community-line" key={community.id}><i>{index + 1}</i><Avatar text={community.emoji} image={community.iconUrl} color={community.color} /><span><b>{community.name}</b><small>{community.members} members</small></span><TrendingUp size={17} /></div>)}
@@ -725,7 +816,7 @@ function CommunityCard({ item, index, communities, onOpen, onMembership }: { ite
     <div className="community-art">{item.bannerUrl ? <Image src={item.bannerUrl} alt={`${item.name} banner`} fill sizes="370px" unoptimized /> : <><span>{item.emoji}</span><i>{index % 2 ? "✦ ✦" : "〰 〰"}</i></>}</div><Avatar text={item.emoji} image={item.iconUrl} color={item.color} size={54} />
     <div className="community-card-badges"><span>{communityTypeLabel(item.type)}</span><span className={item.parentId ? "child" : "parent"}>{item.parentId ? `Sub-community of ${parent?.name || "parent"}` : "Top-level community"}</span></div>
     <h2>{item.name}</h2><p>{item.description}</p>
-    <div><span><Users size={16} /> {item.members}</span>{item.membershipSource === "PARENT" ? <button type="button" className="joined inherited-admin" disabled><ShieldCheck size={15} /> Inherited admin</button> : !item.joined && item.privacy === "private" ? <button type="button" className="invite-only" disabled><LockKeyhole size={14} /> Invite only</button> : <button className={item.joined ? "joined" : ""} onClick={() => void onMembership(item)}>{item.joined ? <><Check size={16} /> Joined</> : "Join"}</button>}</div>
+    <div><span><Users size={16} /> {item.members}</span>{item.membershipSource === "PARENT" ? <button type="button" className="joined inherited-admin" disabled><ShieldCheck size={15} /> Inherited admin</button> : !item.joined && item.privacy === "private" ? <button type="button" className="invite-only" disabled><LockKeyhole size={14} /> Invite only</button> : item.joined ? <button className="joined" onClick={() => void onMembership(item)}><Check size={16} /> Joined</button> : item.joinRequestStatus === "pending" ? <button type="button" className="requested" onClick={() => void onMembership(item)}><Clock3 size={15} /> Requested <X size={13} /></button> : <button onClick={() => void onMembership(item)}>{item.privacy === "restricted" ? "Request to join" : "Join"}</button>}</div>
   </article>;
 }
 
@@ -756,6 +847,8 @@ function CommunityDetail({ user, community, communities, posts, setPosts, vote, 
   const [brandingOpen, setBrandingOpen] = useState(false);
   const [moderationOpen, setModerationOpen] = useState(false);
   const [creatingChild, setCreatingChild] = useState(false);
+  const [pendingRequests, setPendingRequests] = useState<CommunityJoinRequest[]>([]);
+  const [requestActionId, setRequestActionId] = useState<string | null>(null);
   const communityPosts = posts.filter(post => post.communityId === community.id);
   const parent = community.parentId ? communities.find((item) => item.id === community.parentId) : undefined;
   const children = communities.filter((item) => item.parentId === community.id);
@@ -766,6 +859,60 @@ function CommunityDetail({ user, community, communities, posts, setPosts, vote, 
   const canSeeMembers = community.privacy !== "private" || community.joined;
   const canApproveEvents = isGlobalModerator || community.role === "COMMUNITY_ADMIN" || (!community.instituteId && community.role === "COMMUNITY_MODERATOR") || community.instituteRole === "INSTITUTE_ADMIN" || community.instituteRole === "INSTITUTE_MODERATOR";
 
+  const isCommunityAdmin = community.role === "COMMUNITY_ADMIN";
+
+  useEffect(() => {
+    if (!isCommunityAdmin || activeTab !== "members") return;
+    let active = true;
+    (async () => {
+      try {
+        const data = await requestJson<{ requests: CommunityJoinRequest[] }>(
+          `/api/communities/${encodeURIComponent(community.id)}/join-requests`,
+          { cache: "no-store" },
+        );
+        if (active) setPendingRequests(data?.requests || []);
+      } catch {
+        if (active) setPendingRequests([]);
+      }
+    })();
+    const timer = window.setInterval(() => {
+      (async () => {
+        try {
+          const data = await requestJson<{ requests: CommunityJoinRequest[] }>(
+            `/api/communities/${encodeURIComponent(community.id)}/join-requests`,
+            { cache: "no-store" },
+          );
+          if (active) setPendingRequests(data?.requests || []);
+        } catch {
+          // silent
+        }
+      })();
+    }, 8_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [activeTab, community.id, isCommunityAdmin]);
+
+  async function decideRequest(requesterId: string, decision: "accepted" | "rejected") {
+    setRequestActionId(requesterId);
+    try {
+      await requestJson(
+        `/api/communities/${encodeURIComponent(community.id)}/join-requests/${encodeURIComponent(requesterId)}`,
+        { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision }) },
+      );
+      setPendingRequests((current) => current.filter((r) => r.requesterId !== requesterId));
+      notify(decision === "accepted" ? "Request accepted" : "Request rejected");
+      // Bump member count locally if accepted.
+      if (decision === "accepted") {
+        onUpdated({ ...community, members: String(Number(community.members.replace(/k$/, "")) * (community.members.endsWith("k") ? 1000 : 1) + 1) });
+      }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not update the request.");
+    } finally {
+      setRequestActionId(null);
+    }
+  }
+
+
+
   function save(id: number) {
     setPosts(current => current.map(post => post.id === id ? { ...post, saved: !post.saved } : post));
     notify("Saved to your collection");
@@ -775,12 +922,58 @@ function CommunityDetail({ user, community, communities, posts, setPosts, vote, 
     <button className="back-button" onClick={() => parent ? onOpenCommunity(parent.id) : goBack()}><ArrowRight size={17} /> {parent ? `Back to ${parent.name}` : "Back to communities"}</button>
     <section className="community-detail-hero" style={{ "--community-color": community.color } as React.CSSProperties}>
       <div className={`community-detail-pattern ${community.bannerUrl ? "has-image" : ""}`}>{community.bannerUrl ? <Image src={community.bannerUrl} alt={`${community.name} banner`} fill sizes="1120px" unoptimized /> : <>〰 &nbsp; ✦ &nbsp; 〰 &nbsp; ✦</>}</div>
-      <div className="community-detail-identity"><Avatar text={community.emoji} image={community.iconUrl} color={community.color} size={84} /><div>{parent && <div className="community-breadcrumb"><button type="button" onClick={() => onOpenCommunity(parent.id)}>{parent.name}</button><span>›</span><b>{community.name}</b></div>}<div className="community-header-badges"><span>{communityTypeLabel(community.type)}</span><span>{community.parentId ? "Sub-community" : "Top-level community"}</span><span>{community.privacy || "public"}</span></div><h1>{community.name}</h1><p>{community.description}</p></div><div className="community-detail-actions">{community.role === "COMMUNITY_ADMIN" && <button className="branding-button" onClick={() => setBrandingOpen(true)}><Settings size={17} /> Branding</button>}{canCreateChildren && <button className="branding-button" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}{canInvite && <button className="branding-button" onClick={() => setInviteOpen(true)}><UserPlus size={17} /> Invite</button>}{canModerate && <button className="branding-button" onClick={() => setModerationOpen((current) => !current)}><ShieldCheck size={17} /> {moderationOpen ? "Close moderation" : "Moderation"}</button>}{community.membershipSource === "PARENT" ? <button type="button" className="joined inherited-admin" disabled><ShieldCheck size={16} /> Inherited admin</button> : !community.joined && community.privacy === "private" ? <button type="button" className="invite-only" disabled><LockKeyhole size={16} /> Invite only</button> : <button className={community.joined ? "joined" : ""} onClick={toggleMembership}>{community.joined ? <><Check size={17} /> Joined</> : <><Plus size={17} /> Join community</>}</button>}<button onClick={openComposer}><Plus size={17} /> Create post</button></div></div>
+      <div className="community-detail-identity"><Avatar text={community.emoji} image={community.iconUrl} color={community.color} size={84} /><div>{parent && <div className="community-breadcrumb"><button type="button" onClick={() => onOpenCommunity(parent.id)}>{parent.name}</button><span>›</span><b>{community.name}</b></div>}<div className="community-header-badges"><span>{communityTypeLabel(community.type)}</span><span>{community.parentId ? "Sub-community" : "Top-level community"}</span><span>{community.privacy || "public"}</span></div><h1>{community.name}</h1><p>{community.description}</p></div><div className="community-detail-actions">{community.role === "COMMUNITY_ADMIN" && <button className="branding-button" onClick={() => setBrandingOpen(true)}><Settings size={17} /> Branding</button>}{canCreateChildren && <button className="branding-button" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}{canInvite && <button className="branding-button" onClick={() => setInviteOpen(true)}><UserPlus size={17} /> Invite</button>}{canModerate && <button className="branding-button" onClick={() => setModerationOpen((current) => !current)}><ShieldCheck size={17} /> {moderationOpen ? "Close moderation" : "Moderation"}</button>}{community.membershipSource === "PARENT" ? <button type="button" className="joined inherited-admin" disabled><ShieldCheck size={16} /> Inherited admin</button> : !community.joined && community.privacy === "private" ? <button type="button" className="invite-only" disabled><LockKeyhole size={16} /> Invite only</button> : community.joined ? <button className="joined" onClick={toggleMembership}><Check size={17} /> Joined</button> : community.joinRequestStatus === "pending" ? <button type="button" className="requested" onClick={toggleMembership}><Clock3 size={15} /> Requested <X size={13} /></button> : <button onClick={toggleMembership}>{community.privacy === "restricted" ? <><Clock3 size={17} /> Request to join</> : <><Plus size={17} /> Join community</>}</button>}<button onClick={openComposer}><Plus size={17} /> Create post</button></div></div>
     </section>
     {moderationOpen && <CommunityModerationPanel community={community} posts={communityPosts} canApproveEvents={canApproveEvents} onPostDeleted={(id) => setPosts((current) => current.filter((post) => post.id !== id))} onCommentDeleted={(postId, commentId) => setPosts((current) => current.map((post) => post.id === postId ? { ...post, commentItems: (post.commentItems || []).filter((comment) => comment.id !== commentId), comments: Math.max(0, post.comments - 1) } : post))} notify={notify} />}
     <div className="community-stats"><span><b>{community.members}</b><small>Members</small></span><span><b>{communityPosts.length}</b><small>Posts</small></span><span><b>{communityPosts.reduce((total, post) => total + post.votes, 0).toLocaleString()}</b><small>Community karma</small></span></div>
     <nav className="community-detail-tabs" role="tablist" aria-label={`${community.name} sections`}><button role="tab" aria-selected={activeTab === "feed"} className={activeTab === "feed" ? "active" : ""} onClick={() => setActiveTab("feed")}>Feed</button>{!community.parentId && <button role="tab" aria-selected={activeTab === "children"} className={activeTab === "children" ? "active" : ""} onClick={() => setActiveTab("children")}>Sub-Communities <b>{children.length}</b></button>}{canSeeMembers && <button role="tab" aria-selected={activeTab === "members"} className={activeTab === "members" ? "active" : ""} onClick={() => setActiveTab("members")}>Members <b>{community.members}</b></button>}</nav>
-    {activeTab === "members" && canSeeMembers ? <CommunityMembersList community={community} canInvite={canInvite} onInvite={() => setInviteOpen(true)} /> : activeTab !== "children" || community.parentId ? <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div> : <section className="subcommunity-section"><header><div><span className="eyebrow violet">SUB-COMMUNITIES</span><h2>Spaces inside {community.name}</h2><p>Focused communities managed under this parent.</p></div>{canCreateChildren && <button className="primary-action" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</header>{children.length ? <div className="community-grid">{children.map((child, index) => <CommunityCard key={child.id} item={child} index={index} communities={communities} onOpen={onOpenCommunity} onMembership={onMembership} />)}</div> : <div className="community-empty"><span>🪆</span><h3>No sub-communities yet.</h3><p>Create a focused space inside {community.name}.</p>{canCreateChildren && <button onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</div>}</section>}
+    {activeTab === "members" && canSeeMembers ? (
+      <>
+        {isCommunityAdmin && pendingRequests.length > 0 && (
+          <section className="community-pending-requests">
+            <header>
+              <div>
+                <span className="eyebrow violet">WAITING ON YOU</span>
+                <h2>Join requests <b>{pendingRequests.length}</b></h2>
+                <p>People who asked to join {community.name}. Accept or reject each one.</p>
+              </div>
+            </header>
+            <div className="community-pending-list">
+              {pendingRequests.map((req) => (
+                <article key={req.requesterId} className="community-pending-row">
+                  <Avatar text={req.requesterUsername} image={req.requesterAvatarUrl} color={req.communityColor || "#6C3BFF"} size={40} />
+                  <div className="community-pending-info">
+                    <b>{req.requesterUsername}</b>
+                    <small>Requested {relativeTime(req.requestedAt)} ago</small>
+                  </div>
+                  <div className="community-pending-actions">
+                    <button
+                      type="button"
+                      className="pending-accept"
+                      disabled={requestActionId === req.requesterId}
+                      onClick={() => void decideRequest(req.requesterId, "accepted")}
+                    >
+                      {requestActionId === req.requesterId ? <LoaderCircle size={14} className="spin" /> : <CheckCheck size={15} />}
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      className="pending-reject"
+                      disabled={requestActionId === req.requesterId}
+                      onClick={() => void decideRequest(req.requesterId, "rejected")}
+                    >
+                      <XCircle size={15} />
+                      Reject
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+        <CommunityMembersList community={community} canInvite={canInvite} onInvite={() => setInviteOpen(true)} />
+      </>
+    ) : activeTab !== "children" || community.parentId ? <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div> : <section className="subcommunity-section"><header><div><span className="eyebrow violet">SUB-COMMUNITIES</span><h2>Spaces inside {community.name}</h2><p>Focused communities managed under this parent.</p></div>{canCreateChildren && <button className="primary-action" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</header>{children.length ? <div className="community-grid">{children.map((child, index) => <CommunityCard key={child.id} item={child} index={index} communities={communities} onOpen={onOpenCommunity} onMembership={onMembership} />)}</div> : <div className="community-empty"><span>🪆</span><h3>No sub-communities yet.</h3><p>Create a focused space inside {community.name}.</p>{canCreateChildren && <button onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</div>}</section>}
     {brandingOpen && <CommunityBrandingModal community={community} close={() => setBrandingOpen(false)} onUpdated={onUpdated} notify={notify} />}
     {inviteOpen && <InviteMembersModal community={community} close={() => setInviteOpen(false)} notify={notify} />}
     {creatingChild && <CreateCommunityModal parent={community} existingNames={communities.map((item) => item.name)} close={() => setCreatingChild(false)} onCreate={(created) => { onCommunityCreated(created); setCreatingChild(false); setActiveTab("children"); notify(`${created.name} is now part of ${community.name}`); }} />}
@@ -1388,7 +1581,7 @@ function ChatRequestModal({ target, close, sent }: { target: UserSearchResult; c
 
 function Notifications({ close, items, loading, onRead, onReadAll }: { close: () => void; items: UserNotification[]; loading: boolean; onRead: (notification: UserNotification) => Promise<void>; onReadAll: () => Promise<void> }) {
   const unreadCount = items.filter((item) => !item.isRead).length;
-  const marker: Record<UserNotification["type"], string> = { EVENT: "EV", COMMUNITY: "CO", POST: "PO", MESSAGE: "MS", FOLLOW_REQUEST: "FR" };
+  const marker: Record<UserNotification["type"], string> = { EVENT: "EV", COMMUNITY: "CO", POST: "PO", MESSAGE: "MS", FOLLOW_REQUEST: "FR", COMMUNITY_JOIN_REQUEST: "JR" };
   return <><button className="drawer-scrim" onClick={close} aria-label="Close notifications" /><aside className="notification-drawer" aria-label="Notifications"><header><div><span className="eyebrow pink">WHAT&apos;S NEW</span><h2>Notifications</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><div className="notification-actions"><button disabled={!unreadCount} onClick={() => void onReadAll()}><Check size={15} /> Mark all read</button><span>{unreadCount} unread</span></div>{loading && !items.length ? <div className="notification-state"><LoaderCircle className="spin" size={22} /> Loading notifications…</div> : items.length ? items.map((item, index) => <button className={item.isRead ? "read" : ""} key={item.id} onClick={() => void onRead(item)}><Avatar text={marker[item.type]} color={index % 2 ? "#22D3EE" : "#6C3BFF"} /><span><b>{item.content}</b><small>{item.type.replace("_", " ").toLowerCase()}</small><em>{relativeTime(item.createdAt)}</em></span>{!item.isRead && <i />}</button>) : <div className="notification-state"><Bell size={26} /><b>You&apos;re all caught up</b><small>New community activity will appear here.</small></div>}</aside></>;
 }
 

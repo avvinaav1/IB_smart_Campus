@@ -2,11 +2,12 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { communities as initialCommunities } from "@/lib/data";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import { communityHierarchyDeletionOrder, effectiveCommunityMemberCount, effectiveCommunityMemberRecords, isCommunityType, normalizeCommunityType, parentCommunityAdminMemberships, resolveCommunityHierarchyAccess, validateCommunityParent } from "@/lib/community-hierarchy";
-import type { Community, CommunityRole, CommunityType, InstituteRole } from "@/lib/types";
+import type { Community, CommunityJoinRequest, CommunityRole, CommunityType, InstituteRole } from "@/lib/types";
 import { normalizeCommunityRole } from "@/lib/moderation-policy";
 import { getInstitute, getInstituteMembership } from "@/lib/institute-store";
 import type { CommunityStatus } from "@/lib/types";
 import { instituteCommunityIdentity } from "@/lib/institute-community-naming";
+import { getDirectoryUsers } from "@/lib/auth-store";
 
 export type { CommunityRole } from "@/lib/types";
 export type CommunityPrivacy = "public" | "restricted" | "private";
@@ -32,16 +33,22 @@ type StoredCommunity = {
   updatedAt: number;
 };
 
+type MembershipStatus = "PENDING" | "APPROVED" | "REJECTED";
+
 type CommunityMember = {
   id: string;
   communityId: string;
   userId: string;
   role: CommunityRole;
+  status: MembershipStatus;
+  requestedAt: number;
+  resolvedAt: number | null;
+  resolvedBy: string | null;
   createdAt: number;
 };
 
 type CommunityDatabase = {
-  version: 4;
+  version: 5;
   communities: Record<string, StoredCommunity>;
   members: Record<string, CommunityMember>;
   memberIndex: Record<string, string>;
@@ -104,7 +111,7 @@ function seededDatabase(): CommunityDatabase {
     updatedAt: community.updatedAt,
   }]));
   return {
-    version: 4,
+    version: 5,
     communities,
     members: {},
     memberIndex: {},
@@ -125,12 +132,31 @@ function hydrate(parsed: Partial<CommunityDatabase> | null): CommunityDatabase {
     status: community.status === "PENDING" || community.status === "REJECTED" ? community.status : "APPROVED",
   }])) as Record<string, StoredCommunity>;
   const database: CommunityDatabase = {
-    version: 4,
+    version: 5,
     communities,
-    members: parsed.members || {},
-    memberIndex: parsed.memberIndex || {},
+    members: {},
+    memberIndex: {},
     nameIndex: parsed.nameIndex || {},
   };
+
+  for (const [memberId, raw] of Object.entries(parsed.members || {})) {
+    if (!raw) continue;
+    const m = raw as Partial<CommunityMember> & { communityId: string; userId: string; role: CommunityRole; createdAt: number };
+    const status: MembershipStatus = m.status === "PENDING" || m.status === "REJECTED" ? m.status : "APPROVED";
+    const record: CommunityMember = {
+      id: m.id || memberId,
+      communityId: m.communityId,
+      userId: m.userId,
+      role: normalizeCommunityRole(m.role),
+      status,
+      requestedAt: typeof m.requestedAt === "number" ? m.requestedAt : m.createdAt,
+      resolvedAt: typeof m.resolvedAt === "number" ? m.resolvedAt : null,
+      resolvedBy: typeof m.resolvedBy === "string" ? m.resolvedBy : null,
+      createdAt: m.createdAt,
+    };
+    database.members[record.id] = record;
+    database.memberIndex[membershipKey(record.communityId, record.userId)] = record.id;
+  }
   for (const community of Object.values(database.communities)) {
     if (community.instituteId) {
       const previousName = community.name;
@@ -143,18 +169,31 @@ function hydrate(parsed: Partial<CommunityDatabase> | null): CommunityDatabase {
     const parent = database.communities[community.parentId];
     if (!parent || parent.id === community.id || parent.parentId) community.parentId = null;
   }
-  for (const member of Object.values(database.members)) {
-    member.role = normalizeCommunityRole(member.role);
-    database.memberIndex[membershipKey(member.communityId, member.userId)] = member.id;
-  }
+  // for (const member of Object.values(database.members)) {
+  //   member.role = normalizeCommunityRole(member.role);
+  //   database.memberIndex[membershipKey(member.communityId, member.userId)] = member.id;
+  // }
   for (const community of Object.values(database.communities)) database.nameIndex[community.name.toLowerCase()] = community.id;
   for (const community of Object.values(database.communities)) {
     if (community.creatorId === "system") continue;
     const key = membershipKey(community.id, community.creatorId);
     const existingId = database.memberIndex[key];
-    if (existingId && database.members[existingId]) database.members[existingId].role = "COMMUNITY_ADMIN";
-    else {
-      const member: CommunityMember = { id: randomUUID(), communityId: community.id, userId: community.creatorId, role: "COMMUNITY_ADMIN", createdAt: community.createdAt };
+    if (existingId && database.members[existingId]) {
+      database.members[existingId].role = "COMMUNITY_ADMIN";
+      database.members[existingId].status = "APPROVED";
+    } else {
+      const now = community.createdAt;
+      const member: CommunityMember = {
+        id: randomUUID(),
+        communityId: community.id,
+        userId: community.creatorId,
+        role: "COMMUNITY_ADMIN",
+        status: "APPROVED",
+        requestedAt: now,
+        resolvedAt: now,
+        resolvedBy: community.creatorId,
+        createdAt: now,
+      };
       database.members[member.id] = member;
       database.memberIndex[key] = member.id;
       community.memberCount = Math.max(1, community.memberCount);
@@ -190,10 +229,20 @@ function publicCommunity(database: CommunityDatabase, community: StoredCommunity
   // The invite token is a join credential for private communities; only the invite route hands it out.
   const visible = { ...community };
   delete visible.inviteToken;
+
+  let joinRequestStatus: "none" | "pending" | "rejected" = "none";
+  if (!access.joined) {
+    const memberId = database.memberIndex[membershipKey(community.id, viewerId)];
+    const membership = memberId ? database.members[memberId] : undefined;
+    if (membership?.status === "PENDING") joinRequestStatus = "pending";
+    else if (membership?.status === "REJECTED") joinRequestStatus = "rejected";
+  }
+
   return {
     ...visible,
     members: formatMemberCount(effectiveCommunityMemberCount(database, community)),
     joined: access.joined,
+    joinRequestStatus,
     role: access.role,
     membershipSource: access.membershipSource,
   };
@@ -248,7 +297,7 @@ export async function createCommunity(creatorId: string, input: NewCommunityInpu
     const now = Date.now();
     const id = randomUUID();
     const community: StoredCommunity = { id, name, slug: identity?.slug || name, instituteId, status: instituteId ? "PENDING" : "APPROVED", type: input.type, parentId: input.parentId, description: input.description.trim(), creatorId, color: input.color.toUpperCase(), emoji: input.emoji.trim(), iconUrl: "", bannerUrl: "", privacy: input.privacy, inviteToken: newInviteToken(), memberCount: 1, createdAt: now, updatedAt: now };
-    const membership: CommunityMember = { id: randomUUID(), communityId: id, userId: creatorId, role: "COMMUNITY_ADMIN", createdAt: now };
+    const membership: CommunityMember = { id: randomUUID(), communityId: id, userId: creatorId, role: "COMMUNITY_ADMIN", status: "APPROVED", requestedAt: now, resolvedAt: now, resolvedBy: creatorId, createdAt: now };
     database.communities[id] = community;
     database.nameIndex[name.toLowerCase()] = id;
     database.members[membership.id] = membership;
@@ -320,27 +369,168 @@ export async function setCommunityMembership(communityId: string, userId: string
     if (!joined && access.role === "COMMUNITY_ADMIN") {
       return { error: access.membershipSource === "PARENT" ? "Parent community admins cannot leave inherited sub-community membership." : "Community admins cannot leave their own community.", status: 400 } as const;
     }
+
     const key = membershipKey(communityId, userId);
     const existingId = database.memberIndex[key];
     const existing = existingId ? database.members[existingId] : undefined;
+    const now = Date.now();
     let changed = false;
-    if (joined && !access.joined) {
-      const membership: CommunityMember = { id: randomUUID(), communityId, userId, role: "MEMBER", createdAt: Date.now() };
-      database.members[membership.id] = membership;
-      database.memberIndex[key] = membership.id;
-      community.memberCount += 1;
-      community.updatedAt = Date.now();
-      changed = true;
-    } else if (!joined && existing) {
+    let newlyPending = false;
+    const requiresApproval = community.privacy === "restricted";
+
+    if (joined) {
+      if (access.joined) return { community: publicCommunity(database, community, userId), changed: false, newlyPending: false } as const;
+      if (existing && existing.status === "PENDING") return { community: publicCommunity(database, community, userId), changed: false, newlyPending: false } as const;
+
+      if (requiresApproval) {
+        if (existing) {
+          existing.status = "PENDING";
+          existing.requestedAt = now;
+          existing.resolvedAt = null;
+          existing.resolvedBy = null;
+        } else {
+          const membership: CommunityMember = {
+            id: randomUUID(), communityId, userId,
+            role: "MEMBER", status: "PENDING",
+            requestedAt: now, resolvedAt: null, resolvedBy: null, createdAt: now,
+          };
+          database.members[membership.id] = membership;
+          database.memberIndex[key] = membership.id;
+        }
+        newlyPending = true;
+      } else {
+        if (existing) {
+          existing.status = "APPROVED";
+          existing.role = "MEMBER";
+          existing.resolvedAt = now;
+          existing.resolvedBy = community.creatorId;
+        } else {
+          const membership: CommunityMember = {
+            id: randomUUID(), communityId, userId,
+            role: "MEMBER", status: "APPROVED",
+            requestedAt: now, resolvedAt: now, resolvedBy: community.creatorId, createdAt: now,
+          };
+          database.members[membership.id] = membership;
+          database.memberIndex[key] = membership.id;
+        }
+        community.memberCount += 1;
+        changed = true;
+      }
+      community.updatedAt = now;
+    } else {
+      if (!existing) return { community: publicCommunity(database, community, userId), changed: false, newlyPending: false } as const;
+      const wasApproved = existing.status === "APPROVED";
       delete database.members[existing.id];
       delete database.memberIndex[key];
-      community.memberCount = Math.max(0, community.memberCount - 1);
-      community.updatedAt = Date.now();
+      if (wasApproved) community.memberCount = Math.max(0, community.memberCount - 1);
+      community.updatedAt = now;
       changed = true;
     }
-    return { community: publicCommunity(database, community, userId), changed } as const;
+
+    return { community: publicCommunity(database, community, userId), changed, newlyPending } as const;
   });
 }
+
+
+// ---------- Join requests ----------
+
+export async function listJoinRequestsForCommunity(communityId: string, viewerId: string): Promise<CommunityJoinRequest[]> {
+  await writeQueue;
+  const database = await loadDatabase({ fresh: true });
+  const community = database.communities[communityId];
+  if (!community) return [];
+  const role = resolveCommunityHierarchyAccess(database, community, viewerId).role;
+  if (role !== "COMMUNITY_ADMIN") return [];
+
+  const pending = Object.values(database.members).filter((m) => m.communityId === communityId && m.status === "PENDING");
+  if (!pending.length) return [];
+
+  const users = await getDirectoryUsers(pending.map((m) => m.userId));
+  return pending
+    .map((m) => {
+      const user = users.get(m.userId);
+      return {
+        communityId,
+        communityName: community.name,
+        communityEmoji: community.emoji,
+        communityColor: community.color,
+        requesterId: m.userId,
+        requesterUsername: user?.username || "Unknown",
+        requesterAvatarUrl: user?.avatarUrl || "",
+        requestedAt: m.requestedAt,
+      };
+    })
+    .sort((a, b) => b.requestedAt - a.requestedAt);
+}
+
+export async function listJoinRequestsForOwner(ownerId: string): Promise<CommunityJoinRequest[]> {
+  await writeQueue;
+  const database = await loadDatabase({ fresh: true });
+  const ownedIds = new Set(Object.values(database.communities).filter((c) => c.creatorId === ownerId).map((c) => c.id));
+  if (!ownedIds.size) return [];
+
+  const pending = Object.values(database.members).filter((m) => ownedIds.has(m.communityId) && m.status === "PENDING");
+  if (!pending.length) return [];
+
+  const users = await getDirectoryUsers(pending.map((m) => m.userId));
+  return pending
+    .map((m) => {
+      const community = database.communities[m.communityId];
+      const user = users.get(m.userId);
+      return {
+        communityId: m.communityId,
+        communityName: community.name,
+        communityEmoji: community.emoji,
+        communityColor: community.color,
+        requesterId: m.userId,
+        requesterUsername: user?.username || "Unknown",
+        requesterAvatarUrl: user?.avatarUrl || "",
+        requestedAt: m.requestedAt,
+      };
+    })
+    .sort((a, b) => b.requestedAt - a.requestedAt);
+}
+
+export async function resolveJoinRequest(communityId: string, ownerId: string, requesterId: string, decision: "accepted" | "rejected") {
+  try {
+    return await mutate((database) => {
+      const community = database.communities[communityId];
+      if (!community) return { error: "Community not found.", status: 404 } as const;
+      if (community.creatorId !== ownerId) return { error: "You are not the owner of this community.", status: 403 } as const;
+
+      const key = membershipKey(communityId, requesterId);
+      const memberId = database.memberIndex[key];
+      const member = memberId ? database.members[memberId] : undefined;
+      if (!member) return { error: "No request from this user.", status: 404 } as const;
+
+      // Treat legacy rows (no status) as APPROVED, but only if they were never pending.
+      const currentStatus = member.status ?? "APPROVED";
+      if (currentStatus !== "PENDING") {
+        return { error: "No pending request for this user.", status: 404 } as const;
+      }
+
+      const now = Date.now();
+      if (decision === "accepted") {
+        member.status = "APPROVED";
+        member.role = "MEMBER";
+        member.resolvedAt = now;
+        member.resolvedBy = ownerId;
+        community.memberCount += 1;
+        community.updatedAt = now;
+      } else {
+        member.status = "REJECTED";
+        member.resolvedAt = now;
+        member.resolvedBy = ownerId;
+        community.updatedAt = now;
+      }
+      return { community: publicCommunity(database, community, ownerId), requesterId, decision } as const;
+    });
+  } catch (error) {
+    console.error("resolveJoinRequest failed", { communityId, ownerId, requesterId, decision, error });
+    return { error: "Could not update the request. Try again.", status: 500 } as const;
+  }
+}
+
 
 function canManage(database: CommunityDatabase, community: StoredCommunity, userId: string) {
   return resolveCommunityHierarchyAccess(database, community, userId).role === "COMMUNITY_ADMIN";
@@ -432,7 +622,7 @@ export async function ensureCommunityForLegacyPost(name: string, color: string, 
     database.communities[id] = community;
     database.nameIndex[community.name.toLowerCase()] = id;
     if (creatorId !== "system") {
-      const membership: CommunityMember = { id: randomUUID(), communityId: id, userId: creatorId, role: "COMMUNITY_ADMIN", createdAt: now };
+      const membership: CommunityMember = { id: randomUUID(), communityId: id, userId: creatorId, role: "COMMUNITY_ADMIN", status: "APPROVED", requestedAt: now, resolvedAt: now, resolvedBy: creatorId, createdAt: now };
       database.members[membership.id] = membership;
       database.memberIndex[membershipKey(id, creatorId)] = membership.id;
     }
@@ -540,7 +730,7 @@ export async function removeUserCommunityMemberships(userId: string) {
       delete database.members[member.id];
       delete database.memberIndex[membershipKey(member.communityId, userId)];
       const community = database.communities[member.communityId];
-      if (community) community.memberCount = Math.max(0, community.memberCount - 1);
+      if (community && member.status === "APPROVED") community.memberCount = Math.max(0, community.memberCount - 1);
     }
     return { removed: true } as const;
   });
@@ -569,6 +759,6 @@ export async function getCommunityStats(since: number) {
     total: communities.length,
     pending: communities.filter((community) => community.status === "PENDING").length,
     newSince: communities.filter((community) => community.createdAt >= since).length,
-    memberships: Object.keys(database.members).length,
+    memberships: Object.values(database.members).filter((m) => m.status === "APPROVED").length,
   };
 }

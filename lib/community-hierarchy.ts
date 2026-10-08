@@ -12,8 +12,19 @@ export type HierarchyMember = {
   communityId: string;
   userId: string;
   role: "MEMBER" | "COMMUNITY_MODERATOR" | "COMMUNITY_ADMIN";
+  status?: "PENDING" | "APPROVED" | "REJECTED";
   createdAt: number;
 };
+
+function isApprovedMember(member: HierarchyMember | undefined): member is HierarchyMember {
+  if (!member) return false;
+  return member.status === undefined || member.status === "APPROVED";
+}
+
+function approvedMembership(database: HierarchyDatabase, communityId: string, userId: string) {
+  const row = directCommunityMembership(database, communityId, userId);
+  return isApprovedMember(row) ? row : undefined;
+}
 
 export type HierarchyDatabase = {
   communities: Record<string, HierarchyCommunity>;
@@ -39,14 +50,15 @@ export function directCommunityMembership(database: HierarchyDatabase, community
 }
 
 export function isDirectCommunityAdmin(database: HierarchyDatabase, community: HierarchyCommunity, userId: string) {
-  return community.creatorId === userId || directCommunityMembership(database, community.id, userId)?.role === "COMMUNITY_ADMIN";
+  if (community.creatorId === userId) return true;
+  return approvedMembership(database, community.id, userId)?.role === "COMMUNITY_ADMIN";
 }
 
 export function parentCommunityAdminMemberships(database: HierarchyDatabase, community: HierarchyCommunity) {
   if (!community.parentId) return [] as HierarchyMember[];
   const parent = database.communities[community.parentId];
   if (!parent) return [] as HierarchyMember[];
-  const admins = Object.values(database.members).filter((member) => member.communityId === parent.id && member.role === "COMMUNITY_ADMIN");
+  const admins = Object.values(database.members).filter((member) => member.communityId === parent.id && member.role === "COMMUNITY_ADMIN" && isApprovedMember(member));
   if (parent.creatorId !== "system" && !admins.some((member) => member.userId === parent.creatorId)) {
     admins.push({ id: `creator:${parent.id}`, communityId: parent.id, userId: parent.creatorId, role: "COMMUNITY_ADMIN", createdAt: parent.createdAt });
   }
@@ -54,8 +66,13 @@ export function parentCommunityAdminMemberships(database: HierarchyDatabase, com
 }
 
 export function resolveCommunityHierarchyAccess(database: HierarchyDatabase, community: HierarchyCommunity, userId: string) {
-  const direct = directCommunityMembership(database, community.id, userId);
-  if (isDirectCommunityAdmin(database, community, userId)) return { joined: true, role: "COMMUNITY_ADMIN" as const, membershipSource: "DIRECT" as const };
+  if (community.creatorId === userId) {
+    return { joined: true, role: "COMMUNITY_ADMIN" as const, membershipSource: "DIRECT" as const };
+  }
+  const direct = approvedMembership(database, community.id, userId);
+  if (direct?.role === "COMMUNITY_ADMIN") {
+    return { joined: true, role: "COMMUNITY_ADMIN" as const, membershipSource: "DIRECT" as const };
+  }
   if (parentCommunityAdminMemberships(database, community).some((member) => member.userId === userId)) {
     return { joined: true, role: "COMMUNITY_ADMIN" as const, membershipSource: "PARENT" as const };
   }
@@ -66,7 +83,7 @@ export function resolveCommunityHierarchyAccess(database: HierarchyDatabase, com
 
 export function effectiveCommunityMemberCount(database: HierarchyDatabase, community: HierarchyCommunity) {
   const inheritedOnly = parentCommunityAdminMemberships(database, community)
-    .filter((member) => !directCommunityMembership(database, community.id, member.userId));
+    .filter((member) => !approvedMembership(database, community.id, member.userId));
   return community.memberCount + new Set(inheritedOnly.map((member) => member.userId)).size;
 }
 
@@ -81,7 +98,7 @@ export function effectiveCommunityMemberRecords(database: HierarchyDatabase, com
   const parent = community.parentId ? database.communities[community.parentId] : undefined;
   const inherited = new Map(parentCommunityAdminMemberships(database, community).map((member) => [member.userId, member]));
   const records: EffectiveCommunityMember[] = Object.values(database.members)
-    .filter((member) => member.communityId === community.id)
+    .filter((member) => member.communityId === community.id && isApprovedMember(member))
     .map((member) => {
       const inheritsAdmin = inherited.has(member.userId) && member.role !== "COMMUNITY_ADMIN" && community.creatorId !== member.userId;
       inherited.delete(member.userId);

@@ -13,7 +13,7 @@ async function update(request: NextRequest, context: { params: Promise<{ id: str
   const body = joined ? await readJson(request) : null;
   const inviteToken = typeof body?.inviteToken === "string" ? body.inviteToken.trim().slice(0, 64) : "";
   const result = await setCommunityMembership(id, userId, joined, inviteToken);
-  if (!("error" in result) && joined && result.changed) {
+  if (!("error" in result) && joined && result.changed && !result.newlyPending) {
     try { await incrementUserStreak(userId, "COMMUNITY_JOIN", id); }
     catch (error) { console.error("Community-join streak update failed", error); }
   }
