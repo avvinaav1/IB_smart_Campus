@@ -715,3 +715,115 @@ button.invite-only { opacity: .75; cursor: not-allowed; display: inline-flex; al
   .invite-tabs button { padding: 0 8px; }
   .invite-link-row { flex-direction: column; }
 }
+
+
+
+/* Join-requests rail (Home) */
+.join-requests-rail .section-heading h2 { margin-top: 6px; }
+.join-requests-count {
+  min-width: 26px; height: 26px; padding: 0 8px;
+  border-radius: 999px;
+  background: var(--violet);
+  color: #fff;
+  display: inline-grid; place-items: center;
+  font: 900 11px monospace;
+}
+.join-requests-list { margin-top: 12px; display: grid; gap: 8px; }
+.join-request-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+}
+.join-request-info { min-width: 0; display: grid; gap: 2px; }
+.join-request-info b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.join-request-info small { color: var(--muted); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.join-request-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.join-request-actions button {
+  width: 30px; height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  display: inline-grid; place-items: center;
+  cursor: pointer;
+}
+.join-request-actions .join-accept { color: #047857; border-color: color-mix(in srgb, #047857 35%, var(--line)); }
+.join-request-actions .join-reject { color: #b42318; border-color: color-mix(in srgb, #b42318 35%, var(--line)); }
+html[data-theme="dark"] .join-request-actions .join-accept { color: #86efac; border-color: rgba(134,239,172,0.35); }
+html[data-theme="dark"] .join-request-actions .join-reject { color: #fda4af; border-color: rgba(253,164,175,0.35); }
+
+/* Community card — "Requested" button */
+.community-grid article > div:last-child button.requested {
+  background: var(--soft);
+  color: var(--violet);
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--violet);
+  opacity: 0.85;
+}
+.community-grid article > div:last-child button.requested:hover { opacity: 1; }
+.community-detail-actions button.requested { color: var(--violet); border-color: var(--violet); background: var(--soft); display: inline-flex; align-items: center; gap: 6px; }
+
+.community-pending-requests {
+  margin: 0 0 20px;
+  padding: 18px;
+  border: 2px solid var(--violet);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--violet) 6%, var(--panel));
+}
+.community-pending-requests > header h2 {
+  margin: 8px 0 4px;
+  display: flex; align-items: center; gap: 8px;
+  font: 550 24px/1 var(--font-serif);
+}
+.community-pending-requests > header h2 b {
+  min-width: 26px; height: 26px; padding: 0 8px;
+  border-radius: 999px;
+  background: var(--violet);
+  color: #fff;
+  display: inline-grid; place-items: center;
+  font: 900 11px monospace;
+}
+.community-pending-requests > header p {
+  margin: 0; color: var(--muted); font-size: 10px;
+}
+.community-pending-list {
+  margin-top: 14px;
+  display: grid; gap: 8px;
+}
+.community-pending-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.community-pending-info { min-width: 0; display: grid; gap: 2px; }
+.community-pending-info b { font-size: 12px; }
+.community-pending-info small { color: var(--muted); font-size: 9px; }
+.community-pending-actions { display: flex; gap: 6px; }
+.community-pending-actions button {
+  min-height: 34px; padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10px; font-weight: 850;
+}
+.community-pending-actions .pending-accept {
+  color: #047857;
+  border-color: color-mix(in srgb, #047857 35%, var(--line));
+}
+.community-pending-actions .pending-reject {
+  color: #b42318;
+  border-color: color-mix(in srgb, #b42318 35%, var(--line));
+}
+html[data-theme="dark"] .community-pending-actions .pending-accept { color: #86efac; border-color: rgba(134,239,172,0.35); }
+html[data-theme="dark"] .community-pending-actions .pending-reject { color: #fda4af; border-color: rgba(253,164,175,0.35); }
+

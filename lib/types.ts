@@ -5,7 +5,7 @@ export type CommunityType = "COLLEGE" | "INDIVIDUAL" | "COMPANY";
 export type CommunityMembershipSource = "DIRECT" | "PARENT";
 export type EventStatus = "PENDING" | "APPROVED" | "REJECTED";
 export type CommunityStatus = "PENDING" | "APPROVED" | "REJECTED";
-export type NotificationType = "EVENT" | "COMMUNITY" | "POST" | "MESSAGE" | "FOLLOW_REQUEST";
+export type NotificationType = "EVENT" | "COMMUNITY" | "POST" | "MESSAGE" | "FOLLOW_REQUEST" | "COMMUNITY_JOIN_REQUEST";
 
 export type View = "home" | "explore" | "events" | "rewards" | "chat" | "profile" | "certificates" | "admin" | "institute";
 
@@ -62,6 +62,18 @@ export type FollowRequestView = {
   id: string;
   sender: Pick<UserSearchResult, "id" | "username" | "avatarUrl" | "isPrivate">;
   createdAt: number;
+};
+
+
+export type CommunityJoinRequest = {
+  communityId: string;
+  communityName: string;
+  communityEmoji: string;
+  communityColor: string;
+  requesterId: string;
+  requesterUsername: string;
+  requesterAvatarUrl: string;
+  requestedAt: number;
 };
 
 export type ChatRequestView = {
@@ -251,6 +263,7 @@ export type Community = {
   bannerUrl: string;
   description: string;
   joined: boolean;
+  joinRequestStatus: "none" | "pending" | "rejected";
   membershipSource: CommunityMembershipSource | null;
   privacy?: "public" | "restricted" | "private";
   role?: CommunityRole;
