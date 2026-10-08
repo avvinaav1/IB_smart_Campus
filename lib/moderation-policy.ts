@@ -15,7 +15,7 @@ export function normalizeCommunityRole(storedRole: unknown): CommunityRole {
   if (storedRole === "ADMIN") return "COMMUNITY_ADMIN";
   if (storedRole === "COMMUNITY_ADMIN" || storedRole === "COMMUNITY_MODERATOR") return storedRole;
   return "MEMBER";
-}6
+}
 
 export function normalizeEventStatus(storedStatus: unknown): EventStatus {
   return storedStatus === "PENDING" || storedStatus === "REJECTED" ? storedStatus : "APPROVED";
