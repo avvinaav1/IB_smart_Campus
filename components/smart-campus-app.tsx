@@ -8,6 +8,7 @@ import {
   Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Link2, LoaderCircle, LockKeyhole, MapPin,
   LogOut, Menu, MessageCircle, MessageSquare, Moon, Plus, Search, Send, Settings, Share2,
   Download, ExternalLink, ShieldCheck, Star, Sun, TicketCheck, TrendingUp, Trophy, UserCheck, UserPlus, Users, X, XCircle,
+  Pencil, Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthLoading, AuthScreen } from "@/components/auth-screen";
@@ -46,6 +47,46 @@ const mobileNav = [
 ];
 
 const formatNumber = (value: number) => value.toLocaleString();
+
+/**
+ * Turns plain text into React nodes, auto-linking any URL.
+ * Newlines become <br /> so paragraph spacing survives.
+ */
+function renderPostBody(body: string): React.ReactNode {
+  const URL_REGEX = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+)/g;
+  const lines = body.split(/\r?\n/);
+  return lines.map((line, lineIndex) => {
+    const parts: React.ReactNode[] = [];
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+    while ((match = URL_REGEX.exec(line)) !== null) {
+      if (match.index > cursor) parts.push(line.slice(cursor, match.index));
+      const raw = match[0];
+      const href = raw.startsWith("http") ? raw : `https://${raw}`;
+      parts.push(
+        <a
+          key={`${lineIndex}-${match.index}`}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="post-link"
+        >
+          {raw}
+        </a>
+      );
+      cursor = match.index + raw.length;
+    }
+    if (cursor < line.length) parts.push(line.slice(cursor));
+    return (
+      <span key={lineIndex}>
+        {parts}
+        {lineIndex < lines.length - 1 && <br />}
+      </span>
+    );
+  });
+}
+
+
 
 function withVote(post: Post, direction: 1 | -1) {
   const voted = post.voted === direction ? undefined : direction;
@@ -107,6 +148,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerCommunity, setComposerCommunity] = useState("c/campuslife");
+  const [editingPost, setEditingPost] = useState<Post | null>(null);
   const [eventOpen, setEventOpen] = useState<CampusEvent | null>(null);
   const pendingEventId = useRef(initialEventId);
   const pendingInvite = useRef(initialInviteToken && initialCommunityId ? { communityId: initialCommunityId, token: initialInviteToken } : null);
@@ -415,6 +457,33 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
     }
   }
 
+  async function savePostEdit(postId: number, updates: { title: string; body: string; images: string[] }) {
+    try {
+      const data = await requestJson<{ post: Post }>(`/api/posts/${postId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      if (!data?.post) throw new Error("The server did not return the updated post.");
+      setPosts((current) => current.map((post) => post.id === postId ? data.post : post));
+      setEditingPost(null);
+      setToast("Post updated");
+    } catch (editError) {
+      setToast(editError instanceof Error ? editError.message : "Could not update the post.");
+    }
+  }
+
+  async function deleteOwnPost(post: Post) {
+    if (!window.confirm(`Delete “${post.title}”? This can't be undone.`)) return;
+    try {
+      await requestJson(`/api/posts/${post.id}`, { method: "DELETE" });
+      setPosts((current) => current.filter((item) => item.id !== post.id));
+      setToast("Post deleted");
+    } catch (deleteError) {
+      setToast(deleteError instanceof Error ? deleteError.message : "Could not delete the post.");
+    }
+  }  
+
   async function persistCommunityMembership(community: Community) {
     const cancellingRequest = !community.joined && community.joinRequestStatus === "pending";
     try {
@@ -562,8 +631,8 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
 
         <main>
           {view === "certificates" && <CertificatePortal preview={previewMode} events={events} appRole={authUser.appRole} userId={authUser.id} initialCode={initialVerificationCode} />}
-          {view === "home" && <HomeView user={authUser} posts={posts} events={events.filter((event) => event.status === "APPROVED")} communities={communities} joinRequests={joinRequests} resolveJoinRequest={resolveJoinRequest} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} />}
-          {view === "explore" && <ExploreView user={authUser} items={communities} setItems={setCommunities} posts={posts} setPosts={setPosts} vote={persistVote} votePending={votePending} notify={setToast} onMembership={persistCommunityMembership} onEvents={() => go("events")} openComments={setCommentPostId} openComposer={(community = "c/campuslife") => { setComposerCommunity(community); setComposerOpen(true); }} initialCommunityId={initialCommunityId} />}
+          {view === "home" && <HomeView user={authUser} posts={posts} events={events.filter((event) => event.status === "APPROVED")} communities={communities} joinRequests={joinRequests} resolveJoinRequest={resolveJoinRequest} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} onEditPost={(post) => setEditingPost(post)} onDeletePost={(post) => void deleteOwnPost(post)} />}
+                    {view === "explore" && <ExploreView user={authUser} items={communities} setItems={setCommunities} posts={posts} setPosts={setPosts} vote={persistVote} votePending={votePending} notify={setToast} onMembership={persistCommunityMembership} onEvents={() => go("events")} openComments={setCommentPostId} openComposer={(community = "c/campuslife") => { setComposerCommunity(community); setComposerOpen(true); }} initialCommunityId={initialCommunityId} onEditPost={(post) => setEditingPost(post)} onDeletePost={(post) => void deleteOwnPost(post)} />}
           {view === "events" && <EventsView events={events} communities={communities} defaultCampus={authUser.campus || ""} onEvent={setEventOpen} onCreated={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setEventOpen(event); }} notify={setToast} />}
           {view === "rewards" && <RewardsView user={authUser} notify={setToast} />}
           {view === "chat" && <ChatView user={authUser} notify={setToast} onDiscover={() => setSearchOpen(true)} initialRequests={initialChatRequests} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
@@ -587,6 +656,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       {searchOpen && <SearchPanel close={() => setSearchOpen(false)} notify={setToast} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
       {notificationsOpen && <Notifications close={() => setNotificationsOpen(false)} items={notifications} loading={notificationsLoading} onRead={readNotification} onReadAll={readAllNotifications} />}
       {composerOpen && <Composer author={authUser.username} communities={communities} initialCommunity={composerCommunity} close={() => setComposerOpen(false)} onCreate={persistPost} />}
+      {editingPost && <EditPostModal post={editingPost} communities={communities} close={() => setEditingPost(null)} onSave={savePostEdit} />}
       {eventOpen && <EventRegistrationDetail event={eventOpen} close={() => setEventOpen(null)} notify={setToast} onEdit={() => setEditingEvent(eventOpen)} onChange={(event) => { setEventOpen(event); setEvents((current) => current.map((item) => item.id === event.id ? event : item)); }} />}
       {editingEvent && <EditEventModal event={editingEvent} communities={communities} close={() => setEditingEvent(null)} onSaved={(event) => { setEditingEvent(null); setEventOpen(event); setEvents((current) => current.map((item) => item.id === event.id ? event : item)); setToast("Event updated"); }} />}
       {instituteCommunityTarget && <CreateCommunityModal institute={instituteCommunityTarget} existingNames={communities.map((item) => item.name)} close={() => setInstituteCommunityTarget(null)} onCreate={(community) => { setCommunities((current) => [community, ...current.filter((item) => item.id !== community.id)]); setInstituteCommunityTarget(null); setToast(`${community.name} was sent for institute verification`); }} />}
@@ -598,7 +668,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   );
 }
 
-function HomeView({ user, posts, events, communities, joinRequests, resolveJoinRequest, setPosts, vote, votePending, onExplore, onEvents, onEvent, openComments, notify }: { user: SessionUser; posts: Post[]; events: CampusEvent[]; communities: Community[]; joinRequests: CommunityJoinRequest[]; resolveJoinRequest: (communityId: string, requesterId: string, decision: "accepted" | "rejected") => Promise<void>; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; onExplore: () => void; onEvents: () => void; onEvent: (e: CampusEvent) => void; openComments: (id: number) => void; notify: (s: string) => void }) {
+function HomeView({ user, posts, events, communities, joinRequests, resolveJoinRequest, setPosts, vote, votePending, onExplore, onEvents, onEvent, openComments, notify, onEditPost, onDeletePost }: { user: SessionUser; posts: Post[]; events: CampusEvent[]; communities: Community[]; joinRequests: CommunityJoinRequest[]; resolveJoinRequest: (communityId: string, requesterId: string, decision: "accepted" | "rejected") => Promise<void>; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; onExplore: () => void; onEvents: () => void; onEvent: (e: CampusEvent) => void; openComments: (id: number) => void; notify: (s: string) => void; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void }) {
   const [feed, setFeed] = useState("Home");
   const [today, setToday] = useState(todayLabel);
   const [now, setNow] = useState(() => Date.now());
@@ -643,7 +713,7 @@ function HomeView({ user, posts, events, communities, joinRequests, resolveJoinR
       </div>
       <button className="quick-compose" onClick={() => document.querySelector<HTMLButtonElement>(".create-button")?.click()}><Avatar text={user.username} image={user.avatarUrl} color="#FF5C8A" /><span>Share something with campus...</span><ImagePlus size={19} /><Link2 size={19} /></button>
       <div className="feed-list">
-        {posts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} />)}
+        {posts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} currentUserId={user.id} onEdit={onEditPost} onDelete={onDeletePost} />)}
       </div>
     </section>
     <aside className="right-rail">
@@ -717,12 +787,58 @@ function HomeView({ user, posts, events, communities, joinRequests, resolveJoinR
   </div>;
 }
 
-function PostCard({ post, index, vote, votePending, save, openComments, notify }: { post: Post; index: number; vote: (id: number, d: 1 | -1) => void; votePending: boolean; save: (id: number) => void; openComments: (id: number) => void; notify: (s: string) => void }) {
+function PostCard({ post, index, vote, votePending, save, openComments, notify, currentUserId, onEdit, onDelete }: { post: Post; index: number; vote: (id: number, d: 1 | -1) => void; votePending: boolean; save: (id: number) => void; openComments: (id: number) => void; notify: (s: string) => void; currentUserId?: string; onEdit?: (post: Post) => void; onDelete?: (post: Post) => void }) {
   const postImages = post.images?.length ? post.images : post.image ? [post.image] : [];
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const isOwner = Boolean(currentUserId && post.userId && post.userId === currentUserId);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setMenuOpen(false);
+    }
+    window.addEventListener("mousedown", onClickOutside);
+    return () => window.removeEventListener("mousedown", onClickOutside);
+  }, [menuOpen]);
+
   return <article className={`post-card post-${index + 1} ${post.id < 0 ? "is-pending" : ""}`}>
-    <div className="post-meta"><Avatar text={post.community.slice(2, 4)} color={post.accent} size={34} /><div><b>{post.community}</b><span>posted by {post.author} · {post.time}</span></div>{post.flair && <em>{post.flair}</em>}<IconButton label="Post options"><Ellipsis size={19} /></IconButton></div>
+    <div className="post-meta">
+      <Avatar text={post.community.slice(2, 4)} color={post.accent} size={34} />
+      <div>
+        <b>{post.community}</b>
+        <span>posted by {post.author} · {post.time}</span>
+      </div>
+      {post.flair && <em>{post.flair}</em>}
+      {isOwner && (
+        <div className="post-owner-menu" ref={menuRef}>
+          <IconButton label="Post options" onClick={() => setMenuOpen((v) => !v)} active={menuOpen}>
+            <Ellipsis size={19} />
+          </IconButton>
+          {menuOpen && (
+            <div className="post-owner-dropdown" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setMenuOpen(false); onEdit?.(post); }}
+              >
+                <Pencil size={14} /> Edit
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="danger"
+                onClick={() => { setMenuOpen(false); onDelete?.(post); }}
+              >
+                <Trash2 size={14} /> Delete
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
     <h2>{post.title}</h2>
-    {post.body && <p>{post.body}</p>}
+    {post.body && <p className="post-body">{renderPostBody(post.body)}</p>}
     {postImages.length > 0 && <div className={`post-image gallery-${Math.min(postImages.length, 6)}`}>{postImages.slice(0, 6).map((image, imageIndex) => <span className="gallery-image" key={`${post.id}-${imageIndex}`}><Image src={image} alt={postImages.length > 1 ? `Attachment ${imageIndex + 1} for ${post.title}` : `Attachment for ${post.title}`} fill sizes="(max-width: 900px) 100vw, 650px" unoptimized={image.startsWith("data:") || image.startsWith("/api/")} />{imageIndex === 5 && postImages.length > 6 && <b>+{postImages.length - 6}</b>}</span>)}</div>}
     {post.poll && <div className="poll">{post.poll.map(item => <button key={item.label} onClick={() => notify(`Voted for ${item.label}`)}><i style={{ width: `${item.percent}%` }} /><span>{item.label}</span><b>{item.percent}%</b></button>)}<small>642 votes · 2 days left</small></div>}
     <div className="post-actions">
@@ -820,7 +936,7 @@ function CommunityCard({ item, index, communities, onOpen, onMembership }: { ite
   </article>;
 }
 
-function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending, notify, onMembership, onEvents, openComments, openComposer, initialCommunityId }: { user: SessionUser; items: Community[]; setItems: React.Dispatch<React.SetStateAction<Community[]>>; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; notify: (s: string) => void; onMembership: (community: Community) => Promise<void>; onEvents: () => void; openComments: (id: number) => void; openComposer: (community?: string) => void; initialCommunityId: string }) {
+function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending, notify, onMembership, onEvents, openComments, openComposer, initialCommunityId, onEditPost, onDeletePost }: { user: SessionUser; items: Community[]; setItems: React.Dispatch<React.SetStateAction<Community[]>>; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; notify: (s: string) => void; onMembership: (community: Community) => Promise<void>; onEvents: () => void; openComments: (id: number) => void; openComposer: (community?: string) => void; initialCommunityId: string; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void }) {
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(initialCommunityId || null);
@@ -830,7 +946,7 @@ function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending
     return !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery) || item.type.toLowerCase().includes(normalizedQuery) || parent?.name.toLowerCase().includes(normalizedQuery);
   });
   const selectedCommunity = items.find(item => item.id === selectedId);
-  if (selectedCommunity) return <CommunityDetail key={selectedCommunity.id} user={user} communities={items} posts={posts} setPosts={setPosts} vote={vote} votePending={votePending} community={selectedCommunity} notify={notify} openComments={openComments} openComposer={() => openComposer(selectedCommunity.name)} goBack={() => setSelectedId(null)} onOpenCommunity={setSelectedId} onMembership={onMembership} toggleMembership={() => void onMembership(selectedCommunity)} onUpdated={(updated) => setItems((current) => current.map((item) => item.id === updated.id ? updated : item))} onCommunityCreated={(created) => setItems((current) => [created, ...current])} />;
+  if (selectedCommunity) return <CommunityDetail key={selectedCommunity.id} user={user} communities={items} posts={posts} setPosts={setPosts} vote={vote} votePending={votePending} community={selectedCommunity} notify={notify} openComments={openComments} openComposer={() => openComposer(selectedCommunity.name)} goBack={() => setSelectedId(null)} onOpenCommunity={setSelectedId} onMembership={onMembership} toggleMembership={() => void onMembership(selectedCommunity)} onUpdated={(updated) => setItems((current) => current.map((item) => item.id === updated.id ? updated : item))} onCommunityCreated={(created) => setItems((current) => [created, ...current])} onEditPost={onEditPost} onDeletePost={onDeletePost} />;
   return <div className="content-page">
     <section className="page-hero explore-hero"><div><span className="eyebrow lime">FIND YOUR PEOPLE</span><h1>Campus is better together.</h1><p>Clubs, obsessions, niche questions and the people who get it.</p></div><span className="hero-sticker">COME<br />HANG<br />OUT <i>→</i></span></section>
     <div className="explore-toolbar"><label><Search size={20} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search communities" /></label><div className="toolbar-actions"><button className="outline-button" onClick={onEvents}><CalendarDays size={19} /> Browse events</button><button className="primary-action" onClick={() => setCreating(true)}><Plus size={19} /> Create community</button></div></div>
@@ -840,7 +956,7 @@ function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending
   </div>;
 }
 
-function CommunityDetail({ user, community, communities, posts, setPosts, vote, votePending, goBack, onOpenCommunity, onMembership, toggleMembership, notify, openComments, openComposer, onUpdated, onCommunityCreated }: { user: SessionUser; community: Community; communities: Community[]; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; goBack: () => void; onOpenCommunity: (id: string) => void; onMembership: (community: Community) => Promise<void>; toggleMembership: () => void; notify: (message: string) => void; openComments: (id: number) => void; openComposer: () => void; onUpdated: (community: Community) => void; onCommunityCreated: (community: Community) => void }) {
+function CommunityDetail({ user, community, communities, posts, setPosts, vote, votePending, goBack, onOpenCommunity, onMembership, toggleMembership, notify, openComments, openComposer, onUpdated, onCommunityCreated, onEditPost, onDeletePost }: { user: SessionUser; community: Community; communities: Community[]; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; goBack: () => void; onOpenCommunity: (id: string) => void; onMembership: (community: Community) => Promise<void>; toggleMembership: () => void; notify: (message: string) => void; openComments: (id: number) => void; openComposer: () => void; onUpdated: (community: Community) => void; onCommunityCreated: (community: Community) => void; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void }) {
   const [sort, setSort] = useState("Hot");
   const [activeTab, setActiveTab] = useState<"feed" | "children" | "members">("feed");
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -973,7 +1089,7 @@ function CommunityDetail({ user, community, communities, posts, setPosts, vote, 
         )}
         <CommunityMembersList community={community} canInvite={canInvite} onInvite={() => setInviteOpen(true)} />
       </>
-    ) : activeTab !== "children" || community.parentId ? <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div> : <section className="subcommunity-section"><header><div><span className="eyebrow violet">SUB-COMMUNITIES</span><h2>Spaces inside {community.name}</h2><p>Focused communities managed under this parent.</p></div>{canCreateChildren && <button className="primary-action" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</header>{children.length ? <div className="community-grid">{children.map((child, index) => <CommunityCard key={child.id} item={child} index={index} communities={communities} onOpen={onOpenCommunity} onMembership={onMembership} />)}</div> : <div className="community-empty"><span>🪆</span><h3>No sub-communities yet.</h3><p>Create a focused space inside {community.name}.</p>{canCreateChildren && <button onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</div>}</section>}
+    ) : activeTab !== "children" || community.parentId ? <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} currentUserId={user.id} onEdit={onEditPost} onDelete={onDeletePost} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div> : <section className="subcommunity-section"><header><div><span className="eyebrow violet">SUB-COMMUNITIES</span><h2>Spaces inside {community.name}</h2><p>Focused communities managed under this parent.</p></div>{canCreateChildren && <button className="primary-action" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</header>{children.length ? <div className="community-grid">{children.map((child, index) => <CommunityCard key={child.id} item={child} index={index} communities={communities} onOpen={onOpenCommunity} onMembership={onMembership} />)}</div> : <div className="community-empty"><span>🪆</span><h3>No sub-communities yet.</h3><p>Create a focused space inside {community.name}.</p>{canCreateChildren && <button onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</div>}</section>}
     {brandingOpen && <CommunityBrandingModal community={community} close={() => setBrandingOpen(false)} onUpdated={onUpdated} notify={notify} />}
     {inviteOpen && <InviteMembersModal community={community} close={() => setInviteOpen(false)} notify={notify} />}
     {creatingChild && <CreateCommunityModal parent={community} existingNames={communities.map((item) => item.name)} close={() => setCreatingChild(false)} onCreate={(created) => { onCommunityCreated(created); setCreatingChild(false); setActiveTab("children"); notify(`${created.name} is now part of ${community.name}`); }} />}
@@ -1629,11 +1745,43 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
     if (type === "Image" && !uploads.length) return setError("Choose at least one image for an image post.");
     const selectedCommunity = communities.find(item => item.name === activeCommunity);
     if (!selectedCommunity) return setError("Choose a community before publishing.");
-    onCreate({ id: Date.now(), communityId: selectedCommunity.id, community: selectedCommunity.name, accent: selectedCommunity.color, author, time: "now", flair: type === "Image" ? "Photo dump" : type, title: title.trim(), body: body.trim() || undefined, images: uploads.map(upload => upload.url), votes: 0, comments: 0 });
+    onCreate({ id: Date.now(), communityId: selectedCommunity.id, community: selectedCommunity.name, accent: selectedCommunity.color, author, time: "now", flair: type === "Image" ? "Photo dump" : type, title: title.trim(), body: body.replace(/^\s+|\s+$/g, "") || undefined, images: uploads.map(upload => upload.url), votes: 0, comments: 0 });
   }
 
   return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}><form className="composer" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Create a post"><header><div><span className="eyebrow violet">SAY SOMETHING</span><h2>Create a post</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><label className="community-select"><span>Post to</span><div><Avatar text={activeCommunity.slice(2, 4)} color={communities.find(item => item.name === activeCommunity)?.color || "#6C3BFF"} size={28} /><select value={activeCommunity} onChange={event => setCommunity(event.target.value)} aria-label="Post community">{communities.map(item => <option key={item.id}>{item.name}</option>)}</select><ChevronDown size={16} /></div></label><div className="composer-types">{["Text", "Image", "Poll", "Link"].map(item => <button type="button" className={type === item ? "active" : ""} onClick={() => { setType(item); setError(""); }} key={item}>{item}</button>)}</div><input autoFocus value={title} onChange={event => { setTitle(event.target.value); setError(""); setDraftSaved(false); }} maxLength={160} placeholder="An interesting title" /><textarea value={body} onChange={event => { setBody(event.target.value); setDraftSaved(false); }} rows={7} placeholder={type === "Poll" ? "Ask your question..." : type === "Link" ? "Paste a link and add some context..." : "What do you want to share? Markdown is supported."} />{type === "Image" && <><label className="upload-zone"><input className="file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={addImages} /><ImagePlus size={28} /><b>{uploading ? "Uploading…" : uploads.length ? "Add more photos" : "Choose photos to upload"}</b><small>Up to 6 JPG, PNG or WebP images · 5 MB each</small></label>{uploads.length > 0 && <div className="upload-previews">{uploads.map((upload, index) => <div key={`${upload.name}-${index}`}><Image src={upload.url} alt={`Preview of ${upload.name}`} fill sizes="160px" unoptimized /><button type="button" aria-label={`Remove ${upload.name}`} onClick={() => setUploads(current => current.filter((_, itemIndex) => itemIndex !== index))}><X size={15} /></button><span>{index + 1}</span></div>)}</div>}</>}{error && <p className="form-error" role="alert">{error}</p>}<footer><span>{draftSaved ? "Draft saved" : `${title.length}/160`}</span><button type="button" className="draft-button" onClick={() => { localStorage.setItem("sc-post-draft", JSON.stringify({ title, body, type, community: activeCommunity })); setDraftSaved(true); }}>Save draft</button><button type="submit" className="post-button" disabled={!title.trim() || !communities.length || uploading}>Post <ArrowRight size={17} /></button></footer></form></div>;
 }
+
+function EditPostModal({ post, close, onSave }: { post: Post; communities: Community[]; close: () => void; onSave: (postId: number, updates: { title: string; body: string; images: string[] }) => Promise<void> }) {
+  const [title, setTitle] = useState(post.title);
+  const [body, setBody] = useState(post.body || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const postImages = post.images?.length ? post.images : post.image ? [post.image] : [];
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!title.trim()) return setError("Add a title before saving.");
+    setBusy(true);
+    setError("");
+    try {
+      await onSave(post.id, { title: title.trim(), body, images: postImages });
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Could not update the post.");
+      setBusy(false);
+    }
+  }
+
+  return <div className="overlay" onMouseDown={(event) => event.target === event.currentTarget && close()}>
+    <form className="composer" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Edit post">
+      <header><div><span className="eyebrow violet">EDIT POST</span><h2>Update your post</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header>
+      <input autoFocus value={title} onChange={(event) => { setTitle(event.target.value); setError(""); }} maxLength={160} placeholder="An interesting title" />
+      <textarea value={body} onChange={(event) => { setBody(event.target.value); setError(""); }} rows={7} placeholder="What do you want to share?" />
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <footer><span>{title.length}/160</span><button type="button" className="draft-button" onClick={close} disabled={busy}>Cancel</button><button type="submit" className="post-button" disabled={busy || !title.trim()}>{busy ? <><LoaderCircle className="spin" size={17} /> Saving…</> : <>Save changes <ArrowRight size={17} /></>}</button></footer>
+    </form>
+  </div>;
+}
+
 
 export function LegacyEventDetail({ event, close, notify, onChange }: { event: CampusEvent; close: () => void; notify: (s: string) => void; onChange: (event: CampusEvent) => void }) {
   const [busy, setBusy] = useState(false);
