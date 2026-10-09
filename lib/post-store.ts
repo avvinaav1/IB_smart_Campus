@@ -11,6 +11,7 @@ type StoredPost = Post & {
   clientRequestId: string;
   voteBase?: number;
   votesByUser?: Record<string, 1 | -1>;
+  editedAt?: number;
 };
 
 type PostDatabase = {
@@ -22,6 +23,12 @@ export type NewPostInput = {
   clientRequestId: string;
   communityId: string;
   flair?: string;
+  title: string;
+  body?: string;
+  images?: string[];
+};
+
+export type UpdatePostInput = {
   title: string;
   body?: string;
   images?: string[];
@@ -63,10 +70,6 @@ function publicPost(post: StoredPost, viewerId: string): Post {
   };
 }
 
-// Transaction-safe shaping: never calls another store (a nested Firestore
-// transaction would deadlock). Legacy posts with no communityId keep "" here and
-// are simply filtered out of feeds; the read path below backfills them for
-// display via ensureCommunityForLegacyPost.
 function hydrateForWrite(parsed: Partial<PostDatabase> | null): PostDatabase {
   if (!parsed || !parsed.posts) return seededDatabase();
   return {
@@ -120,11 +123,25 @@ export function validatePostInput(input: NewPostInput) {
   return "";
 }
 
+export function validatePostUpdate(input: UpdatePostInput) {
+  if (!input.title.trim() || input.title.trim().length > 160) return "Post titles must be between 1 and 160 characters.";
+  if ((input.body || "").length > 10_000) return "Post text must be 10,000 characters or fewer.";
+  if ((input.images || []).length > 6) return "You can attach up to 6 images.";
+  const invalidImage = (input.images || []).some((image) => !/^\/api\/posts\/images\/[0-9a-f-]{36}\.(jpg|png|webp)$/.test(image));
+  if (invalidImage) return "Attach images with the uploader before saving.";
+  return "";
+}
+
 export function validateCommentBody(body: string) {
   const trimmed = body.trim();
   if (!trimmed) return "Write a reply before posting.";
   if (trimmed.length > 1_000) return "Replies must be 1,000 characters or fewer.";
   return "";
+}
+
+/** Trim outer whitespace only — internal newlines must survive. */
+function trimOuter(value: string) {
+  return value.replace(/^\s+|\s+$/g, "");
 }
 
 export async function listPosts(viewerId: string) {
@@ -150,6 +167,15 @@ export async function getUserDashboard(userId: string): Promise<UserDashboard> {
   };
 }
 
+export async function getPostForOwner(postId: number, userId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const post = database.posts.find((candidate) => candidate.id === postId);
+  if (!post) return { error: "That post no longer exists.", status: 404 } as const;
+  if ((post.authorId || post.userId) !== userId) return { error: "You can only edit your own posts.", status: 403 } as const;
+  return { post: publicPost(post, userId) } as const;
+}
+
 export async function createPost(userId: string, author: string, input: NewPostInput) {
   const resolved = await resolveCommunityForPost(input.communityId, userId);
   if (!resolved.community) return { error: resolved.error || "Choose a community that still exists." } as const;
@@ -158,6 +184,7 @@ export async function createPost(userId: string, author: string, input: NewPostI
     const duplicate = database.posts.find((post) => post.userId === userId && post.clientRequestId === input.clientRequestId);
     if (duplicate) return { post: publicPost(duplicate, userId), created: false } as const;
     const maxId = database.posts.reduce((highest, post) => Math.max(highest, Number(post.id) || 0), 0);
+    const body = input.body ? trimOuter(input.body) : undefined;
     const post: StoredPost = {
       id: Math.max(Date.now(), maxId + 1),
       communityId: targetCommunity.id,
@@ -171,7 +198,7 @@ export async function createPost(userId: string, author: string, input: NewPostI
       time: "now",
       flair: input.flair,
       title: input.title.trim(),
-      body: input.body?.trim() || undefined,
+      body,
       images: input.images?.length ? input.images : undefined,
       votes: 0,
       comments: 0,
@@ -180,6 +207,31 @@ export async function createPost(userId: string, author: string, input: NewPostI
     };
     database.posts.push(post);
     return { post: publicPost(post, userId), created: true } as const;
+  });
+}
+
+export async function updatePost(postId: number, userId: string, input: UpdatePostInput) {
+  return mutate((database) => {
+    const post = database.posts.find((candidate) => candidate.id === postId);
+    if (!post) return { error: "That post no longer exists.", status: 404 } as const;
+    if ((post.authorId || post.userId) !== userId) return { error: "You can only edit your own posts.", status: 403 } as const;
+
+    post.title = input.title.trim();
+    post.body = input.body ? trimOuter(input.body) : undefined;
+    post.images = input.images?.length ? input.images : undefined;
+    post.editedAt = Date.now();
+    return { post: publicPost(post, userId) } as const;
+  });
+}
+
+export async function deleteOwnPost(postId: number, userId: string) {
+  return mutate((database) => {
+    const index = database.posts.findIndex((post) => post.id === postId);
+    if (index < 0) return { error: "That post no longer exists.", status: 404 } as const;
+    const post = database.posts[index];
+    if ((post.authorId || post.userId) !== userId) return { error: "You can only delete your own posts.", status: 403 } as const;
+    database.posts.splice(index, 1);
+    return { deleted: true, imageUrls: post.images || (post.image ? [post.image] : []) } as const;
   });
 }
 

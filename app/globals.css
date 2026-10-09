@@ -827,3 +827,92 @@ html[data-theme="dark"] .join-request-actions .join-reject { color: #fda4af; bor
 html[data-theme="dark"] .community-pending-actions .pending-accept { color: #86efac; border-color: rgba(134,239,172,0.35); }
 html[data-theme="dark"] .community-pending-actions .pending-reject { color: #fda4af; border-color: rgba(253,164,175,0.35); }
 
+
+/* Post body preserves newlines and links */
+.post-card > p.post-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.post-body .post-link,
+.post-card > p .post-link {
+  color: var(--violet);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.post-body .post-link:hover {
+  color: color-mix(in srgb, var(--violet) 80%, var(--ink));
+}
+html[data-theme="dark"] .post-body .post-link {
+  color: #b39dff;
+}
+
+/* Post owner menu */
+.post-owner-menu { position: relative; margin-left: auto; }
+.post-owner-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 140px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.18);
+  display: grid;
+  gap: 2px;
+  z-index: 30;
+}
+.post-owner-dropdown button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+.post-owner-dropdown button:hover { background: var(--soft); }
+.post-owner-dropdown button.danger { color: #b42318; }
+html[data-theme="dark"] .post-owner-dropdown button.danger { color: #fda4af; }
+
+
+/* Edit post modal — spacing below the header */
+.composer[aria-label="Edit post"] > header {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 16px;
+}
+.composer[aria-label="Edit post"] > input {
+  margin-top: 4px;
+}
+
+
+
+/* Community selector in Composer — dark theme text colour only */
+html[data-theme="dark"] .community-select > div select {
+  color: var(--ink);
+}
+
+html[data-theme="light"] .community-select > div select {
+  color: #000;
+}
+
+html[data-theme="light"] .community-select > div select option {
+  color: black;
+  background-color: #fff;
+}
+
+/* Force hover/selected option text to stay black on light theme */
+html[data-theme="light"] .community-select > div select option:checked,
+html[data-theme="light"] .community-select > div select option:hover,
+html[data-theme="light"] .community-select > div select option:focus {
+  color: #000;
+  background-color: #f1f1f1;
+}
