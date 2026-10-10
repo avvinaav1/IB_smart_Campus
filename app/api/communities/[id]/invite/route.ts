@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { getDirectoryUser, getDirectoryUsers, isValidEmail, normalizeEmail } from "@/lib/auth-store";
 import { authenticatedUserId, isSameOrigin, noStoreJson, readJson } from "@/lib/auth-http";
 import { sendCommunityInviteEmails } from "@/lib/community-invite-email";
+import { communityInvitePath } from "@/lib/community-invite-link";
 import { getCommunityInvite, listEffectiveCommunityMemberIds } from "@/lib/community-store";
 import { createNotifications } from "@/lib/notification-store";
 import { SITE_URL } from "@/lib/site";
@@ -10,10 +11,6 @@ export const runtime = "nodejs";
 
 const MAX_INVITES_PER_REQUEST = 20;
 
-function invitePath(communityId: string, token: string) {
-  return `/?view=explore&community=${encodeURIComponent(communityId)}&invite=${encodeURIComponent(token)}`;
-}
-
 /** Invite link for admins/moderators. */
 export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const userId = await authenticatedUserId(request);
@@ -21,7 +18,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
   const { id } = await context.params;
   const result = await getCommunityInvite(id, userId);
   if ("error" in result) return noStoreJson({ error: result.error }, { status: result.status });
-  return noStoreJson({ data: { url: `${SITE_URL}${invitePath(id, result.token)}` } });
+  return noStoreJson({ data: { url: `${SITE_URL}${communityInvitePath(id, result.token)}` } });
 }
 
 /** Body: `{ rotate: true }` to reset the link, `{ userIds: [...] }` to notify members, or `{ emails: [...] }` to email the link. */
@@ -34,7 +31,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   if (!body) return noStoreJson({ error: "The invite body is invalid." }, { status: 400 });
   const result = await getCommunityInvite(id, userId, body.rotate === true);
   if ("error" in result) return noStoreJson({ error: result.error }, { status: result.status });
-  const path = invitePath(id, result.token);
+  const path = communityInvitePath(id, result.token);
   const url = `${SITE_URL}${path}`;
   if (body.rotate === true) return noStoreJson({ data: { url } });
 

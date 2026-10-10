@@ -16,3 +16,22 @@ export async function checkInCodeSvg(code: string): Promise<string> {
     color: { dark: "#14121a", light: "#ffffff" },
   });
 }
+
+const INVITE_QR_OPTIONS = {
+  errorCorrectionLevel: "Q",
+  margin: 2,
+  color: { dark: "#14121a", light: "#ffffff" },
+} as const;
+
+/**
+ * Renders a community invite link as a QR code. Level "Q" keeps posters and
+ * screenshots scannable even when partly creased or covered.
+ */
+export async function communityInviteQrSvg(url: string): Promise<string> {
+  return QRCode.toString(url, { ...INVITE_QR_OPTIONS, type: "svg" });
+}
+
+/** PNG variant for printing or sharing in chat apps that do not accept SVG. */
+export async function communityInviteQrPng(url: string): Promise<Buffer> {
+  return QRCode.toBuffer(url, { ...INVITE_QR_OPTIONS, type: "png", width: 1024 });
+}

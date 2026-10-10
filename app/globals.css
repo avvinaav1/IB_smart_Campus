@@ -690,7 +690,11 @@ main { min-height: calc(100vh - 70px); }
 .invite-link-row { display: flex; gap: 8px; }
 .invite-link-row input { min-width: 0; flex: 1; min-height: 42px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--soft); font: 600 11px monospace; }
 .invite-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.invite-actions button { display: flex; align-items: center; gap: 6px; }
+.invite-actions button, .invite-actions a { min-height: 38px; padding: 0 13px; border-radius: 8px; color: var(--ink); display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 850; text-decoration: none; }
+.invite-actions a[aria-disabled="true"] { pointer-events: none; opacity: .5; }
+.invite-qr-frame { display: grid; place-items: center; justify-self: center; width: 244px; height: 244px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.invite-qr-frame img { display: block; width: 220px; height: 220px; }
+.invite-qr-pane .invite-actions { justify-content: center; }
 .invite-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .invite-chips button { min-height: 28px; padding: 0 10px; border: 1px solid var(--violet); border-radius: 20px; color: var(--violet); background: color-mix(in srgb, var(--violet) 10%, var(--panel)); display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 800; }
 .invite-results { max-height: 260px; margin-top: 0; overflow-y: auto; }

@@ -132,6 +132,26 @@ function Toast({ message }: { message: string }) {
   return <div className="toast" role="status"><Check size={17} strokeWidth={3} />{message}</div>;
 }
 
+type PendingInvite = { communityId: string; token: string };
+const PENDING_INVITE_KEY = "smart-campus:pending-invite";
+const PENDING_INVITE_TTL_MS = 24 * 60 * 60 * 1000;
+
+function savePendingInvite(invite: PendingInvite | null) {
+  try {
+    if (invite) window.localStorage.setItem(PENDING_INVITE_KEY, JSON.stringify({ ...invite, savedAt: Date.now() }));
+    else window.localStorage.removeItem(PENDING_INVITE_KEY);
+  } catch { /* storage unavailable */ }
+}
+
+function loadPendingInvite(): PendingInvite | null {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(PENDING_INVITE_KEY) || "null") as (PendingInvite & { savedAt?: number }) | null;
+    if (stored && typeof stored.communityId === "string" && typeof stored.token === "string" && Date.now() - (stored.savedAt || 0) < PENDING_INVITE_TTL_MS) return { communityId: stored.communityId, token: stored.token.slice(0, 64) };
+    if (stored) window.localStorage.removeItem(PENDING_INVITE_KEY);
+  } catch { /* storage unavailable or corrupt */ }
+  return null;
+}
+
 export function SmartCampusApp({ previewUser, initialView = "home", initialCommunityId = "", initialInviteToken = "", initialEventId = "", initialChatRequests = false, initialVerificationCode = "", claimEmail = "" }: { previewUser?: SessionUser; initialView?: View; initialCommunityId?: string; initialInviteToken?: string; initialEventId?: string; initialChatRequests?: boolean; initialVerificationCode?: string; claimEmail?: string }) {
   const [authUser, setAuthUser] = useState<SessionUser | null | undefined>(previewUser);
   const previewMode = Boolean(previewUser && authUser?.id === previewUser.id);
@@ -151,7 +171,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   const [editingPost, setEditingPost] = useState<Post | null>(null);
   const [eventOpen, setEventOpen] = useState<CampusEvent | null>(null);
   const pendingEventId = useRef(initialEventId);
-  const pendingInvite = useRef(initialInviteToken && initialCommunityId ? { communityId: initialCommunityId, token: initialInviteToken } : null);
+  const pendingInvite = useRef<PendingInvite | null>(initialInviteToken && initialCommunityId ? { communityId: initialCommunityId, token: initialInviteToken } : null);
   const [editingEvent, setEditingEvent] = useState<CampusEvent | null>(null);
   const [instituteCommunityTarget, setInstituteCommunityTarget] = useState<InstituteSummary | null>(null);
   const [instituteEventTarget, setInstituteEventTarget] = useState<InstituteSummary | null>(null);
@@ -244,10 +264,17 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
     };
   }, [authUser, notificationsOpen, previewMode, dataRevision]);
 
+  // A scanned QR / invite link may be opened by someone who still has to sign up (possibly verifying email in another tab), so keep it until it is used.
+  useEffect(() => {
+    if (pendingInvite.current) savePendingInvite(pendingInvite.current);
+    else pendingInvite.current = loadPendingInvite();
+  }, []);
+
   useEffect(() => {
     const invite = pendingInvite.current;
     if (previewMode || !authUser?.profileSetupComplete || !invite) return;
     pendingInvite.current = null;
+    savePendingInvite(null);
     const url = new URL(window.location.href);
     url.searchParams.delete("invite");
     window.history.replaceState(null, "", url);
@@ -1355,7 +1382,8 @@ function EventForm({ mode, communities, initial, close, onSubmit }: {
   const [coverPreview, setCoverPreview] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [minimumDate] = useState(() => new Date(Date.now() + 86_400_000).toISOString().slice(0, 10));
+  // Today in the viewer's own timezone (toISOString would give the UTC date, which is still yesterday for IST mornings).
+  const [minimumDate] = useState(() => localDateInput(new Date().toISOString()));
 
   useEffect(() => () => { if (coverPreview) URL.revokeObjectURL(coverPreview); }, [coverPreview]);
   useEffect(() => {

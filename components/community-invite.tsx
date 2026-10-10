@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { Check, Copy, Link2, LoaderCircle, Mail, RefreshCw, Search, Send, Share2, ShieldCheck, UserPlus, Users, X } from "lucide-react";
+import { Check, Copy, Download, Link2, LoaderCircle, Mail, QrCode, RefreshCw, Search, Send, Share2, ShieldCheck, UserPlus, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Community, CommunityRole, UserSearchResult } from "@/lib/types";
 
@@ -16,7 +16,7 @@ function MemberAvatar({ name, image }: { name: string; image?: string }) {
   return <span className="avatar" style={{ background: "#6C3BFF", width: 38, height: 38 }}>{image ? <Image src={image} alt="" fill sizes="38px" unoptimized /> : name.slice(0, 2).toUpperCase()}</span>;
 }
 
-type InviteTab = "link" | "search" | "email";
+type InviteTab = "link" | "qr" | "search" | "email";
 
 export function InviteMembersModal({ community, close, notify, intro }: { community: Pick<Community, "id" | "name">; close: () => void; notify?: (message: string) => void; intro?: string }) {
   const base = `/api/communities/${encodeURIComponent(community.id)}/invite`;
@@ -24,6 +24,7 @@ export function InviteMembersModal({ community, close, notify, intro }: { commun
   const [link, setLink] = useState("");
   const [linkBusy, setLinkBusy] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [qrVersion, setQrVersion] = useState(0);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<UserSearchResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -89,6 +90,7 @@ export function InviteMembersModal({ community, close, notify, intro }: { commun
     try {
       const data = await requestJson<{ url: string }>(base, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rotate: true }) });
       setLink(data?.url || "");
+      setQrVersion((current) => current + 1);
       announce("Invite link reset — the old link no longer works");
     } catch (resetError) {
       setError(resetError instanceof Error ? resetError.message : "Could not reset the invite link.");
@@ -130,13 +132,19 @@ export function InviteMembersModal({ community, close, notify, intro }: { commun
     <section className="creation-modal invite-modal" role="dialog" aria-label={`Invite members to ${community.name}`}>
       <header><div><span className="eyebrow cyan">GROW YOUR CIRCLE</span><h2>Invite members</h2><p>{intro || `Bring people into ${community.name}.`}</p></div><button type="button" className="icon-button" aria-label="Close" onClick={close}><X size={20} /></button></header>
       <nav className="community-detail-tabs invite-tabs" role="tablist">
-        {([["link", "Share link", Link2], ["search", "Find people", Search], ["email", "Send email", Mail]] as const).map(([value, label, Icon]) => <button key={value} type="button" role="tab" aria-selected={tab === value} className={tab === value ? "active" : ""} onClick={() => { setTab(value); setError(""); setNotice(""); }}><Icon size={14} /> {label}</button>)}
+        {([["link", "Share link", Link2], ["qr", "QR code", QrCode], ["search", "Find people", Search], ["email", "Send email", Mail]] as const).map(([value, label, Icon]) => <button key={value} type="button" role="tab" aria-selected={tab === value} className={tab === value ? "active" : ""} onClick={() => { setTab(value); setError(""); setNotice(""); }}><Icon size={14} /> {label}</button>)}
       </nav>
 
       {tab === "link" && <div className="invite-pane">
         <p className="invite-hint">Anyone with this link can join. Reset it any time to stop old links from working.</p>
         <div className="invite-link-row"><input readOnly value={linkBusy ? "Loading invite link…" : link} onFocus={(event) => event.currentTarget.select()} aria-label="Invite link" /><button type="button" className="post-button" onClick={() => void copyLink()} disabled={!link || linkBusy}>{copied ? <><Check size={15} /> Copied</> : <><Copy size={15} /> Copy</>}</button></div>
         <div className="invite-actions"><button type="button" className="draft-button" onClick={() => void shareLink()} disabled={!link || linkBusy}><Share2 size={15} /> Share</button><button type="button" className="draft-button" onClick={() => void resetLink()} disabled={linkBusy}><RefreshCw size={15} /> Reset link</button></div>
+      </div>}
+
+      {tab === "qr" && <div className="invite-pane invite-qr-pane">
+        <p className="invite-hint">Scanning this code opens {community.name} and makes the person a member right after they sign in. Resetting the link also replaces this code.</p>
+        <div className="invite-qr-frame">{linkBusy || !link ? <LoaderCircle className="spin" size={22} /> : <Image src={`${base}/qr?v=${qrVersion}`} alt={`QR code to join ${community.name}`} width={220} height={220} unoptimized />}</div>
+        <div className="invite-actions"><a className="draft-button" href={`${base}/qr?format=png&download=1`} download aria-disabled={!link || linkBusy}><Download size={15} /> Download PNG</a><a className="draft-button" href={`${base}/qr?download=1`} download aria-disabled={!link || linkBusy}><Download size={15} /> Download SVG</a><button type="button" className="draft-button" onClick={() => void resetLink()} disabled={linkBusy}><RefreshCw size={15} /> Reset code</button></div>
       </div>}
 
       {tab === "search" && <div className="invite-pane">
