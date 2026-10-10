@@ -8,7 +8,7 @@ import {
   Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Link2, LoaderCircle, LockKeyhole, MapPin,
   LogOut, Menu, MessageCircle, MessageSquare, Moon, Plus, Search, Send, Settings, Share2,
   Download, ExternalLink, ShieldCheck, Star, Sun, TicketCheck, TrendingUp, Trophy, UserCheck, UserPlus, Users, X, XCircle,
-  Pencil, Trash2, Video,
+  Pencil, Trash2, Video, Maximize2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthLoading, AuthScreen } from "@/components/auth-screen";
@@ -19,6 +19,7 @@ import { ProfileEditor } from "@/components/profile-editor";
 import { ProfileSetup } from "@/components/profile-setup";
 import { CommunityMembersList, InviteMembersModal } from "@/components/community-invite";
 import { CommunityModerationPanel, GlobalAdminDashboard, InstituteDashboard } from "@/components/moderation-dashboard";
+import { ImageLightbox } from "@/components/image-lightbox";
 import { coverImageStyle, eventHasEnded, eventWhen } from "@/lib/event-format";
 import type { CampusEvent, ChatRequestView, Community, CommunityJoinRequest, CommunityType, CoverFit, CustomFormField, DirectConversation, EventAttendee, FollowRequestView, InstituteSummary, Post, SessionUser, UserDashboard, UserNotification, UserSearchResult, View } from "@/lib/types";
 import { announceDataChange, mutationSucceeded, pollWhileVisible, subscribeToDataChanges } from "@/lib/client-data-sync";
@@ -816,6 +817,7 @@ function HomeView({ user, posts, events, communities, joinRequests, resolveJoinR
 
 function PostCard({ post, index, vote, votePending, save, openComments, notify, currentUserId, onEdit, onDelete }: { post: Post; index: number; vote: (id: number, d: 1 | -1) => void; votePending: boolean; save: (id: number) => void; openComments: (id: number) => void; notify: (s: string) => void; currentUserId?: string; onEdit?: (post: Post) => void; onDelete?: (post: Post) => void }) {
   const postImages = post.images?.length ? post.images : post.image ? [post.image] : [];
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const isOwner = Boolean(currentUserId && post.userId && post.userId === currentUserId);
@@ -866,7 +868,7 @@ function PostCard({ post, index, vote, votePending, save, openComments, notify, 
     </div>
     <h2>{post.title}</h2>
     {post.body && <p className="post-body">{renderPostBody(post.body)}</p>}
-    {postImages.length > 0 && <div className={`post-image gallery-${Math.min(postImages.length, 6)}`}>{postImages.slice(0, 6).map((image, imageIndex) => <span className="gallery-image" key={`${post.id}-${imageIndex}`}><Image src={image} alt={postImages.length > 1 ? `Attachment ${imageIndex + 1} for ${post.title}` : `Attachment for ${post.title}`} fill sizes="(max-width: 900px) 100vw, 650px" unoptimized={image.startsWith("data:") || image.startsWith("/api/")} />{imageIndex === 5 && postImages.length > 6 && <b>+{postImages.length - 6}</b>}</span>)}</div>}
+    {postImages.length > 0 && <div className={`post-image gallery-${Math.min(postImages.length, 6)}`}>{postImages.slice(0, 6).map((image, imageIndex) => <button type="button" className="gallery-image" key={`${post.id}-${imageIndex}`} onClick={(e) => { e.stopPropagation(); setLightboxIndex(imageIndex); }} aria-label={postImages.length > 1 ? `Expand image ${imageIndex + 1} of ${postImages.length} for ${post.title}` : `Expand image for ${post.title}`}><Image src={image} alt={postImages.length > 1 ? `Attachment ${imageIndex + 1} for ${post.title}` : `Attachment for ${post.title}`} fill sizes="(max-width: 900px) 100vw, 650px" unoptimized={image.startsWith("data:") || image.startsWith("/api/")} />{imageIndex === 5 && postImages.length > 6 && <b>+{postImages.length - 6}</b>}<span className="expand-hint" aria-hidden="true"><Maximize2 size={16} /></span></button>)}</div>}
     {post.poll && <div className="poll">{post.poll.map(item => <button key={item.label} onClick={() => notify(`Voted for ${item.label}`)}><i style={{ width: `${item.percent}%` }} /><span>{item.label}</span><b>{item.percent}%</b></button>)}<small>642 votes · 2 days left</small></div>}
     <div className="post-actions">
       <div className="vote-control"><button disabled={votePending} className={post.voted === 1 ? "up active" : "up"} onClick={() => vote(post.id, 1)} aria-label="Upvote">↑</button><b>{formatNumber(post.votes)}</b><button disabled={votePending} className={post.voted === -1 ? "down active" : "down"} onClick={() => vote(post.id, -1)} aria-label="Downvote">↓</button></div>
@@ -874,6 +876,15 @@ function PostCard({ post, index, vote, votePending, save, openComments, notify, 
       <button onClick={() => save(post.id)} className={post.saved ? "is-saved" : ""}><Bookmark size={18} fill={post.saved ? "currentColor" : "none"} /><span>{post.saved ? "Saved" : "Save"}</span></button>
       <button onClick={() => { navigator.clipboard?.writeText(`https://smartcampus.local/post/${post.id}`); notify("Post link copied"); }}><Share2 size={18} /><span>Share</span></button>
     </div>
+    {lightboxIndex !== null && (
+      <ImageLightbox
+        images={postImages}
+        initialIndex={lightboxIndex}
+        title={post.title}
+        subtitle={`${post.community} · ${post.author}`}
+        onClose={() => setLightboxIndex(null)}
+      />
+    )}
   </article>;
 }
 
@@ -881,7 +892,9 @@ function CommentThread({ post, user, close, onUpdated, notify, onActivity }: { p
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const comments = post.commentItems || [];
+  const postImages = post.images?.length ? post.images : post.image ? [post.image] : [];
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -920,7 +933,7 @@ function CommentThread({ post, user, close, onUpdated, notify, onActivity }: { p
     <section className="comment-thread" role="dialog" aria-modal="true" aria-labelledby="comment-thread-title">
       <header><div><span className="eyebrow violet">{post.community} · DISCUSSION</span><h2 id="comment-thread-title">Join the conversation</h2></div><IconButton label="Close comments" onClick={close}><X size={20} /></IconButton></header>
       <div className="comment-scroll">
-        <article className="comment-original"><div><Avatar text={post.community.slice(2, 4)} color={post.accent} size={36} /><span><b>{post.author}</b><small>{post.time}</small></span></div><h3>{post.title}</h3>{post.body && <p>{post.body}</p>}</article>
+        <article className="comment-original"><div><Avatar text={post.community.slice(2, 4)} color={post.accent} size={36} /><span><b>{post.author}</b><small>{post.time}</small></span></div><h3>{post.title}</h3>{post.body && <p>{post.body}</p>}{postImages.length > 0 && <div className={`post-image gallery-${Math.min(postImages.length, 6)}`} style={{ marginTop: 12 }}>{postImages.slice(0, 6).map((image, imageIndex) => <button type="button" className="gallery-image" key={`comment-img-${post.id}-${imageIndex}`} onClick={() => setLightboxIndex(imageIndex)} aria-label={postImages.length > 1 ? `Expand image ${imageIndex + 1} of ${postImages.length} for ${post.title}` : `Expand image for ${post.title}`}><Image src={image} alt={postImages.length > 1 ? `Attachment ${imageIndex + 1} for ${post.title}` : `Attachment for ${post.title}`} fill sizes="(max-width: 900px) 100vw, 650px" unoptimized={image.startsWith("data:") || image.startsWith("/api/")} />{imageIndex === 5 && postImages.length > 6 && <b>+{postImages.length - 6}</b>}<span className="expand-hint" aria-hidden="true"><Maximize2 size={16} /></span></button>)}</div>}</article>
         <div className="comment-heading"><span><MessageCircle size={17} /><b>{post.comments}</b> {post.comments === 1 ? "reply" : "replies"}</span><small>Newest campus replies appear here</small></div>
         <div className="comment-list">
           {comments.length ? comments.map((comment) => <article className="comment-item" key={comment.id}><Avatar text={comment.author} color={comment.userId === user.id ? "#C6FF3E" : "#5FD7FF"} size={34} /><div><header><b>{comment.author}</b>{comment.userId === post.userId && <em>OP</em>}<time>{relativeTime(comment.createdAt)}</time></header><p>{comment.body}</p></div></article>) : <div className="comment-empty"><MessageCircle size={25} /><b>No stored replies yet</b><p>{post.comments ? "Earlier activity was counted before reply storage was enabled. Start the live thread below." : "Be the first person to reply to this post."}</p></div>}
@@ -928,6 +941,15 @@ function CommentThread({ post, user, close, onUpdated, notify, onActivity }: { p
       </div>
       <form className="comment-form" onSubmit={submit}><Avatar text={user.username} image={user.avatarUrl} color="#FF5C8A" size={34} /><label><span className="sr-only">Write a reply</span><textarea autoFocus value={draft} onChange={(event) => { setDraft(event.target.value); setError(""); }} maxLength={1_000} rows={2} placeholder={`Reply as ${user.username}…`} />{error && <small className="comment-error">{error}</small>}</label><button type="submit" disabled={busy || !draft.trim()}>{busy ? "Posting…" : <><Send size={16} /> Reply</>}</button><span className="comment-count">{draft.length}/1000</span></form>
     </section>
+    {lightboxIndex !== null && (
+      <ImageLightbox
+        images={postImages}
+        initialIndex={lightboxIndex}
+        title={post.title}
+        subtitle={`${post.community} · ${post.author}`}
+        onClose={() => setLightboxIndex(null)}
+      />
+    )}
   </div>;
 }
 
@@ -1756,6 +1778,7 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
   const [community, setCommunity] = useState(initialCommunity);
   const [uploads, setUploads] = useState<{ name: string; url: string }[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [draftSaved, setDraftSaved] = useState(false);
   const activeCommunity = communities.find((item) => item.name === community || item.id === community)?.name || communities[0]?.name || community;
@@ -1796,7 +1819,7 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
     onCreate({ id: Date.now(), communityId: selectedCommunity.id, community: selectedCommunity.name, accent: selectedCommunity.color, author, time: "now", flair: type === "Image" ? "Photo dump" : type, title: title.trim(), body: body.replace(/^\s+|\s+$/g, "") || undefined, images: uploads.map(upload => upload.url), votes: 0, comments: 0 });
   }
 
-  return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}><form className="composer" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Create a post"><header><div><span className="eyebrow violet">SAY SOMETHING</span><h2>Create a post</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><label className="community-select"><span>Post to</span><div><Avatar text={activeCommunity.slice(2, 4)} color={communities.find(item => item.name === activeCommunity)?.color || "#6C3BFF"} size={28} /><select value={activeCommunity} onChange={event => setCommunity(event.target.value)} aria-label="Post community">{communities.map(item => <option key={item.id}>{item.name}</option>)}</select><ChevronDown size={16} /></div></label><div className="composer-types">{["Text", "Image", "Poll", "Link"].map(item => <button type="button" className={type === item ? "active" : ""} onClick={() => { setType(item); setError(""); }} key={item}>{item}</button>)}</div><input autoFocus value={title} onChange={event => { setTitle(event.target.value); setError(""); setDraftSaved(false); }} maxLength={160} placeholder="An interesting title" /><textarea value={body} onChange={event => { setBody(event.target.value); setDraftSaved(false); }} rows={7} placeholder={type === "Poll" ? "Ask your question..." : type === "Link" ? "Paste a link and add some context..." : "What do you want to share? Markdown is supported."} />{type === "Image" && <><label className="upload-zone"><input className="file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={addImages} /><ImagePlus size={28} /><b>{uploading ? "Uploading…" : uploads.length ? "Add more photos" : "Choose photos to upload"}</b><small>Up to 6 JPG, PNG or WebP images · 5 MB each</small></label>{uploads.length > 0 && <div className="upload-previews">{uploads.map((upload, index) => <div key={`${upload.name}-${index}`}><Image src={upload.url} alt={`Preview of ${upload.name}`} fill sizes="160px" unoptimized /><button type="button" aria-label={`Remove ${upload.name}`} onClick={() => setUploads(current => current.filter((_, itemIndex) => itemIndex !== index))}><X size={15} /></button><span>{index + 1}</span></div>)}</div>}</>}{error && <p className="form-error" role="alert">{error}</p>}<footer><span>{draftSaved ? "Draft saved" : `${title.length}/160`}</span><button type="button" className="draft-button" onClick={() => { localStorage.setItem("sc-post-draft", JSON.stringify({ title, body, type, community: activeCommunity })); setDraftSaved(true); }}>Save draft</button><button type="submit" className="post-button" disabled={!title.trim() || !communities.length || uploading}>Post <ArrowRight size={17} /></button></footer></form></div>;
+  return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}><form className="composer" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Create a post"><header><div><span className="eyebrow violet">SAY SOMETHING</span><h2>Create a post</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><label className="community-select"><span>Post to</span><div><Avatar text={activeCommunity.slice(2, 4)} color={communities.find(item => item.name === activeCommunity)?.color || "#6C3BFF"} size={28} /><select value={activeCommunity} onChange={event => setCommunity(event.target.value)} aria-label="Post community">{communities.map(item => <option key={item.id}>{item.name}</option>)}</select><ChevronDown size={16} /></div></label><div className="composer-types">{["Text", "Image", "Poll", "Link"].map(item => <button type="button" className={type === item ? "active" : ""} onClick={() => { setType(item); setError(""); }} key={item}>{item}</button>)}</div><input autoFocus value={title} onChange={event => { setTitle(event.target.value); setError(""); setDraftSaved(false); }} maxLength={160} placeholder="An interesting title" /><textarea value={body} onChange={event => { setBody(event.target.value); setDraftSaved(false); }} rows={7} placeholder={type === "Poll" ? "Ask your question..." : type === "Link" ? "Paste a link and add some context..." : "What do you want to share? Markdown is supported."} />{type === "Image" && <><label className="upload-zone"><input className="file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={addImages} /><ImagePlus size={28} /><b>{uploading ? "Uploading…" : uploads.length ? "Add more photos" : "Choose photos to upload"}</b><small>Up to 6 JPG, PNG or WebP images · 5 MB each</small></label>{uploads.length > 0 && <div className="upload-previews">{uploads.map((upload, index) => <div key={`${upload.name}-${index}`} style={{ cursor: "pointer" }} onClick={() => setPreviewIndex(index)} title="Click to enlarge preview"><Image src={upload.url} alt={`Preview of ${upload.name}`} fill sizes="160px" unoptimized /><button type="button" aria-label={`Remove ${upload.name}`} onClick={(e) => { e.stopPropagation(); setUploads(current => current.filter((_, itemIndex) => itemIndex !== index)); }}><X size={15} /></button><span>{index + 1}</span></div>)}</div>}</>}{error && <p className="form-error" role="alert">{error}</p>}<footer><span>{draftSaved ? "Draft saved" : `${title.length}/160`}</span><button type="button" className="draft-button" onClick={() => { localStorage.setItem("sc-post-draft", JSON.stringify({ title, body, type, community: activeCommunity })); setDraftSaved(true); }}>Save draft</button><button type="submit" className="post-button" disabled={!title.trim() || !communities.length || uploading}>Post <ArrowRight size={17} /></button></footer></form>{previewIndex !== null && <ImageLightbox images={uploads.map(u => u.url)} initialIndex={previewIndex} title={title || "Image Upload Preview"} subtitle={uploads[previewIndex]?.name} onClose={() => setPreviewIndex(null)} />}</div>;
 }
 
 function EditPostModal({ post, close, onSave }: { post: Post; communities: Community[]; close: () => void; onSave: (postId: number, updates: { title: string; body: string; images: string[] }) => Promise<void> }) {
