@@ -8,7 +8,7 @@ import {
   Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Link2, LoaderCircle, LockKeyhole, MapPin,
   LogOut, Menu, MessageCircle, MessageSquare, Moon, Plus, Search, Send, Settings, Share2,
   Download, ExternalLink, ShieldCheck, Star, Sun, TicketCheck, TrendingUp, Trophy, UserCheck, UserPlus, Users, X, XCircle,
-  Pencil, Trash2,
+  Pencil, Trash2, Video,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthLoading, AuthScreen } from "@/components/auth-screen";
@@ -1324,7 +1324,7 @@ const localTimeInput = (iso: string) => { const d = new Date(iso); return `${pad
 type EventFormInitial = {
   title: string; description: string; category: string;
   date: string; time: string; endDate: string; endTime: string;
-  location: string; directionsUrl: string; capacity: string;
+  location: string; directionsUrl: string; meetingUrl: string; capacity: string;
   community: string; instituteId: string; campus: string;
   coverFit: CoverFit; coverFocusX: number; coverFocusY: number;
   imageUrl: string; customFormFields: CustomFormField[];
@@ -1335,7 +1335,7 @@ function eventToFormInitial(event: CampusEvent): EventFormInitial {
     title: event.title, description: event.description, category: event.category,
     date: localDateInput(event.startsAt), time: localTimeInput(event.startsAt),
     endDate: event.endsAt ? localDateInput(event.endsAt) : "", endTime: event.endsAt ? localTimeInput(event.endsAt) : "",
-    location: event.location, directionsUrl: event.directionsUrl, capacity: String(event.capacity),
+    location: event.location, directionsUrl: event.directionsUrl, meetingUrl: event.meetingUrl || "", capacity: String(event.capacity),
     community: event.community || "None", instituteId: event.instituteId || "", campus: event.campus,
     coverFit: event.coverFit, coverFocusX: event.coverFocusX, coverFocusY: event.coverFocusY,
     imageUrl: event.imageUrl, customFormFields: event.customFormSchema.fields,
@@ -1347,7 +1347,7 @@ function blankEventFormInitial(defaultCampus: string, instituteId = ""): EventFo
     title: "", description: "", category: "Music",
     date: new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10), time: "18:00",
     endDate: "", endTime: "",
-    location: "", directionsUrl: "", capacity: "100",
+    location: "", directionsUrl: "", meetingUrl: "", capacity: "100",
     community: "None", instituteId, campus: defaultCampus,
     coverFit: "fill", coverFocusX: 50, coverFocusY: 50,
     imageUrl: "", customFormFields: [],
@@ -1370,6 +1370,8 @@ function EventForm({ mode, communities, initial, close, onSubmit }: {
   const [endTime, setEndTime] = useState(initial.endTime);
   const [location, setLocation] = useState(initial.location);
   const [directionsUrl, setDirectionsUrl] = useState(initial.directionsUrl);
+  const [meetingUrl, setMeetingUrl] = useState(initial.meetingUrl);
+  const [meetingBusy, setMeetingBusy] = useState(false);
   const [capacity, setCapacity] = useState(initial.capacity);
   const [scope, setScope] = useState(initial.community !== "None" ? `community:${initial.community}` : initial.instituteId ? `institute:${initial.instituteId}` : "standalone");
   const [institutes, setInstitutes] = useState<InstituteSummary[]>([]);
@@ -1402,13 +1404,30 @@ function EventForm({ mode, communities, initial, close, onSubmit }: {
     setError("");
   }
 
+  async function generateMeetingLink() {
+    const start = new Date(`${date}T${time}`);
+    if (!title.trim()) return setError("Add the event title before generating a meeting link.");
+    if (!date || !time || Number.isNaN(start.getTime())) return setError("Choose the start date and time before generating a meeting link.");
+    setMeetingBusy(true);
+    setError("");
+    try {
+      const data = await requestJson<{ meetingLink: string }>("/api/events/meeting-link", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: title.trim(), startsAt: start.toISOString() }) });
+      if (!data?.meetingLink) throw new Error("The meeting service did not return a link.");
+      setMeetingUrl(data.meetingLink);
+    } catch (meetingError) {
+      setError(meetingError instanceof Error ? meetingError.message : "Could not create a meeting link.");
+    } finally {
+      setMeetingBusy(false);
+    }
+  }
+
   async function submit(formEvent: React.FormEvent<HTMLFormElement>) {
     formEvent.preventDefault();
     const start = new Date(`${date}T${time}`);
     const eventCapacity = Number(capacity);
     if (!title.trim() || !location.trim() || !date || !time) return setError("Add a title, date, and venue first.");
     if (Number.isNaN(start.getTime())) return setError("Choose a valid start date and time.");
-    if (mode === "create" && start.getTime() <= Date.now()) return setError("Choose a future date and time.");
+    if (mode === "create" && date < minimumDate) return setError("Choose today or a later date.");
     if (Boolean(endDate) !== Boolean(endTime)) return setError("Set both an end date and an end time, or leave both blank.");
     let endsAt = "";
     if (endDate && endTime) {
@@ -1436,7 +1455,7 @@ function EventForm({ mode, communities, initial, close, onSubmit }: {
       await onSubmit({
         title: title.trim(), description: description.trim(), category,
         location: location.trim(), venueName: location.trim(), venueAddress: location.trim(),
-        directionsUrl: directionsUrl.trim(), campus: campus.trim(), community: communityId || "None", communityId: communityId || null, instituteId: instituteId || null,
+        directionsUrl: directionsUrl.trim(), meetingUrl: meetingUrl.trim(), campus: campus.trim(), community: communityId || "None", communityId: communityId || null, instituteId: instituteId || null,
         startsAt: start.toISOString(), endsAt,
         capacity: eventCapacity, imageUrl,
         coverFit, coverFocusX, coverFocusY,
@@ -1472,6 +1491,7 @@ function EventForm({ mode, communities, initial, close, onSubmit }: {
       {(endDate || endTime) && <button type="button" className="link-button" onClick={() => { setEndDate(""); setEndTime(""); setError(""); }}>Clear end time</button>}
       <label className="field"><span>Venue</span><div className="icon-input"><MapPin size={17} /><input value={location} onChange={fieldEvent => { setLocation(fieldEvent.target.value); setError(""); }} placeholder="e.g. Main Auditorium" required /></div></label>
       <label className="field directions-field"><span>Google Maps directions link <em>Optional</em></span><div className="icon-input"><Link2 size={17} /><input type="url" inputMode="url" value={directionsUrl} onChange={fieldEvent => { setDirectionsUrl(fieldEvent.target.value); setError(""); }} placeholder="https://maps.app.goo.gl/..." maxLength={2048} /></div><small>In Google Maps, open the venue, tap Share, and paste the link here.</small></label>
+      <div className="field directions-field meeting-field"><span>Online meeting link <em>Optional</em></span><div className="meeting-link-row"><div className="icon-input"><Video size={17} /><input type="url" inputMode="url" aria-label="Online meeting link" value={meetingUrl} onChange={fieldEvent => { setMeetingUrl(fieldEvent.target.value); setError(""); }} placeholder="https://meet.icebrkr.space/..." maxLength={2048} /></div><button type="button" className="draft-button" onClick={() => void generateMeetingLink()} disabled={meetingBusy}>{meetingBusy ? <><LoaderCircle className="spin" size={15} /> Creating…</> : <><Video size={15} /> {meetingUrl ? "New link" : "Generate link"}</>}</button></div><small>Creates a meeting room named after the event title at the selected start time, or paste your own link. Only registered attendees and organizers see it.</small></div>
       <CampusPicker value={campus} onChange={setCampus} label="Host campus" required allowCustom />
       <label className="field"><span>Publish under</span><select value={scope} onChange={(fieldEvent) => setScope(fieldEvent.target.value)}><option value="standalone">Smart Campus — standalone event</option>{institutes.filter((item) => item.role || item.id === initial.instituteId).length > 0 && <optgroup label="Institutes">{institutes.filter((item) => item.role || item.id === initial.instituteId).map((item) => <option key={item.id} value={`institute:${item.id}`}>{item.name}</option>)}</optgroup>}<optgroup label="Communities">{communities.filter((item) => item.joined || `community:${item.id}` === scope).map((item) => <option key={item.id} value={`community:${item.id}`}>{item.name}</option>)}</optgroup></select><small>{scope === "standalone" ? "Standalone events publish immediately." : "Institute and community events stay hidden until an authorized admin verifies them."}</small></label>
       <RegistrationFormBuilder fields={customFormFields} onChange={setCustomFormFields} />

@@ -30,6 +30,7 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
   if (typeof body.venueName === "string") patch.venueName = body.venueName;
   if (typeof body.venueAddress === "string") patch.venueAddress = body.venueAddress;
   if (typeof body.directionsUrl === "string") patch.directionsUrl = body.directionsUrl;
+  if (typeof body.meetingUrl === "string") patch.meetingUrl = body.meetingUrl; // "" removes it
   if (typeof body.campus === "string") patch.campus = body.campus;
   if (typeof body.community === "string") patch.community = body.community === "None" ? null : body.community;
   if (typeof body.communityId === "string" || body.communityId === null) patch.communityId = body.communityId || null;

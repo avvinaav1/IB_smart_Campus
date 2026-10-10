@@ -564,6 +564,8 @@ main { min-height: calc(100vh - 70px); }
 .campus-hint.invalid { color: var(--pink); }
 
 .directions-field { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--cyan) 9%, var(--soft)); }
+.meeting-link-row { display: flex; gap: 8px; }.meeting-link-row .icon-input { flex: 1; min-width: 0; }.meeting-link-row .icon-input input { min-width: 0; flex: 1; }.meeting-link-row button { min-height: 43px; padding: 0 13px; border-radius: 8px; color: var(--ink); display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 850; white-space: nowrap; }
+@media (max-width: 520px) { .meeting-link-row { flex-direction: column; } }
 .directions-field > span { display: flex; align-items: center; gap: 7px; }.directions-field > span em { padding: 2px 5px; border-radius: 12px; color: var(--muted); background: var(--panel); font: 7px monospace; font-style: normal; }.directions-field > small { line-height: 1.45; }
 .event-location > span { min-width: 0; display: grid; gap: 2px; }.event-location > span b { color: var(--ink); font-size: 10px; }.event-location > span small { color: var(--muted); font-size: 8px; }.event-location > a { min-height: 31px; margin-left: auto; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--violet); background: var(--soft); display: flex; align-items: center; gap: 5px; font-size: 8px; font-weight: 850; white-space: nowrap; }
 

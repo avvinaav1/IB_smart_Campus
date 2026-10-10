@@ -34,6 +34,7 @@ export async function POST(request: NextRequest) {
     venueName: typeof body.venueName === "string" ? body.venueName : "",
     venueAddress: typeof body.venueAddress === "string" ? body.venueAddress : "",
     directionsUrl: typeof body.directionsUrl === "string" ? body.directionsUrl : "",
+    meetingUrl: typeof body.meetingUrl === "string" ? body.meetingUrl : "",
     campus: typeof body.campus === "string" ? body.campus : "",
     community: typeof body.community === "string" && body.community !== "None" ? body.community : typeof body.communityId === "string" ? body.communityId : undefined,
     communityId: typeof body.communityId === "string" ? body.communityId : undefined,

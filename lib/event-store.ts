@@ -24,6 +24,7 @@ type StoredEvent = {
   venueName: string;
   venueAddress: string;
   directionsUrl: string;
+  meetingUrl?: string;
   campus: string;
   community?: string;
   communityId?: string;
@@ -118,6 +119,7 @@ export type NewEventInput = {
   venueName: string;
   venueAddress: string;
   directionsUrl: string;
+  meetingUrl?: string;
   campus: string;
   community?: string;
   communityId?: string;
@@ -139,6 +141,7 @@ export type EventUpdateInput = Partial<Omit<NewEventInput, "community" | "commun
 const EMPTY_FORM_SCHEMA: CustomFormSchema = { version: 1, fields: [] };
 const CHECK_IN_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const STORE_DOC = process.env.EVENTS_STORE_DOC || "events";
+const SAME_DAY_START_GRACE_MS = 24 * 60 * 60 * 1000;
 let writeQueue: Promise<unknown> = Promise.resolve();
 
 function clampPercent(value: unknown, fallback = 50) {
@@ -360,8 +363,13 @@ function publicEvent(database: EventDatabase, event: StoredEvent, viewerId: stri
     time: date.toLocaleString("en", { hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata" }),
   });
   const started = fmt(start);
+  // The meeting link is for organizers and people who registered, not everyone who can see the event.
+  const { meetingUrl, ...shared } = event;
+  const showMeeting = Boolean(meetingUrl) && (Boolean(viewerRsvp || viewerRegistration) || canManage(database, event, viewerId, globalModerator));
   return {
-    ...event,
+    ...shared,
+    ...(showMeeting ? { meetingUrl } : {}),
+    hasMeeting: Boolean(meetingUrl),
     going: rsvps.filter((rsvp) => rsvp.rsvpStatus === "going").length,
     waitlisted: rsvps.filter((rsvp) => rsvp.rsvpStatus === "waitlisted").length,
     viewerRegistered: Boolean(viewerRegistration || viewerRsvp),
@@ -385,6 +393,12 @@ export function validateEventInput(input: NewEventInput, options?: { allowPastSt
   if (!input.location.trim() || input.location.trim().length > 160) return "Add a venue of 160 characters or fewer.";
   if (!input.venueName.trim() || input.venueName.trim().length > 160) return "Add a valid venue name.";
   if (!input.venueAddress.trim() || input.venueAddress.trim().length > 300) return "Add a valid venue address.";
+  const meetingUrl = input.meetingUrl?.trim() || "";
+  if (meetingUrl) {
+    if (meetingUrl.length > 2_048) return "Meeting links must be 2,048 characters or fewer.";
+    try { if (new URL(meetingUrl).protocol !== "https:") return "Meeting links must start with https://."; }
+    catch { return "Paste a valid meeting link."; }
+  }
   if (input.directionsUrl.trim().length > 2_048) return "Google Maps links must be 2,048 characters or fewer.";
   if (input.directionsUrl.trim()) {
     try {
@@ -399,7 +413,9 @@ export function validateEventInput(input: NewEventInput, options?: { allowPastSt
   if (!/^[\p{L}\p{N} .,'&()\/-]+$/u.test(campus)) return "Use only letters, numbers, spaces and basic punctuation for the campus.";
   if (input.community && !/^(?:c\/[a-z0-9._-]{2,40}|ic\/[a-z0-9._-]{2,40}|seed-[a-z0-9-]+|[0-9a-f-]{36})$/i.test(input.community)) return "Choose a valid community.";
   if (Number.isNaN(startsAt.getTime())) return "Choose a valid date and time.";
-  if (!options?.allowPastStart && startsAt.getTime() <= Date.now()) return "Choose a future date and time.";
+  // Same-day events may start earlier today. The server does not know the creator's timezone, so it allows a
+  // 24h window; the form itself blocks dates before the creator's local today.
+  if (!options?.allowPastStart && startsAt.getTime() < Date.now() - SAME_DAY_START_GRACE_MS) return "Choose today or a later date.";
   if (input.endsAt) {
     const endsAt = new Date(input.endsAt);
     if (Number.isNaN(endsAt.getTime())) return "Choose a valid end date and time.";
@@ -462,7 +478,7 @@ export async function createEvent(creatorId: string, input: NewEventInput, optio
     const now = Date.now();
     const event: StoredEvent = {
       id: randomUUID(), creatorId, title: input.title.trim(), description: input.description.trim(), category: input.category.trim(), location: input.location.trim(),
-      venueName: input.venueName.trim(), venueAddress: input.venueAddress.trim(), directionsUrl: input.directionsUrl.trim(), campus: input.campus.trim(),
+      venueName: input.venueName.trim(), venueAddress: input.venueAddress.trim(), directionsUrl: input.directionsUrl.trim(), ...(input.meetingUrl?.trim() ? { meetingUrl: input.meetingUrl.trim() } : {}), campus: input.campus.trim(),
       ...(input.community ? { community: input.community, communityId: input.community } : {}), ...(scopedInstituteId ? { instituteId: scopedInstituteId } : {}), startsAt: new Date(input.startsAt).toISOString(),
       ...(input.endsAt ? { endsAt: new Date(input.endsAt).toISOString() } : {}),
       capacity: input.capacity, imageUrl: input.imageUrl,
@@ -487,6 +503,7 @@ function mergedEventInput(event: StoredEvent, patch: EventUpdateInput): NewEvent
     venueName: pick("venueName", event.venueName || event.location),
     venueAddress: pick("venueAddress", event.venueAddress || event.location),
     directionsUrl: pick("directionsUrl", event.directionsUrl),
+    meetingUrl: pick("meetingUrl", event.meetingUrl || ""),
     campus: pick("campus", event.campus),
     community: patch.community === undefined ? event.community : patch.community || undefined,
     communityId: patch.communityId === undefined ? event.communityId : patch.communityId || undefined,
@@ -546,6 +563,8 @@ export async function updateEvent(eventId: string, userId: string, patch: EventU
     event.venueName = merged.venueName.trim();
     event.venueAddress = merged.venueAddress.trim();
     event.directionsUrl = merged.directionsUrl.trim();
+    if (merged.meetingUrl?.trim()) event.meetingUrl = merged.meetingUrl.trim();
+    else delete event.meetingUrl;
     event.campus = merged.campus.trim();
     if (merged.community) {
       event.community = merged.community;

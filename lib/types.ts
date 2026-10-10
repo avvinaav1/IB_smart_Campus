@@ -185,6 +185,9 @@ export type CampusEvent = {
   venueName: string;
   venueAddress: string;
   directionsUrl: string;
+  /** Only present for organizers and registered attendees; see `hasMeeting`. */
+  meetingUrl?: string;
+  hasMeeting: boolean;
   campus: string;
   community?: string;
   communityId?: string;

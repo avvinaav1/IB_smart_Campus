@@ -363,7 +363,9 @@ export async function setCommunityMembership(communityId: string, userId: string
     if (joined && community.status !== "APPROVED" && access.role !== "COMMUNITY_ADMIN") {
       return { error: "This community is not open until its institute approves it.", status: 409 } as const;
     }
-    if (joined && !access.joined && community.privacy === "private" && (!inviteToken || inviteToken !== community.inviteToken)) {
+    // A valid admin-issued invite (link, email or QR) counts as approval, so it also skips restricted-community review.
+    const invited = Boolean(inviteToken && community.inviteToken && inviteToken === community.inviteToken);
+    if (joined && !access.joined && community.privacy === "private" && !invited) {
       return { error: "This community is invite-only. Ask a community admin for an invite link.", status: 403 } as const;
     }
     if (!joined && access.role === "COMMUNITY_ADMIN") {
@@ -376,11 +378,11 @@ export async function setCommunityMembership(communityId: string, userId: string
     const now = Date.now();
     let changed = false;
     let newlyPending = false;
-    const requiresApproval = community.privacy === "restricted";
+    const requiresApproval = community.privacy === "restricted" && !invited;
 
     if (joined) {
       if (access.joined) return { community: publicCommunity(database, community, userId), changed: false, newlyPending: false } as const;
-      if (existing && existing.status === "PENDING") return { community: publicCommunity(database, community, userId), changed: false, newlyPending: false } as const;
+      if (requiresApproval && existing && existing.status === "PENDING") return { community: publicCommunity(database, community, userId), changed: false, newlyPending: false } as const;
 
       if (requiresApproval) {
         if (existing) {
