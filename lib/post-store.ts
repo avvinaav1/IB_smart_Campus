@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ensureCommunityForLegacyPost, resolveCommunityForPost, visibleCommunityIds } from "@/lib/community-store";
+import { canAccessCommunity, ensureCommunityForLegacyPost, resolveCommunityForPost, visibleCommunityIds } from "@/lib/community-store";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import { posts as initialPosts } from "@/lib/data";
 import type { Post, PostComment, UserDashboard } from "@/lib/types";
@@ -147,7 +147,7 @@ function trimOuter(value: string) {
 export async function listPosts(viewerId: string) {
   await writeQueue;
   const database = await loadDatabase();
-  const communityIds = await visibleCommunityIds();
+  const communityIds = await visibleCommunityIds(viewerId);
   return database.posts
     .filter((post) => communityIds.has(post.communityId))
     .sort((a, b) => b.createdAt - a.createdAt)
@@ -236,9 +236,15 @@ export async function deleteOwnPost(postId: number, userId: string) {
 }
 
 export async function createComment(postId: number, userId: string, author: string, body: string) {
+  const database = await loadDatabase();
+  const target = database.posts.find((candidate) => candidate.id === postId);
+  if (!target) return { error: "That post no longer exists.", status: 404 } as const;
+  const allowed = await canAccessCommunity(target.communityId, userId);
+  if (!allowed) return { error: "You must be a member of this private community to reply.", status: 403 } as const;
+
   return mutate((database) => {
     const post = database.posts.find((candidate) => candidate.id === postId);
-    if (!post) return { error: "That post no longer exists." } as const;
+    if (!post) return { error: "That post no longer exists.", status: 404 } as const;
     const comment: PostComment = {
       id: randomUUID(),
       postId,
@@ -254,9 +260,15 @@ export async function createComment(postId: number, userId: string, author: stri
 }
 
 export async function setPostVote(postId: number, userId: string, vote: 1 | -1 | null) {
+  const database = await loadDatabase();
+  const target = database.posts.find((candidate) => candidate.id === postId);
+  if (!target) return { error: "That post no longer exists.", status: 404 } as const;
+  const allowed = await canAccessCommunity(target.communityId, userId);
+  if (!allowed) return { error: "You cannot vote on posts in this private community.", status: 403 } as const;
+
   return mutate((database) => {
     const post = database.posts.find((candidate) => candidate.id === postId);
-    if (!post) return { error: "That post no longer exists." } as const;
+    if (!post) return { error: "That post no longer exists.", status: 404 } as const;
     post.voteBase ??= post.votes - voteDelta(post);
     post.votesByUser ??= {};
     const previousVote = post.votesByUser[userId];
