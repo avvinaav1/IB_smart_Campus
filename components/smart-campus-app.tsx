@@ -8,7 +8,7 @@ import {
   Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Link2, LoaderCircle, LockKeyhole, MapPin,
   LogOut, Menu, MessageCircle, MessageSquare, Moon, Plus, Search, Send, Settings, Share2,
   Download, ExternalLink, ShieldCheck, Star, Sun, TicketCheck, TrendingUp, Trophy, UserCheck, UserPlus, Users, X, XCircle,
-  Pencil, Trash2, Video, Maximize2,
+  Pencil, Trash2, Video, Maximize2, FileText, Paperclip,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthLoading, AuthScreen } from "@/components/auth-screen";
@@ -48,6 +48,106 @@ const mobileNav = [
 ];
 
 const formatNumber = (value: number) => value.toLocaleString();
+
+function isImageAttachment(url: string) {
+  return url.startsWith("data:image") || /\.(jpg|jpeg|png|webp|gif|svg)(\?.*)?$/i.test(url.split("?")[0]);
+}
+
+function parseChatMessage(body: string) {
+  const lines = body.split(/\r?\n/);
+  const mediaLines: { name: string; url: string; isImage: boolean }[] = [];
+  const textLines: string[] = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.includes("|") && (line.includes("/api/posts/images/") || line.includes("data:image/"))) {
+      const pipeIndex = line.indexOf("|");
+      const name = line.slice(0, pipeIndex).trim();
+      const url = line.slice(pipeIndex + 1).trim();
+      mediaLines.push({ name: name || "Attachment", url, isImage: isImageAttachment(url) || isImageAttachment(name) });
+    } else if (line.startsWith("/api/posts/images/") || line.startsWith("data:image/") || ((line.startsWith("http://") || line.startsWith("https://")) && isImageAttachment(line))) {
+      const rawName = line.split("/").pop()?.split("?")[0] || "Attachment";
+      const name = decodeURIComponent(rawName);
+      mediaLines.push({ name, url: line, isImage: isImageAttachment(line) });
+    } else {
+      textLines.push(rawLine);
+    }
+  }
+
+  return {
+    text: textLines.join("\n").trim(),
+    media: mediaLines,
+  };
+}
+
+function formatChatMessagePreview(body?: string): string {
+  if (!body) return "Conversation started";
+  const { text, media } = parseChatMessage(body);
+  if (text && media.length > 0) {
+    return text.replace(/\r?\n+/g, " ");
+  }
+  if (text) {
+    return text.replace(/\r?\n+/g, " ");
+  }
+  if (media.length > 0) {
+    const first = media[0];
+    if (first.isImage) return "Photo";
+    const ext = first.name.split(".").pop()?.toUpperCase();
+    if (first.name && first.name !== "Attachment" && !first.name.startsWith("fc261f5e") && !/^[0-9a-f-]{36}/i.test(first.name)) {
+      return first.name;
+    }
+    return ext && ext.length <= 5 ? `${ext} Document` : "Document";
+  }
+  return body.replace(/\r?\n+/g, " ");
+}
+
+function formatPostTimestamp(post: { createdAt?: number; id?: number; time?: string }): string {
+  if (post.time === "posting…") return "posting…";
+  let timestamp = post.createdAt;
+  if (!timestamp && typeof post.id === "number" && post.id > 1600000000000) {
+    timestamp = post.id;
+  }
+  if (!timestamp) {
+    if (post.time && post.time !== "now") return post.time;
+    return "Today";
+  }
+
+  const postDate = new Date(timestamp);
+  const now = new Date();
+
+  const isToday =
+    postDate.getFullYear() === now.getFullYear() &&
+    postDate.getMonth() === now.getMonth() &&
+    postDate.getDate() === now.getDate();
+
+  const timeStr = postDate.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  if (isToday) {
+    return `Today at ${timeStr}`;
+  }
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const isYesterday =
+    postDate.getFullYear() === yesterday.getFullYear() &&
+    postDate.getMonth() === yesterday.getMonth() &&
+    postDate.getDate() === yesterday.getDate();
+
+  if (isYesterday) {
+    return `Yesterday at ${timeStr}`;
+  }
+
+  return postDate.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
 
 /**
  * Turns plain text into React nodes, auto-linking any URL.
@@ -125,8 +225,8 @@ function BrandLogo({ size = 38 }: { size?: number }) {
   </span>;
 }
 
-function IconButton({ label, children, onClick, active }: { label: string; children: React.ReactNode; onClick?: () => void; active?: boolean }) {
-  return <button type="button" className={`icon-button ${active ? "active" : ""}`} aria-label={label} title={label} onClick={onClick}>{children}</button>;
+function IconButton({ label, children, onClick, active, disabled }: { label: string; children: React.ReactNode; onClick?: () => void; active?: boolean; disabled?: boolean }) {
+  return <button type="button" className={`icon-button ${active ? "active" : ""}`} aria-label={label} title={label} onClick={onClick} disabled={disabled}>{children}</button>;
 }
 
 function Toast({ message }: { message: string }) {
@@ -177,6 +277,15 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   const [instituteCommunityTarget, setInstituteCommunityTarget] = useState<InstituteSummary | null>(null);
   const [instituteEventTarget, setInstituteEventTarget] = useState<InstituteSummary | null>(null);
   const [commentPostId, setCommentPostId] = useState<number | null>(null);
+  const [targetCommunityId, setTargetCommunityId] = useState<string>(initialCommunityId || "");
+
+  const handleOpenCommunity = useCallback((communityIdentifier: string) => {
+    if (!communityIdentifier) return;
+    const matched = communities.find((c) => c.id === communityIdentifier || c.name.toLowerCase() === communityIdentifier.toLowerCase());
+    const id = matched ? matched.id : communityIdentifier;
+    setTargetCommunityId(id);
+    setView("explore");
+  }, [communities]);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [privacyPending, setPrivacyPending] = useState(false);
   const [votePending, setVotePending] = useState<Set<number>>(() => new Set());
@@ -657,10 +766,10 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
           </div>
         </header>
 
-        <main>
+        <main className={view === "chat" ? "main-chat-active" : ""}>
           {view === "certificates" && <CertificatePortal preview={previewMode} events={events} appRole={authUser.appRole} userId={authUser.id} initialCode={initialVerificationCode} />}
-          {view === "home" && <HomeView user={authUser} posts={posts} events={events.filter((event) => event.status === "APPROVED")} communities={communities} joinRequests={joinRequests} resolveJoinRequest={resolveJoinRequest} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} onEditPost={(post) => setEditingPost(post)} onDeletePost={(post) => void deleteOwnPost(post)} />}
-                    {view === "explore" && <ExploreView user={authUser} items={communities} setItems={setCommunities} posts={posts} setPosts={setPosts} vote={persistVote} votePending={votePending} notify={setToast} onMembership={persistCommunityMembership} onEvents={() => go("events")} openComments={setCommentPostId} openComposer={(community = "c/campuslife") => { setComposerCommunity(community); setComposerOpen(true); }} initialCommunityId={initialCommunityId} onEditPost={(post) => setEditingPost(post)} onDeletePost={(post) => void deleteOwnPost(post)} />}
+          {view === "home" && <HomeView user={authUser} posts={posts} events={events.filter((event) => event.status === "APPROVED")} communities={communities} joinRequests={joinRequests} resolveJoinRequest={resolveJoinRequest} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} onEditPost={(post) => setEditingPost(post)} onDeletePost={(post) => void deleteOwnPost(post)} onOpenCommunity={handleOpenCommunity} />}
+          {view === "explore" && <ExploreView user={authUser} items={communities} setItems={setCommunities} posts={posts} setPosts={setPosts} vote={persistVote} votePending={votePending} notify={setToast} onMembership={persistCommunityMembership} onEvents={() => go("events")} openComments={setCommentPostId} openComposer={(community = "c/campuslife") => { setComposerCommunity(community); setComposerOpen(true); }} initialCommunityId={initialCommunityId} targetCommunityId={targetCommunityId} onEditPost={(post) => setEditingPost(post)} onDeletePost={(post) => void deleteOwnPost(post)} />}
           {view === "events" && <EventsView events={events} communities={communities} defaultCampus={authUser.campus || ""} onEvent={setEventOpen} onCreated={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setEventOpen(event); }} notify={setToast} />}
           {view === "rewards" && <RewardsView user={authUser} notify={setToast} />}
           {view === "chat" && <ChatView user={authUser} notify={setToast} onDiscover={() => setSearchOpen(true)} initialRequests={initialChatRequests} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
@@ -671,8 +780,22 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
         </main>
       </div>
 
-      <nav className="mobile-nav" aria-label="Mobile navigation">
-        {[...mobileNav, instituteNav, ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : [])].map(({ id, label, icon: Icon }) => id === "create" ? (
+      <nav
+        className="mobile-nav"
+        aria-label="Mobile navigation"
+        style={{
+          gridTemplateColumns: `repeat(${[
+            ...mobileNav.slice(0, 5),
+            ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : []),
+            mobileNav[5],
+          ].length}, 1fr)`,
+        }}
+      >
+        {[
+          ...mobileNav.slice(0, 5),
+          ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : []),
+          mobileNav[5],
+        ].map(({ id, label, icon: Icon }) => id === "create" ? (
           <button key={id} className="mobile-create" aria-label="Create post" onClick={() => { setComposerCommunity("c/campuslife"); setComposerOpen(true); }}><Icon size={25} strokeWidth={3} /></button>
         ) : (
           <button key={id} className={view === id ? "selected" : ""} onClick={() => go(id as View)}>
@@ -689,14 +812,14 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       {editingEvent && <EditEventModal event={editingEvent} communities={communities} close={() => setEditingEvent(null)} onSaved={(event) => { setEditingEvent(null); setEventOpen(event); setEvents((current) => current.map((item) => item.id === event.id ? event : item)); setToast("Event updated"); }} />}
       {instituteCommunityTarget && <CreateCommunityModal institute={instituteCommunityTarget} existingNames={communities.map((item) => item.name)} close={() => setInstituteCommunityTarget(null)} onCreate={(community) => { setCommunities((current) => [community, ...current.filter((item) => item.id !== community.id)]); setInstituteCommunityTarget(null); setToast(`${community.name} was sent for institute verification`); }} />}
       {instituteEventTarget && <CreateEventModal communities={communities} defaultCampus={authUser.campus || ""} initialInstituteId={instituteEventTarget.id} close={() => setInstituteEventTarget(null)} onCreate={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setInstituteEventTarget(null); setEventOpen(event); setToast("Event submitted for institute verification"); }} />}
-      {activeCommentPost && <CommentThread post={activeCommentPost} user={authUser} close={() => setCommentPostId(null)} onUpdated={(updated) => setPosts((current) => current.map((post) => post.id === updated.id ? updated : post))} notify={setToast} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
+      {activeCommentPost && <CommentThread post={activeCommentPost} user={authUser} close={() => setCommentPostId(null)} onUpdated={(updated) => setPosts((current) => current.map((post) => post.id === updated.id ? updated : post))} notify={setToast} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} onOpenCommunity={handleOpenCommunity} />}
       {profileEditorOpen && <ProfileEditor user={authUser} close={() => setProfileEditorOpen(false)} onUpdated={setAuthUser} notify={setToast} />}
       {toast && <Toast message={toast} />}
     </div>
   );
 }
 
-function HomeView({ user, posts, events, communities, joinRequests, resolveJoinRequest, setPosts, vote, votePending, onExplore, onEvents, onEvent, openComments, notify, onEditPost, onDeletePost }: { user: SessionUser; posts: Post[]; events: CampusEvent[]; communities: Community[]; joinRequests: CommunityJoinRequest[]; resolveJoinRequest: (communityId: string, requesterId: string, decision: "accepted" | "rejected") => Promise<void>; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; onExplore: () => void; onEvents: () => void; onEvent: (e: CampusEvent) => void; openComments: (id: number) => void; notify: (s: string) => void; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void }) {
+function HomeView({ user, posts, events, communities, joinRequests, resolveJoinRequest, setPosts, vote, votePending, onExplore, onEvents, onEvent, openComments, notify, onEditPost, onDeletePost, onOpenCommunity }: { user: SessionUser; posts: Post[]; events: CampusEvent[]; communities: Community[]; joinRequests: CommunityJoinRequest[]; resolveJoinRequest: (communityId: string, requesterId: string, decision: "accepted" | "rejected") => Promise<void>; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; onExplore: () => void; onEvents: () => void; onEvent: (e: CampusEvent) => void; openComments: (id: number) => void; notify: (s: string) => void; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void; onOpenCommunity?: (communityIdentifier: string) => void }) {
   const [feed, setFeed] = useState("Home");
   const [today, setToday] = useState(todayLabel);
   const [now, setNow] = useState(() => Date.now());
@@ -741,7 +864,7 @@ function HomeView({ user, posts, events, communities, joinRequests, resolveJoinR
       </div>
       <button className="quick-compose" onClick={() => document.querySelector<HTMLButtonElement>(".create-button")?.click()}><Avatar text={user.username} image={user.avatarUrl} color="#FF5C8A" /><span>Share something with campus...</span><ImagePlus size={19} /><Link2 size={19} /></button>
       <div className="feed-list">
-        {posts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} currentUserId={user.id} onEdit={onEditPost} onDelete={onDeletePost} />)}
+        {posts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} currentUserId={user.id} onEdit={onEditPost} onDelete={onDeletePost} onOpenCommunity={onOpenCommunity} />)}
       </div>
     </section>
     <aside className="right-rail">
@@ -815,8 +938,10 @@ function HomeView({ user, posts, events, communities, joinRequests, resolveJoinR
   </div>;
 }
 
-function PostCard({ post, index, vote, votePending, save, openComments, notify, currentUserId, onEdit, onDelete }: { post: Post; index: number; vote: (id: number, d: 1 | -1) => void; votePending: boolean; save: (id: number) => void; openComments: (id: number) => void; notify: (s: string) => void; currentUserId?: string; onEdit?: (post: Post) => void; onDelete?: (post: Post) => void }) {
-  const postImages = post.images?.length ? post.images : post.image ? [post.image] : [];
+function PostCard({ post, index, vote, votePending, save, openComments, notify, currentUserId, onEdit, onDelete, onOpenCommunity }: { post: Post; index: number; vote: (id: number, d: 1 | -1) => void; votePending: boolean; save: (id: number) => void; openComments: (id: number) => void; notify: (s: string) => void; currentUserId?: string; onEdit?: (post: Post) => void; onDelete?: (post: Post) => void; onOpenCommunity?: (communityIdentifier: string) => void }) {
+  const allAttachments = post.images?.length ? post.images : post.image ? [post.image] : [];
+  const postImages = allAttachments.filter(isImageAttachment);
+  const postFiles = allAttachments.filter((url) => !isImageAttachment(url));
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -833,10 +958,24 @@ function PostCard({ post, index, vote, votePending, save, openComments, notify, 
 
   return <article className={`post-card post-${index + 1} ${post.id < 0 ? "is-pending" : ""}`}>
     <div className="post-meta">
-      <Avatar text={post.community.slice(2, 4)} color={post.accent} size={34} />
+      <button
+        type="button"
+        className="post-community-avatar-btn"
+        onClick={() => onOpenCommunity?.(post.communityId || post.community)}
+        title={`Visit ${post.community}`}
+        aria-label={`Visit ${post.community}`}
+      >
+        <Avatar text={post.community.slice(2, 4)} color={post.accent} size={34} />
+      </button>
       <div>
-        <b>{post.community}</b>
-        <span>posted by {post.author} · {post.time}</span>
+        <button
+          type="button"
+          className="post-community-name-btn"
+          onClick={() => onOpenCommunity?.(post.communityId || post.community)}
+        >
+          <b>{post.community}</b>
+        </button>
+        <span>posted by {post.author} · {formatPostTimestamp(post)}</span>
       </div>
       {post.flair && <em>{post.flair}</em>}
       {isOwner && (
@@ -869,6 +1008,34 @@ function PostCard({ post, index, vote, votePending, save, openComments, notify, 
     <h2>{post.title}</h2>
     {post.body && <p className="post-body">{renderPostBody(post.body)}</p>}
     {postImages.length > 0 && <div className={`post-image gallery-${Math.min(postImages.length, 6)}`}>{postImages.slice(0, 6).map((image, imageIndex) => <button type="button" className="gallery-image" key={`${post.id}-${imageIndex}`} onClick={(e) => { e.stopPropagation(); setLightboxIndex(imageIndex); }} aria-label={postImages.length > 1 ? `Expand image ${imageIndex + 1} of ${postImages.length} for ${post.title}` : `Expand image for ${post.title}`}><Image src={image} alt={postImages.length > 1 ? `Attachment ${imageIndex + 1} for ${post.title}` : `Attachment for ${post.title}`} fill sizes="(max-width: 900px) 100vw, 650px" unoptimized={image.startsWith("data:") || image.startsWith("/api/")} />{imageIndex === 5 && postImages.length > 6 && <b>+{postImages.length - 6}</b>}<span className="expand-hint" aria-hidden="true"><Maximize2 size={16} /></span></button>)}</div>}
+    {postFiles.length > 0 && (
+      <div className="post-file-attachments">
+        {postFiles.map((fileUrl, idx) => {
+          const rawName = fileUrl.split("/").pop()?.split("?")[0] || `Document ${idx + 1}`;
+          const fileName = decodeURIComponent(rawName);
+          const ext = fileName.split(".").pop()?.toUpperCase() || "FILE";
+          return (
+            <a
+              key={`${post.id}-file-${idx}`}
+              href={fileUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              download={fileName}
+              className="post-file-card"
+            >
+              <div className="post-file-icon">
+                <FileText size={20} />
+              </div>
+              <div className="post-file-info">
+                <b>{fileName}</b>
+                <small>{ext} Document · Click to download / view</small>
+              </div>
+              <Download size={16} className="post-file-download" />
+            </a>
+          );
+        })}
+      </div>
+    )}
     {post.poll && <div className="poll">{post.poll.map(item => <button key={item.label} onClick={() => notify(`Voted for ${item.label}`)}><i style={{ width: `${item.percent}%` }} /><span>{item.label}</span><b>{item.percent}%</b></button>)}<small>642 votes · 2 days left</small></div>}
     <div className="post-actions">
       <div className="vote-control"><button disabled={votePending} className={post.voted === 1 ? "up active" : "up"} onClick={() => vote(post.id, 1)} aria-label="Upvote">↑</button><b>{formatNumber(post.votes)}</b><button disabled={votePending} className={post.voted === -1 ? "down active" : "down"} onClick={() => vote(post.id, -1)} aria-label="Downvote">↓</button></div>
@@ -888,13 +1055,15 @@ function PostCard({ post, index, vote, votePending, save, openComments, notify, 
   </article>;
 }
 
-function CommentThread({ post, user, close, onUpdated, notify, onActivity }: { post: Post; user: SessionUser; close: () => void; onUpdated: (post: Post) => void; notify: (message: string) => void; onActivity: () => void }) {
+function CommentThread({ post, user, close, onUpdated, notify, onActivity, onOpenCommunity }: { post: Post; user: SessionUser; close: () => void; onUpdated: (post: Post) => void; notify: (message: string) => void; onActivity: () => void; onOpenCommunity?: (communityIdentifier: string) => void }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const comments = post.commentItems || [];
-  const postImages = post.images?.length ? post.images : post.image ? [post.image] : [];
+  const allAttachments = post.images?.length ? post.images : post.image ? [post.image] : [];
+  const postImages = allAttachments.filter(isImageAttachment);
+  const postFiles = allAttachments.filter((url) => !isImageAttachment(url));
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -931,9 +1100,76 @@ function CommentThread({ post, user, close, onUpdated, notify, onActivity }: { p
 
   return <div className="overlay comment-overlay" onMouseDown={(event) => event.target === event.currentTarget && close()}>
     <section className="comment-thread" role="dialog" aria-modal="true" aria-labelledby="comment-thread-title">
-      <header><div><span className="eyebrow violet">{post.community} · DISCUSSION</span><h2 id="comment-thread-title">Join the conversation</h2></div><IconButton label="Close comments" onClick={close}><X size={20} /></IconButton></header>
+      <header>
+        <div>
+          <span className="eyebrow violet">
+            <button
+              type="button"
+              className="post-community-name-btn"
+              onClick={() => { close(); onOpenCommunity?.(post.communityId || post.community); }}
+            >
+              {post.community}
+            </button>
+            {" "}· DISCUSSION
+          </span>
+          <h2 id="comment-thread-title">Join the conversation</h2>
+        </div>
+        <IconButton label="Close comments" onClick={close}><X size={20} /></IconButton>
+      </header>
       <div className="comment-scroll">
-        <article className="comment-original"><div><Avatar text={post.community.slice(2, 4)} color={post.accent} size={36} /><span><b>{post.author}</b><small>{post.time}</small></span></div><h3>{post.title}</h3>{post.body && <p>{post.body}</p>}{postImages.length > 0 && <div className={`post-image gallery-${Math.min(postImages.length, 6)}`} style={{ marginTop: 12 }}>{postImages.slice(0, 6).map((image, imageIndex) => <button type="button" className="gallery-image" key={`comment-img-${post.id}-${imageIndex}`} onClick={() => setLightboxIndex(imageIndex)} aria-label={postImages.length > 1 ? `Expand image ${imageIndex + 1} of ${postImages.length} for ${post.title}` : `Expand image for ${post.title}`}><Image src={image} alt={postImages.length > 1 ? `Attachment ${imageIndex + 1} for ${post.title}` : `Attachment for ${post.title}`} fill sizes="(max-width: 900px) 100vw, 650px" unoptimized={image.startsWith("data:") || image.startsWith("/api/")} />{imageIndex === 5 && postImages.length > 6 && <b>+{postImages.length - 6}</b>}<span className="expand-hint" aria-hidden="true"><Maximize2 size={16} /></span></button>)}</div>}</article>
+        <article className="comment-original">
+          <div>
+            <button
+              type="button"
+              className="post-community-avatar-btn"
+              onClick={() => { close(); onOpenCommunity?.(post.communityId || post.community); }}
+              title={`Visit ${post.community}`}
+            >
+              <Avatar text={post.community.slice(2, 4)} color={post.accent} size={36} />
+            </button>
+            <span>
+              <button
+                type="button"
+                className="post-community-name-btn"
+                onClick={() => { close(); onOpenCommunity?.(post.communityId || post.community); }}
+              >
+                <b>{post.community}</b>
+              </button>
+              <small>posted by {post.author} · {formatPostTimestamp(post)}</small>
+            </span>
+          </div>
+          <h3>{post.title}</h3>
+          {post.body && <p>{post.body}</p>}
+          {postImages.length > 0 && <div className={`post-image gallery-${Math.min(postImages.length, 6)}`} style={{ marginTop: 12 }}>{postImages.slice(0, 6).map((image, imageIndex) => <button type="button" className="gallery-image" key={`comment-img-${post.id}-${imageIndex}`} onClick={() => setLightboxIndex(imageIndex)} aria-label={postImages.length > 1 ? `Expand image ${imageIndex + 1} of ${postImages.length} for ${post.title}` : `Expand image for ${post.title}`}><Image src={image} alt={postImages.length > 1 ? `Attachment ${imageIndex + 1} for ${post.title}` : `Attachment for ${post.title}`} fill sizes="(max-width: 900px) 100vw, 650px" unoptimized={image.startsWith("data:") || image.startsWith("/api/")} />{imageIndex === 5 && postImages.length > 6 && <b>+{postImages.length - 6}</b>}<span className="expand-hint" aria-hidden="true"><Maximize2 size={16} /></span></button>)}</div>}
+          {postFiles.length > 0 && (
+            <div className="post-file-attachments">
+              {postFiles.map((fileUrl, idx) => {
+                const rawName = fileUrl.split("/").pop()?.split("?")[0] || `Document ${idx + 1}`;
+                const fileName = decodeURIComponent(rawName);
+                const ext = fileName.split(".").pop()?.toUpperCase() || "FILE";
+                return (
+                  <a
+                    key={`comment-file-${post.id}-${idx}`}
+                    href={fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    download={fileName}
+                    className="post-file-card"
+                  >
+                    <div className="post-file-icon">
+                      <FileText size={20} />
+                    </div>
+                    <div className="post-file-info">
+                      <b>{fileName}</b>
+                      <small>{ext} Document · Click to download / view</small>
+                    </div>
+                    <Download size={16} className="post-file-download" />
+                  </a>
+                );
+              })}
+            </div>
+          )}
+        </article>
         <div className="comment-heading"><span><MessageCircle size={17} /><b>{post.comments}</b> {post.comments === 1 ? "reply" : "replies"}</span><small>Newest campus replies appear here</small></div>
         <div className="comment-list">
           {comments.length ? comments.map((comment) => <article className="comment-item" key={comment.id}><Avatar text={comment.author} color={comment.userId === user.id ? "#C6FF3E" : "#5FD7FF"} size={34} /><div><header><b>{comment.author}</b>{comment.userId === post.userId && <em>OP</em>}<time>{relativeTime(comment.createdAt)}</time></header><p>{comment.body}</p></div></article>) : <div className="comment-empty"><MessageCircle size={25} /><b>No stored replies yet</b><p>{post.comments ? "Earlier activity was counted before reply storage was enabled. Start the live thread below." : "Be the first person to reply to this post."}</p></div>}
@@ -985,10 +1221,16 @@ function CommunityCard({ item, index, communities, onOpen, onMembership }: { ite
   </article>;
 }
 
-function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending, notify, onMembership, onEvents, openComments, openComposer, initialCommunityId, onEditPost, onDeletePost }: { user: SessionUser; items: Community[]; setItems: React.Dispatch<React.SetStateAction<Community[]>>; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; notify: (s: string) => void; onMembership: (community: Community) => Promise<void>; onEvents: () => void; openComments: (id: number) => void; openComposer: (community?: string) => void; initialCommunityId: string; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void }) {
+function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending, notify, onMembership, onEvents, openComments, openComposer, initialCommunityId, targetCommunityId, onEditPost, onDeletePost }: { user: SessionUser; items: Community[]; setItems: React.Dispatch<React.SetStateAction<Community[]>>; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; notify: (s: string) => void; onMembership: (community: Community) => Promise<void>; onEvents: () => void; openComments: (id: number) => void; openComposer: (community?: string) => void; initialCommunityId: string; targetCommunityId?: string; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void }) {
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(initialCommunityId || null);
+  const [selectedId, setSelectedId] = useState<string | null>(targetCommunityId || initialCommunityId || null);
+
+  useEffect(() => {
+    if (targetCommunityId) {
+      setSelectedId(targetCommunityId);
+    }
+  }, [targetCommunityId]);
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = items.filter((item) => {
     const parent = item.parentId ? items.find((community) => community.id === item.parentId) : undefined;
@@ -1142,7 +1384,7 @@ function CommunityDetail({ user, community, communities, posts, setPosts, vote, 
       community.privacy === "private" && !community.joined ? (
         <div className="community-feed-layout"><section><div className="community-empty" style={{ padding: "64px 24px", textAlign: "center" }}><span style={{ fontSize: 44, display: "block", marginBottom: 16 }}>🔒</span><h3>Private Community</h3><p style={{ maxWidth: 420, margin: "8px auto 0", color: "var(--muted)" }}>This community is private and invite-only. Only approved members can view posts and participate.</p></div></section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>Private</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div>
       ) : (
-        <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} currentUserId={user.id} onEdit={onEditPost} onDelete={onDeletePost} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div>
+        <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} currentUserId={user.id} onEdit={onEditPost} onDelete={onDeletePost} onOpenCommunity={onOpenCommunity} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div>
       )
     ) : <section className="subcommunity-section"><header><div><span className="eyebrow violet">SUB-COMMUNITIES</span><h2>Spaces inside {community.name}</h2><p>Focused communities managed under this parent.</p></div>{canCreateChildren && <button className="primary-action" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</header>{children.length ? <div className="community-grid">{children.map((child, index) => <CommunityCard key={child.id} item={child} index={index} communities={communities} onOpen={onOpenCommunity} onMembership={onMembership} />)}</div> : <div className="community-empty"><span>🪆</span><h3>No sub-communities yet.</h3><p>Create a focused space inside {community.name}.</p>{canCreateChildren && <button onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</div>}</section>}
     {brandingOpen && <CommunityBrandingModal community={community} close={() => setBrandingOpen(false)} onUpdated={onUpdated} notify={notify} />}
@@ -1585,6 +1827,9 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [busyIds, setBusyIds] = useState<Set<string>>(() => new Set());
+  const [attachment, setAttachment] = useState<{ url: string; name: string } | null>(null);
+  const [attachmentUploading, setAttachmentUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   const refreshInbox = useCallback(async () => {
@@ -1616,9 +1861,35 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
   const visibleInbox = inbox.filter((item) => item.otherUser.username.toLowerCase().includes(filter.trim().toLowerCase()));
   const requestCount = chatRequests.length + followRequests.length;
 
+  async function handleChatAttachment(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      notify("Files must be 10 MB or smaller.");
+      return;
+    }
+    setAttachmentUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const result = await requestJson<{ imageUrl: string }>("/api/posts/images", { method: "POST", body: form });
+      if (!result?.imageUrl) throw new Error("Upload failed.");
+      setAttachment({ url: result.imageUrl, name: file.name });
+      window.setTimeout(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), 60);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : "Could not upload attachment.");
+    } finally {
+      setAttachmentUploading(false);
+    }
+  }
+
   async function send() {
-    const message = draft.trim();
-    if (!selected || !message) return;
+    const text = draft.trim();
+    if (!selected || (!text && !attachment)) return;
+    const message = attachment
+      ? (text ? `${text}\n${attachment.name}|${attachment.url}` : `${attachment.name}|${attachment.url}`)
+      : text;
     setBusyIds((current) => new Set(current).add(selected.id));
     try {
       const data = await requestJson<{ message: DirectConversation["messages"][number] }>(`/api/conversations/${selected.id}/messages`, {
@@ -1627,6 +1898,7 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
       if (!data?.message) throw new Error("The server did not return your message.");
       setInbox((current) => current.map((conversation) => conversation.id === selected.id ? { ...conversation, messages: [...conversation.messages, data.message], updatedAt: data.message.createdAt } : conversation));
       setDraft("");
+      setAttachment(null);
       onActivity();
       window.setTimeout(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), 30);
     } catch (sendError) {
@@ -1661,7 +1933,7 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
     <aside className="conversation-list">
       <div className="chat-list-head"><div><span className="eyebrow cyan">STAY CLOSE</span><h1>Messages</h1></div><IconButton label="Find people" onClick={onDiscover}><UserPlus size={21} /></IconButton></div>
       <nav className="inbox-tabs" aria-label="Message inbox"><button className={mode === "certificates" ? "active" : ""} onClick={() => setMode("certificates")}><Award size={15} /> Certificates</button><button className={mode === "chats" ? "active" : ""} onClick={() => setMode("chats")}><MessageCircle size={15} /> Chats</button><button className={mode === "requests" ? "active" : ""} onClick={() => setMode("requests")}><Inbox size={15} /> Requests {requestCount > 0 && <i>{requestCount}</i>}</button></nav>
-      {mode === "chats" && <><label><Search size={18} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search messages" /></label>{visibleInbox.map((item) => { const last = item.messages.at(-1); return <button className={selectedId === item.id ? "active" : ""} onClick={() => setSelectedId(item.id)} key={item.id}><Avatar text={item.otherUser.username} image={item.otherUser.avatarUrl} color="#6C3BFF" size={45} /><span><b>{item.otherUser.username}</b><small>{last?.body || "Conversation started"}</small></span><em>{relativeTime(item.updatedAt)}</em></button>; })}{!loading && !visibleInbox.length && <div className="conversation-empty"><MessageCircle size={24} /><b>No conversations yet</b><small>Find someone and send one thoughtful request.</small></div>}</>}
+      {mode === "chats" && <><label><Search size={18} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search messages" /></label>{visibleInbox.map((item) => { const last = item.messages.at(-1); return <button className={selectedId === item.id ? "active" : ""} onClick={() => setSelectedId(item.id)} key={item.id}><Avatar text={item.otherUser.username} image={item.otherUser.avatarUrl} color="#6C3BFF" size={45} /><span><b>{item.otherUser.username}</b><small>{formatChatMessagePreview(last?.body)}</small></span><em>{relativeTime(item.updatedAt)}</em></button>; })}{!loading && !visibleInbox.length && <div className="conversation-empty"><MessageCircle size={24} /><b>No conversations yet</b><small>Find someone and send one thoughtful request.</small></div>}</>}
       {mode === "requests" && <div className="request-sidebar-summary"><Inbox size={26} /><b>{requestCount} pending</b><small>Review requests in the main panel.</small></div>}
     </aside>
 
@@ -1672,7 +1944,81 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
       <div className="request-section-heading follow-heading"><div><span className="eyebrow cyan">FOLLOW REQUESTS</span><h2>Private profile requests</h2></div><b>{followRequests.length}</b></div>
       {followRequests.map((request) => <article className="request-card follow-request-card" key={request.id}><Avatar text={request.sender.username} image={request.sender.avatarUrl} color="#22D3EE" size={48} /><div><header><b>{request.sender.username}</b></header><p>Wants to follow your private profile.</p><small>{relativeTime(request.createdAt)}</small></div><footer><button disabled={busyIds.has(request.id)} onClick={() => resolveRequest("follow", request.id, "rejected")}>Reject</button><button disabled={busyIds.has(request.id)} onClick={() => resolveRequest("follow", request.id, "accepted")}><UserCheck size={15} /> Accept</button></footer></article>)}
       {!loading && !followRequests.length && <div className="request-empty compact"><UserPlus size={25} /><b>No follow requests</b></div>}
-    </div></section> : selected ? <section className="thread"><header><Avatar text={selected.otherUser.username} image={selected.otherUser.avatarUrl} color="#6C3BFF" size={42} /><div><b>{selected.otherUser.username}</b><small>{selected.otherUser.isPrivate ? "Private profile" : "Connected on Smart Campus"}</small></div><button className="thread-request-button" onClick={() => setMode("requests")}><Inbox size={17} />{requestCount > 0 && <i>{requestCount}</i>}</button><IconButton label="Conversation details"><Menu size={20} /></IconButton></header><div className="message-scroll"><div className="day-marker"><span>Conversation</span></div><div className="thread-start"><Avatar text={selected.otherUser.username} image={selected.otherUser.avatarUrl} color="#6C3BFF" size={58} /><h2>{selected.otherUser.username}</h2><p>You accepted a connection request. You can now message each other.</p></div>{selected.messages.map((message) => <div className={`bubble-row ${message.senderId === user.id ? "mine" : ""}`} key={message.id}>{message.senderId !== user.id && <Avatar text={selected.otherUser.username} image={selected.otherUser.avatarUrl} color="#6C3BFF" size={29} />}<div className="message-bubble">{message.body}</div><time>{relativeTime(message.createdAt)}</time></div>)}<div ref={endRef} /></div><footer><IconButton label="Add attachment"><Plus size={21} /></IconButton><label><textarea rows={1} maxLength={1000} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={`Message ${selected.otherUser.username}`} /></label><button className="send-button" disabled={!draft.trim() || busyIds.has(selected.id)} onClick={() => void send()}><Send size={19} /></button></footer></section> : <section className="thread empty-thread"><button className="thread-request-button empty-request-button" onClick={() => setMode("requests")}><Inbox size={18} /> Requests {requestCount > 0 && <i>{requestCount}</i>}</button><MessageCircle size={46} /><h2>Your conversations live here</h2><p>Search for a campus user and send one initial message to connect.</p><button className="primary-action" onClick={onDiscover}><UserPlus size={17} /> Find people</button></section>}
+    </div></section> : selected ? <section className="thread"><header><Avatar text={selected.otherUser.username} image={selected.otherUser.avatarUrl} color="#6C3BFF" size={42} /><div><b>{selected.otherUser.username}</b><small>{selected.otherUser.isPrivate ? "Private profile" : "Connected on Smart Campus"}</small></div><button className="thread-request-button" onClick={() => setMode("requests")}><Inbox size={17} />{requestCount > 0 && <i>{requestCount}</i>}</button><IconButton label="Conversation details"><Menu size={20} /></IconButton></header><div className="message-scroll"><div className="day-marker"><span>Conversation</span></div><div className="thread-start"><Avatar text={selected.otherUser.username} image={selected.otherUser.avatarUrl} color="#6C3BFF" size={58} /><h2>{selected.otherUser.username}</h2><p>You accepted a connection request. You can now message each other.</p></div>{selected.messages.map((message) => {
+      const { text, media } = parseChatMessage(message.body);
+      return (
+        <div className={`bubble-row ${message.senderId === user.id ? "mine" : ""}`} key={message.id}>
+          {message.senderId !== user.id && <Avatar text={selected.otherUser.username} image={selected.otherUser.avatarUrl} color="#6C3BFF" size={29} />}
+          <div className="message-bubble">
+            {text && <div style={{ whiteSpace: "pre-wrap" }}>{text}</div>}
+            {media.map((item, i) => {
+              if (item.isImage) {
+                return (
+                  <a key={i} href={item.url} target="_blank" rel="noopener noreferrer">
+                    <img src={item.url} alt={item.name} className="message-attachment-image" />
+                  </a>
+                );
+              }
+              return (
+                <a key={i} href={item.url} target="_blank" rel="noopener noreferrer" download={item.name} className="message-attachment-file">
+                  <FileText size={16} />
+                  <span title={item.name}>{item.name}</span>
+                  <Download size={14} />
+                </a>
+              );
+            })}
+          </div>
+          <time>{relativeTime(message.createdAt)}</time>
+        </div>
+      );
+    })}<div ref={endRef} /></div><footer>
+      <input
+        ref={fileInputRef}
+        type="file"
+        style={{ display: "none" }}
+        onChange={handleChatAttachment}
+      />
+      {attachment && (
+        <div className="chat-attachment-bar">
+          <div className="chat-attachment-chip">
+            {isImageAttachment(attachment.name) ? <ImagePlus size={14} /> : <FileText size={14} />}
+            <span title={attachment.name}>{attachment.name}</span>
+            <button type="button" onClick={() => setAttachment(null)} aria-label="Remove attachment"><X size={14} /></button>
+          </div>
+        </div>
+      )}
+      <div className="chat-input-row">
+        <IconButton
+          label={attachmentUploading ? "Uploading..." : "Add attachment"}
+          onClick={() => fileInputRef.current?.click()}
+          disabled={attachmentUploading}
+        >
+          {attachmentUploading ? <LoaderCircle className="spin" size={20} /> : <Paperclip size={20} />}
+        </IconButton>
+        <label>
+          <textarea
+            rows={1}
+            maxLength={1000}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+            placeholder={`Message ${selected.otherUser.username}`}
+          />
+        </label>
+        <button
+          className="send-button"
+          disabled={(!draft.trim() && !attachment) || busyIds.has(selected.id) || attachmentUploading}
+          onClick={() => void send()}
+        >
+          <Send size={19} />
+        </button>
+      </div>
+    </footer></section> : <section className="thread empty-thread"><button className="thread-request-button empty-request-button" onClick={() => setMode("requests")}><Inbox size={18} /> Requests {requestCount > 0 && <i>{requestCount}</i>}</button><MessageCircle size={46} /><h2>Your conversations live here</h2><p>Search for a campus user and send one initial message to connect.</p><button className="primary-action" onClick={onDiscover}><UserPlus size={17} /> Find people</button></section>}
   </div>;
 }
 
@@ -1694,7 +2040,7 @@ function ProfileView({ user, dashboard, events, onEvent, theme, toggleTheme, pri
   return <div className="content-page profile-page">
     <section className="profile-banner"><div className="profile-pattern">✦ &nbsp; 〰 &nbsp; ★ &nbsp; 〰 &nbsp; ✦</div><div className="profile-identity"><Avatar text={user.username} image={user.avatarUrl} color="#FF5C8A" size={92} /><div><span className="eyebrow lime">CAMPUS CONNECTOR</span><h1>{user.username} <ShieldCheck size={24} fill="#22D3EE" /></h1><p>{user.email} · {user.campus || `ID ${user.id.slice(0, 8)}`}</p></div><button onClick={onEdit}><Settings size={18} /> Edit profile</button></div></section>
     <div className="profile-stats"><div><b>{metric(dashboard?.karma)}</b><small>Karma</small></div><div><b>{metric(dashboard?.postCount)}</b><small>Posts</small></div><div><b>{metric(dashboard?.followers)}</b><small>Followers</small></div><div><b>{metric(dashboard?.streak ?? user.streakCount)}</b><small>24-hour streak</small></div></div>
-    <div className="profile-content"><section><span className="eyebrow violet">ABOUT ME</span><h2>{user.about || "Your campus story starts here. Add a few lines about yourself from Edit profile."}</h2><div className="profile-tags"><span>🎨 Design</span><span>📸 Photography</span><span>☕ Chai</span><span>🎧 Indie music</span></div><div className="profile-own-posts"><span className="eyebrow pink">YOUR POSTS</span>{dashboard?.posts.length ? dashboard.posts.slice(0, 3).map((post) => <article key={post.id}><div><b>{post.title}</b><small>{post.community} · {post.time}</small></div><span>{post.votes.toLocaleString()} karma</span></article>) : <p>You haven&apos;t posted anything yet.</p>}</div><div className="profile-own-posts profile-registered-events"><span className="eyebrow lime">REGISTERED EVENTS</span>{registeredEvents.length ? registeredEvents.map(({ event, ended }) => <button type="button" className={ended ? "ended" : ""} key={event.id} onClick={() => onEvent(event)}><span className="profile-event-date"><b>{event.day}</b><small>{event.month}</small></span><div><b>{event.title}</b><small>{eventWhen(event)} · {event.venueName}</small></div><span className={`profile-event-status ${event.viewerCheckInStatus === "CHECKED_IN" ? "attended" : ended ? "completed" : event.viewerRsvpStatus || "pending"}`}>{registrationLabel(event, ended)}</span></button>) : <p>You haven&apos;t registered for any events yet.</p>}</div></section><aside><span className="eyebrow cyan">PREFERENCES</span><button onClick={onRewards}><Gift size={20} /><span><b>Rewards & Premium</b><small>{user.points} points · {Math.max(0, 60 - user.points)} to your next reward</small></span><ArrowRight size={18} /></button><button onClick={toggleTheme}>{theme === "light" ? <Moon size={20} /> : <Sun size={20} />}<span><b>{theme === "light" ? "Dark mode" : "Light mode"}</b><small>Change your campus vibe</small></span><i /></button><button onClick={onEdit}><KeyRound size={20} /><span><b>Password & email</b><small>{user.hasPassword ? "Password login enabled" : "Add an alternative login method"}</small></span><ArrowRight size={18} /></button><button className="privacy-row" role="switch" aria-checked={user.isPrivate} disabled={privacyPending} onClick={() => onPrivacyChange(!user.isPrivate)}>{user.isPrivate ? <LockKeyhole size={20} /> : <Globe2 size={20} />}<span><b>Private profile</b><small>{user.isPrivate ? "Follow requests require your approval" : "Anyone can follow you instantly"}</small></span><i className={user.isPrivate ? "on" : ""} /></button><button className="logout-row" onClick={onLogout}><LogOut size={20} /><span><b>Log out</b><small>End this session on every layer</small></span><ArrowRight size={18} /></button></aside></div>
+    <div className="profile-content"><section><span className="eyebrow violet">ABOUT ME</span><h2>{user.about || "Your campus story starts here. Add a few lines about yourself from Edit profile."}</h2><div className="profile-tags"><span>🎨 Design</span><span>📸 Photography</span><span>☕ Chai</span><span>🎧 Indie music</span></div><div className="profile-own-posts"><span className="eyebrow pink">YOUR POSTS</span>{dashboard?.posts.length ? dashboard.posts.slice(0, 3).map((post) => <article key={post.id}><div><b>{post.title}</b><small>{post.community} · {formatPostTimestamp(post)}</small></div><span>{post.votes.toLocaleString()} karma</span></article>) : <p>You haven&apos;t posted anything yet.</p>}</div><div className="profile-own-posts profile-registered-events"><span className="eyebrow lime">REGISTERED EVENTS</span>{registeredEvents.length ? registeredEvents.map(({ event, ended }) => <button type="button" className={ended ? "ended" : ""} key={event.id} onClick={() => onEvent(event)}><span className="profile-event-date"><b>{event.day}</b><small>{event.month}</small></span><div><b>{event.title}</b><small>{eventWhen(event)} · {event.venueName}</small></div><span className={`profile-event-status ${event.viewerCheckInStatus === "CHECKED_IN" ? "attended" : ended ? "completed" : event.viewerRsvpStatus || "pending"}`}>{registrationLabel(event, ended)}</span></button>) : <p>You haven&apos;t registered for any events yet.</p>}</div></section><aside><span className="eyebrow cyan">PREFERENCES</span><button onClick={onRewards}><Gift size={20} /><span><b>Rewards & Premium</b><small>{user.points} points · {Math.max(0, 60 - user.points)} to your next reward</small></span><ArrowRight size={18} /></button><button onClick={toggleTheme}>{theme === "light" ? <Moon size={20} /> : <Sun size={20} />}<span><b>{theme === "light" ? "Dark mode" : "Light mode"}</b><small>Change your campus vibe</small></span><i /></button><button onClick={onEdit}><KeyRound size={20} /><span><b>Password & email</b><small>{user.hasPassword ? "Password login enabled" : "Add an alternative login method"}</small></span><ArrowRight size={18} /></button><button className="privacy-row" role="switch" aria-checked={user.isPrivate} disabled={privacyPending} onClick={() => onPrivacyChange(!user.isPrivate)}>{user.isPrivate ? <LockKeyhole size={20} /> : <Globe2 size={20} />}<span><b>Private profile</b><small>{user.isPrivate ? "Follow requests require your approval" : "Anyone can follow you instantly"}</small></span><i className={user.isPrivate ? "on" : ""} /></button><button className="logout-row" onClick={onLogout}><LogOut size={20} /><span><b>Log out</b><small>End this session on every layer</small></span><ArrowRight size={18} /></button></aside></div>
   </div>;
 }
 
@@ -1782,35 +2128,48 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
   const [body, setBody] = useState("");
   const [type, setType] = useState("Text");
   const [community, setCommunity] = useState(initialCommunity);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const [uploads, setUploads] = useState<{ name: string; url: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [draftSaved, setDraftSaved] = useState(false);
   const activeCommunity = communities.find((item) => item.name === community || item.id === community)?.name || communities[0]?.name || community;
+  const currentComm = communities.find((item) => item.name === activeCommunity || item.id === activeCommunity) || communities[0];
 
-  async function addImages(event: React.ChangeEvent<HTMLInputElement>) {
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    }
+    if (dropdownOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [dropdownOpen]);
+
+  async function addFiles(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files || []);
     event.target.value = "";
     setError("");
     if (!files.length) return;
-    const invalid = files.find(file => !["image/jpeg", "image/png", "image/webp"].includes(file.type));
-    if (invalid) return setError(`${invalid.name} is not a JPG, PNG, or WebP image.`);
-    const oversized = files.find(file => file.size > 5 * 1024 * 1024);
-    if (oversized) return setError(`${oversized.name} is larger than 5 MB.`);
-    if (uploads.length + files.length > 6) return setError("You can attach up to 6 images to one post.");
+    const oversized = files.find(file => file.size > 10 * 1024 * 1024);
+    if (oversized) return setError(`${oversized.name} is larger than 10 MB.`);
+    if (uploads.length + files.length > 6) return setError("You can attach up to 6 files to one post.");
     setUploading(true);
     try {
       const added = await Promise.all(files.map(async file => {
         const form = new FormData();
-        form.append("image", file);
+        form.append("file", file);
         const result = await requestJson<{ imageUrl: string }>("/api/posts/images", { method: "POST", body: form });
-        if (!result?.imageUrl) throw new Error("The image server did not return a URL.");
+        if (!result?.imageUrl) throw new Error("The upload server did not return a URL.");
         return { name: file.name, url: result.imageUrl };
       }));
       setUploads(current => [...current, ...added]);
     } catch {
-      setError("We couldn’t upload that image. Please try another file.");
+      setError("We couldn’t upload that file. Please try another file.");
     } finally {
       setUploading(false);
     }
@@ -1819,13 +2178,31 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!title.trim()) return setError("Add a title before publishing.");
-    if (type === "Image" && !uploads.length) return setError("Choose at least one image for an image post.");
-    const selectedCommunity = communities.find(item => item.name === activeCommunity);
+    const isMedia = type === "Media / Files" || type === "Image";
+    if (isMedia && !uploads.length) return setError("Choose at least one file or image to attach.");
+    const selectedCommunity = communities.find(item => item.name === activeCommunity || item.id === activeCommunity);
     if (!selectedCommunity) return setError("Choose a community before publishing.");
-    onCreate({ id: Date.now(), communityId: selectedCommunity.id, community: selectedCommunity.name, accent: selectedCommunity.color, author, time: "now", flair: type === "Image" ? "Photo dump" : type, title: title.trim(), body: body.replace(/^\s+|\s+$/g, "") || undefined, images: uploads.map(upload => upload.url), votes: 0, comments: 0 });
+    const flair = isMedia ? (uploads.every(u => isImageAttachment(u.url)) ? "Photo dump" : "Resource") : type;
+    onCreate({
+      id: Date.now(),
+      createdAt: Date.now(),
+      communityId: selectedCommunity.id,
+      community: selectedCommunity.name,
+      accent: selectedCommunity.color,
+      author,
+      time: "now",
+      flair,
+      title: title.trim(),
+      body: body.replace(/^\s+|\s+$/g, "") || undefined,
+      images: uploads.map(upload => upload.url),
+      votes: 0,
+      comments: 0
+    });
   }
 
-  return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}><form className="composer" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Create a post"><header><div><span className="eyebrow violet">SAY SOMETHING</span><h2>Create a post</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><label className="community-select"><span>Post to</span><div><Avatar text={activeCommunity.slice(2, 4)} color={communities.find(item => item.name === activeCommunity)?.color || "#6C3BFF"} size={28} /><select value={activeCommunity} onChange={event => setCommunity(event.target.value)} aria-label="Post community">{communities.map(item => <option key={item.id}>{item.name}</option>)}</select><ChevronDown size={16} /></div></label><div className="composer-types">{["Text", "Image", "Poll", "Link"].map(item => <button type="button" className={type === item ? "active" : ""} onClick={() => { setType(item); setError(""); }} key={item}>{item}</button>)}</div><input autoFocus value={title} onChange={event => { setTitle(event.target.value); setError(""); setDraftSaved(false); }} maxLength={160} placeholder="An interesting title" /><textarea value={body} onChange={event => { setBody(event.target.value); setDraftSaved(false); }} rows={7} placeholder={type === "Poll" ? "Ask your question..." : type === "Link" ? "Paste a link and add some context..." : "What do you want to share? Markdown is supported."} />{type === "Image" && <><label className="upload-zone"><input className="file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={addImages} /><ImagePlus size={28} /><b>{uploading ? "Uploading…" : uploads.length ? "Add more photos" : "Choose photos to upload"}</b><small>Up to 6 JPG, PNG or WebP images · 5 MB each</small></label>{uploads.length > 0 && <div className="upload-previews">{uploads.map((upload, index) => <div key={`${upload.name}-${index}`} style={{ cursor: "pointer" }} onClick={() => setPreviewIndex(index)} title="Click to enlarge preview"><Image src={upload.url} alt={`Preview of ${upload.name}`} fill sizes="160px" unoptimized /><button type="button" aria-label={`Remove ${upload.name}`} onClick={(e) => { e.stopPropagation(); setUploads(current => current.filter((_, itemIndex) => itemIndex !== index)); }}><X size={15} /></button><span>{index + 1}</span></div>)}</div>}</>}{error && <p className="form-error" role="alert">{error}</p>}<footer><span>{draftSaved ? "Draft saved" : `${title.length}/160`}</span><button type="button" className="draft-button" onClick={() => { localStorage.setItem("sc-post-draft", JSON.stringify({ title, body, type, community: activeCommunity })); setDraftSaved(true); }}>Save draft</button><button type="submit" className="post-button" disabled={!title.trim() || !communities.length || uploading}>Post <ArrowRight size={17} /></button></footer></form>{previewIndex !== null && <ImageLightbox images={uploads.map(u => u.url)} initialIndex={previewIndex} title={title || "Image Upload Preview"} subtitle={uploads[previewIndex]?.name} onClose={() => setPreviewIndex(null)} />}</div>;
+  const isMedia = type === "Media / Files" || type === "Image";
+
+  return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}><form className="composer" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Create a post"><header><div><span className="eyebrow violet">SAY SOMETHING</span><h2>Create a post</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><div className="community-select"><span>Post to</span><div className="custom-community-dropdown" ref={dropdownRef} style={{ border: "none", background: "transparent", padding: 0 }}><button type="button" className="custom-community-trigger" onClick={() => setDropdownOpen(prev => !prev)} aria-haspopup="listbox" aria-expanded={dropdownOpen}><Avatar text={currentComm?.name ? currentComm.name.replace(/^[a-z]+\//i, "").slice(0, 2).toUpperCase() : "SC"} color={currentComm?.color || "#6C3BFF"} size={26} /><span className="community-trigger-text">{activeCommunity}</span><ChevronDown size={16} className={`dropdown-chevron ${dropdownOpen ? "open" : ""}`} /></button>{dropdownOpen && (<div className="custom-community-menu" role="listbox">{communities.map(item => { const isSelected = item.name === activeCommunity || item.id === activeCommunity; return (<button key={item.id} type="button" role="option" aria-selected={isSelected} className={`custom-community-item ${isSelected ? "selected" : ""}`} onClick={() => { setCommunity(item.name); setDropdownOpen(false); }}><Avatar text={item.name ? item.name.replace(/^[a-z]+\//i, "").slice(0, 2).toUpperCase() : "SC"} color={item.color || "#6C3BFF"} size={24} /><span className="community-item-name">{item.name}</span>{isSelected && <Check size={16} className="community-item-check" />}</button>); })}</div>)}</div></div><div className="composer-types">{["Text", "Media / Files", "Poll", "Link"].map(item => <button type="button" className={(type === item || (item === "Media / Files" && type === "Image")) ? "active" : ""} onClick={() => { setType(item); setError(""); }} key={item}>{item}</button>)}</div><input autoFocus value={title} onChange={event => { setTitle(event.target.value); setError(""); setDraftSaved(false); }} maxLength={160} placeholder="An interesting title" /><textarea value={body} onChange={event => { setBody(event.target.value); setDraftSaved(false); }} rows={7} placeholder={type === "Poll" ? "Ask your question..." : type === "Link" ? "Paste a link and add some context..." : "What do you want to share? Markdown is supported."} />{isMedia && <><label className="upload-zone"><input className="file-input" type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.txt,.csv" multiple onChange={addFiles} /><ImagePlus size={28} /><b>{uploading ? "Uploading…" : uploads.length ? "Add more files or photos" : "Choose photos or files to upload"}</b><small>Up to 6 files (Images, PDFs, Docs, Sheets, Zips) · 10 MB each</small></label>{uploads.length > 0 && <div className="upload-previews" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>{uploads.map((upload, index) => isImageAttachment(upload.url) ? (<div key={`${upload.name}-${index}`} style={{ cursor: "pointer", position: "relative" }} onClick={() => setPreviewIndex(index)} title="Click to enlarge preview"><Image src={upload.url} alt={`Preview of ${upload.name}`} fill sizes="160px" unoptimized /><button type="button" aria-label={`Remove ${upload.name}`} onClick={(e) => { e.stopPropagation(); setUploads(current => current.filter((_, itemIndex) => itemIndex !== index)); }}><X size={15} /></button><span>{index + 1}</span></div>) : (<div key={`${upload.name}-${index}`} className="upload-file-item" style={{ minWidth: 180, maxWidth: "100%" }}><FileText size={18} style={{ color: "var(--violet)", flexShrink: 0 }} /><b title={upload.name}>{upload.name}</b><button type="button" aria-label={`Remove ${upload.name}`} onClick={() => setUploads(current => current.filter((_, itemIndex) => itemIndex !== index))}><X size={15} /></button></div>))}</div>}</>}{error && <p className="form-error" role="alert">{error}</p>}<footer><span>{draftSaved ? "Draft saved" : `${title.length}/160`}</span><button type="button" className="draft-button" onClick={() => { localStorage.setItem("sc-post-draft", JSON.stringify({ title, body, type, community: activeCommunity })); setDraftSaved(true); }}>Save draft</button><button type="submit" className="post-button" disabled={!title.trim() || !communities.length || uploading}>Post <ArrowRight size={17} /></button></footer></form>{previewIndex !== null && <ImageLightbox images={uploads.filter(u => isImageAttachment(u.url)).map(u => u.url)} initialIndex={previewIndex} title={title || "Image Upload Preview"} subtitle={uploads[previewIndex]?.name} onClose={() => setPreviewIndex(null)} />}</div>;
 }
 
 function EditPostModal({ post, close, onSave }: { post: Post; communities: Community[]; close: () => void; onSave: (postId: number, updates: { title: string; body: string; images: string[] }) => Promise<void> }) {
