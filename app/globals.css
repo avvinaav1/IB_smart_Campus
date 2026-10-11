@@ -1209,3 +1209,193 @@ html[data-theme="light"] .community-select > div select option:focus {
 .bubble-row.mine .message-attachment-file { background: rgba(255, 255, 255, 0.22); border-color: rgba(255, 255, 255, 0.3); color: white; }
 .message-attachment-file:hover { text-decoration: underline; background: rgba(0, 0, 0, 0.18); }
 .bubble-row.mine .message-attachment-file:hover { background: rgba(255, 255, 255, 0.3); }
+
+/* Composer scrollable attachments section */
+.upload-zone.compact {
+  min-height: 74px;
+  padding: 10px 14px;
+  gap: 2px;
+}
+.upload-zone.compact b {
+  font-size: 11px;
+}
+.upload-zone.compact small {
+  font-size: 8px;
+}
+
+.composer-attached-container {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--soft);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.composer-attached-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+
+.composer-attached-header b {
+  font-size: 11px;
+  color: var(--ink);
+  font-weight: 750;
+}
+
+.composer-attached-header small {
+  font-size: 9px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.composer-attached-scroll {
+  max-height: 185px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-right: 4px;
+}
+
+.composer-attached-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.composer-attached-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.composer-attached-scroll::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 10px;
+}
+
+.composer-attached-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  transition: border-color 0.15s ease;
+}
+
+.composer-attached-item:hover {
+  border-color: var(--violet);
+}
+
+.attached-img-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 7px;
+  overflow: hidden;
+  position: relative;
+  flex-shrink: 0;
+  cursor: pointer;
+  background: var(--soft);
+  border: 1px solid var(--line);
+}
+
+.attached-img-thumb img {
+  object-fit: cover;
+}
+
+.thumb-zoom-badge {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: rgba(20, 18, 26, 0.72);
+  color: white;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.attached-doc-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--violet) 12%, var(--soft));
+  color: var(--violet);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+}
+
+.doc-ext-badge {
+  font-size: 7px;
+  font-weight: 850;
+  color: var(--ink);
+  letter-spacing: 0.5px;
+}
+
+.attached-item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.attached-item-info b {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.attached-item-info small {
+  font-size: 9px;
+  color: var(--muted);
+}
+
+.attached-remove-btn {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.attached-remove-btn:hover {
+  background: color-mix(in srgb, var(--pink) 15%, transparent);
+  color: var(--pink);
+}
+
+html[data-theme="dark"] .composer-attached-container {
+  background: #171422;
+  border-color: rgba(255, 255, 255, 0.09);
+}
+
+html[data-theme="dark"] .composer-attached-item {
+  background: #1f1b2d;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme="dark"] .composer-attached-item:hover {
+  border-color: var(--violet);
+}
+
+html[data-theme="dark"] .attached-doc-icon {
+  background: color-mix(in srgb, var(--violet) 22%, #171422);
+}

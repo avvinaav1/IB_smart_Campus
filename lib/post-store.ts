@@ -118,8 +118,8 @@ export function validatePostInput(input: NewPostInput) {
   if ((input.body || "").length > 10_000) return "Post text must be 10,000 characters or fewer.";
   if ((input.flair || "").length > 40) return "Post flair must be 40 characters or fewer.";
   if ((input.images || []).length > 6) return "You can attach up to 6 images.";
-  const invalidImage = (input.images || []).some((image) => !/^\/api\/posts\/images\/[0-9a-f-]{36}\.(jpg|png|webp)$/.test(image));
-  if (invalidImage) return "Attach images with the uploader before posting.";
+  const invalidImage = (input.images || []).some((image) => !/^\/api\/posts\/images\/[0-9a-f-]{36}\.[a-z0-9]{2,6}$/i.test(image));
+  if (invalidImage) return "Attach files with the uploader before posting.";
   return "";
 }
 
@@ -127,8 +127,8 @@ export function validatePostUpdate(input: UpdatePostInput) {
   if (!input.title.trim() || input.title.trim().length > 160) return "Post titles must be between 1 and 160 characters.";
   if ((input.body || "").length > 10_000) return "Post text must be 10,000 characters or fewer.";
   if ((input.images || []).length > 6) return "You can attach up to 6 images.";
-  const invalidImage = (input.images || []).some((image) => !/^\/api\/posts\/images\/[0-9a-f-]{36}\.(jpg|png|webp)$/.test(image));
-  if (invalidImage) return "Attach images with the uploader before saving.";
+  const invalidImage = (input.images || []).some((image) => !/^\/api\/posts\/images\/[0-9a-f-]{36}\.[a-z0-9]{2,6}$/i.test(image));
+  if (invalidImage) return "Attach files with the uploader before saving.";
   return "";
 }
 
