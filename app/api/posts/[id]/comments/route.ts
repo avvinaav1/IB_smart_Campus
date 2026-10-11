@@ -22,7 +22,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   if (validationError) return noStoreJson({ error: validationError }, { status: 400 });
 
   const result = await createComment(postId, user.id, user.username, body);
-  if ("error" in result) return noStoreJson({ error: result.error }, { status: 404 });
+  if ("error" in result) return noStoreJson({ error: result.error }, { status: "status" in result ? result.status : 400 });
   try { await incrementUserStreak(user.id, "POST_COMMENT", result.comment.id); }
   catch (error) { console.error("Comment streak update failed", error); }
   return noStoreJson({ data: result }, { status: 201 });

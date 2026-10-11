@@ -449,10 +449,10 @@ main { min-height: calc(100vh - 70px); }
 .image-lightbox-btn.close { width: 38px; padding: 0; border-radius: 50%; background: rgba(255, 92, 138, 0.18); border-color: rgba(255, 92, 138, 0.35); color: #ffffff; }
 .image-lightbox-btn.close:hover { background: var(--pink, #ff5c8a); color: #14121a; border-color: var(--pink, #ff5c8a); }
 .image-lightbox-main { flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center; width: 100%; overflow: hidden; }
-.image-lightbox-canvas { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; position: relative; padding: 18px; }
-.image-lightbox-canvas.is-zoomed { overflow: auto; align-items: flex-start; justify-content: flex-start; }
-.image-lightbox-img { max-width: 90vw; max-height: calc(100vh - 170px); width: auto; height: auto; object-fit: contain; border-radius: 10px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7); cursor: zoom-in; transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease; user-select: none; }
-.image-lightbox-img.is-zoomed { max-width: none; max-height: none; cursor: zoom-out; transform: scale(1.65); transform-origin: top left; margin: 30px; }
+.image-lightbox-canvas { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; position: relative; padding: 18px; overflow: hidden; touch-action: none; }
+.image-lightbox-img { max-width: 90vw; max-height: calc(100vh - 170px); width: auto; height: auto; object-fit: contain; border-radius: 10px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7); user-select: none; will-change: transform; -webkit-user-drag: none; }
+.zoom-reset-badge { background: rgba(255, 255, 255, 0.18); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.3); transition: all 0.15s ease; }
+.zoom-reset-badge:hover { background: rgba(255, 255, 255, 0.32); transform: scale(1.05); }
 .image-lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); z-index: 20; width: 52px; height: 52px; border-radius: 50%; background: rgba(14, 13, 20, 0.75); border: 1px solid rgba(255, 255, 255, 0.22); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); color: #ffffff; display: grid; place-items: center; cursor: pointer; transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); }
 .image-lightbox-nav:hover { background: var(--violet, #6c3bff); border-color: var(--lime, #c7ff32); color: #ffffff; transform: translateY(-50%) scale(1.1); }
 .image-lightbox-prev { left: 20px; }

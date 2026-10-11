@@ -632,10 +632,40 @@ export async function ensureCommunityForLegacyPost(name: string, color: string, 
   });
 }
 
-export async function visibleCommunityIds() {
+export async function visibleCommunityIds(viewerId?: string) {
   await writeQueue;
   const database = await loadDatabase();
-  return new Set(Object.keys(database.communities));
+  return new Set(
+    Object.values(database.communities)
+      .filter((community) => {
+        if (community.status !== "APPROVED") {
+          if (!viewerId) return false;
+          const access = resolveCommunityHierarchyAccess(database, community, viewerId);
+          return access.role === "COMMUNITY_ADMIN" || community.creatorId === viewerId;
+        }
+        if (community.privacy === "private") {
+          if (!viewerId) return false;
+          return resolveCommunityHierarchyAccess(database, community, viewerId).joined;
+        }
+        return true;
+      })
+      .map((community) => community.id)
+  );
+}
+
+export async function canAccessCommunity(communityId: string, userId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  const community = database.communities[communityId];
+  if (!community) return false;
+  if (community.status !== "APPROVED") {
+    const access = resolveCommunityHierarchyAccess(database, community, userId);
+    return access.role === "COMMUNITY_ADMIN" || community.creatorId === userId;
+  }
+  if (community.privacy === "private") {
+    return resolveCommunityHierarchyAccess(database, community, userId).joined;
+  }
+  return true;
 }
 
 export type CommunityMemberRecord = CommunityMember & {
