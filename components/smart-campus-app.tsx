@@ -8,7 +8,7 @@ import {
   Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Link2, LoaderCircle, LockKeyhole, MapPin,
   LogOut, Menu, MessageCircle, MessageSquare, Moon, Plus, Search, Send, Settings, Share2,
   Download, ExternalLink, ShieldCheck, Star, Sun, TicketCheck, TrendingUp, Trophy, UserCheck, UserPlus, Users, X, XCircle,
-  Pencil, Trash2, Video, Maximize2, FileText, Paperclip,
+  Pencil, Trash2, Video, Maximize2, FileText, Paperclip, BarChart2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthLoading, AuthScreen } from "@/components/auth-screen";
@@ -50,7 +50,19 @@ const mobileNav = [
 const formatNumber = (value: number) => value.toLocaleString();
 
 function isImageAttachment(url: string) {
-  return url.startsWith("data:image") || /\.(jpg|jpeg|png|webp|gif|svg)(\?.*)?$/i.test(url.split("?")[0]);
+  return url.startsWith("data:image") || /\.(jpg|jpeg|png|webp|gif|svg|avif|heic|heif|bmp)(\?.*)?$/i.test(url.split("?")[0]);
+}
+
+function formatPollRemaining(endsAt?: number) {
+  if (!endsAt) return "Poll open";
+  const diff = endsAt - Date.now();
+  if (diff <= 0) return "Final results · Ended";
+  const days = Math.floor(diff / (24 * 60 * 60 * 1000));
+  if (days >= 1) return `${days} ${days === 1 ? "day" : "days"} left`;
+  const hours = Math.floor(diff / (60 * 60 * 1000));
+  if (hours >= 1) return `${hours} ${hours === 1 ? "hr" : "hrs"} left`;
+  const minutes = Math.max(1, Math.floor(diff / (60 * 1000)));
+  return `${minutes} min left`;
 }
 
 function parseChatMessage(body: string) {
@@ -579,6 +591,8 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
           title: draft.title,
           body: draft.body,
           images: draft.images,
+          poll: draft.poll,
+          pollEndsAt: draft.pollEndsAt,
         }),
       });
       const result = await response.json();
@@ -722,6 +736,49 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
     }
   }
 
+  async function persistPollVote(postId: number, optionIndex: number) {
+    const original = posts.find((p) => p.id === postId);
+    if (!original || original.id < 0 || !original.poll) return;
+
+    setPosts((current) => current.map((post) => {
+      if (post.id !== postId || !post.poll) return post;
+      const prevVoted = post.pollVotedIndex;
+      const counts = post.poll.map((opt) => opt.votes || 0);
+      if (prevVoted !== undefined && prevVoted >= 0 && prevVoted < counts.length) {
+        counts[prevVoted] = Math.max(0, counts[prevVoted] - 1);
+      }
+      counts[optionIndex] = (counts[optionIndex] || 0) + 1;
+      const total = counts.reduce((sum, c) => sum + c, 0);
+      const updatedPoll = post.poll.map((opt, idx) => ({
+        ...opt,
+        votes: counts[idx],
+        percent: total > 0 ? Math.round((counts[idx] / total) * 100) : 0,
+      }));
+      return {
+        ...post,
+        poll: updatedPoll,
+        pollTotalVotes: total,
+        pollVotedIndex: optionIndex,
+      };
+    }));
+
+    try {
+      const data = await requestJson<{ post: Post }>(`/api/posts/${postId}/poll-vote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ optionIndex }),
+      });
+      if (data?.post) {
+        announceDataChange();
+        setPosts((current) => current.map((post) => post.id === postId ? { ...data.post, saved: post.saved } : post));
+      }
+      setToast("Vote recorded!");
+    } catch (error) {
+      setPosts((current) => current.map((post) => post.id === postId ? original : post));
+      setToast(error instanceof Error ? error.message : "Could not record your vote.");
+    }
+  }
+
   if (authUser === undefined) return <AuthLoading />;
   if (!authUser) return <AuthScreen onAuthenticated={completeAuthentication} prefillEmail={claimEmail} />;
   if (!authUser.profileSetupComplete) return <ProfileSetup user={authUser} onComplete={completeAuthentication} />;
@@ -768,8 +825,8 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
 
         <main className={view === "chat" ? "main-chat-active" : ""}>
           {view === "certificates" && <CertificatePortal preview={previewMode} events={events} appRole={authUser.appRole} userId={authUser.id} initialCode={initialVerificationCode} />}
-          {view === "home" && <HomeView user={authUser} posts={posts} events={events.filter((event) => event.status === "APPROVED")} communities={communities} joinRequests={joinRequests} resolveJoinRequest={resolveJoinRequest} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} onEditPost={(post) => setEditingPost(post)} onDeletePost={(post) => void deleteOwnPost(post)} onOpenCommunity={handleOpenCommunity} />}
-          {view === "explore" && <ExploreView user={authUser} items={communities} setItems={setCommunities} posts={posts} setPosts={setPosts} vote={persistVote} votePending={votePending} notify={setToast} onMembership={persistCommunityMembership} onEvents={() => go("events")} openComments={setCommentPostId} openComposer={(community = "c/campuslife") => { setComposerCommunity(community); setComposerOpen(true); }} initialCommunityId={initialCommunityId} targetCommunityId={targetCommunityId} onEditPost={(post) => setEditingPost(post)} onDeletePost={(post) => void deleteOwnPost(post)} />}
+          {view === "home" && <HomeView user={authUser} posts={posts} events={events.filter((event) => event.status === "APPROVED")} communities={communities} joinRequests={joinRequests} resolveJoinRequest={resolveJoinRequest} setPosts={setPosts} vote={persistVote} votePending={votePending} onExplore={() => go("explore")} onEvents={() => go("events")} onEvent={setEventOpen} openComments={setCommentPostId} notify={setToast} onEditPost={(post) => setEditingPost(post)} onDeletePost={(post) => void deleteOwnPost(post)} onOpenCommunity={handleOpenCommunity} onPollVote={persistPollVote} />}
+          {view === "explore" && <ExploreView user={authUser} items={communities} setItems={setCommunities} posts={posts} setPosts={setPosts} vote={persistVote} votePending={votePending} notify={setToast} onMembership={persistCommunityMembership} onEvents={() => go("events")} openComments={setCommentPostId} openComposer={(community = "c/campuslife") => { setComposerCommunity(community); setComposerOpen(true); }} initialCommunityId={initialCommunityId} targetCommunityId={targetCommunityId} onEditPost={(post) => setEditingPost(post)} onDeletePost={(post) => void deleteOwnPost(post)} onPollVote={persistPollVote} />}
           {view === "events" && <EventsView events={events} communities={communities} defaultCampus={authUser.campus || ""} onEvent={setEventOpen} onCreated={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setEventOpen(event); }} notify={setToast} />}
           {view === "rewards" && <RewardsView user={authUser} notify={setToast} />}
           {view === "chat" && <ChatView user={authUser} notify={setToast} onDiscover={() => setSearchOpen(true)} initialRequests={initialChatRequests} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
@@ -812,14 +869,14 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       {editingEvent && <EditEventModal event={editingEvent} communities={communities} close={() => setEditingEvent(null)} onSaved={(event) => { setEditingEvent(null); setEventOpen(event); setEvents((current) => current.map((item) => item.id === event.id ? event : item)); setToast("Event updated"); }} />}
       {instituteCommunityTarget && <CreateCommunityModal institute={instituteCommunityTarget} existingNames={communities.map((item) => item.name)} close={() => setInstituteCommunityTarget(null)} onCreate={(community) => { setCommunities((current) => [community, ...current.filter((item) => item.id !== community.id)]); setInstituteCommunityTarget(null); setToast(`${community.name} was sent for institute verification`); }} />}
       {instituteEventTarget && <CreateEventModal communities={communities} defaultCampus={authUser.campus || ""} initialInstituteId={instituteEventTarget.id} close={() => setInstituteEventTarget(null)} onCreate={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setInstituteEventTarget(null); setEventOpen(event); setToast("Event submitted for institute verification"); }} />}
-      {activeCommentPost && <CommentThread post={activeCommentPost} user={authUser} close={() => setCommentPostId(null)} onUpdated={(updated) => setPosts((current) => current.map((post) => post.id === updated.id ? updated : post))} notify={setToast} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} onOpenCommunity={handleOpenCommunity} />}
+      {activeCommentPost && <CommentThread post={activeCommentPost} user={authUser} close={() => setCommentPostId(null)} onUpdated={(updated) => setPosts((current) => current.map((post) => post.id === updated.id ? updated : post))} notify={setToast} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} onOpenCommunity={handleOpenCommunity} onPollVote={persistPollVote} />}
       {profileEditorOpen && <ProfileEditor user={authUser} close={() => setProfileEditorOpen(false)} onUpdated={setAuthUser} notify={setToast} />}
       {toast && <Toast message={toast} />}
     </div>
   );
 }
 
-function HomeView({ user, posts, events, communities, joinRequests, resolveJoinRequest, setPosts, vote, votePending, onExplore, onEvents, onEvent, openComments, notify, onEditPost, onDeletePost, onOpenCommunity }: { user: SessionUser; posts: Post[]; events: CampusEvent[]; communities: Community[]; joinRequests: CommunityJoinRequest[]; resolveJoinRequest: (communityId: string, requesterId: string, decision: "accepted" | "rejected") => Promise<void>; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; onExplore: () => void; onEvents: () => void; onEvent: (e: CampusEvent) => void; openComments: (id: number) => void; notify: (s: string) => void; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void; onOpenCommunity?: (communityIdentifier: string) => void }) {
+function HomeView({ user, posts, events, communities, joinRequests, resolveJoinRequest, setPosts, vote, votePending, onExplore, onEvents, onEvent, openComments, notify, onEditPost, onDeletePost, onOpenCommunity, onPollVote }: { user: SessionUser; posts: Post[]; events: CampusEvent[]; communities: Community[]; joinRequests: CommunityJoinRequest[]; resolveJoinRequest: (communityId: string, requesterId: string, decision: "accepted" | "rejected") => Promise<void>; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; onExplore: () => void; onEvents: () => void; onEvent: (e: CampusEvent) => void; openComments: (id: number) => void; notify: (s: string) => void; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void; onOpenCommunity?: (communityIdentifier: string) => void; onPollVote?: (postId: number, optionIndex: number) => void }) {
   const [feed, setFeed] = useState("Home");
   const [today, setToday] = useState(todayLabel);
   const [now, setNow] = useState(() => Date.now());
@@ -864,7 +921,7 @@ function HomeView({ user, posts, events, communities, joinRequests, resolveJoinR
       </div>
       <button className="quick-compose" onClick={() => document.querySelector<HTMLButtonElement>(".create-button")?.click()}><Avatar text={user.username} image={user.avatarUrl} color="#FF5C8A" /><span>Share something with campus...</span><ImagePlus size={19} /><Link2 size={19} /></button>
       <div className="feed-list">
-        {posts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} currentUserId={user.id} onEdit={onEditPost} onDelete={onDeletePost} onOpenCommunity={onOpenCommunity} />)}
+        {posts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} currentUserId={user.id} onEdit={onEditPost} onDelete={onDeletePost} onOpenCommunity={onOpenCommunity} onPollVote={onPollVote} />)}
       </div>
     </section>
     <aside className="right-rail">
@@ -938,7 +995,7 @@ function HomeView({ user, posts, events, communities, joinRequests, resolveJoinR
   </div>;
 }
 
-function PostCard({ post, index, vote, votePending, save, openComments, notify, currentUserId, onEdit, onDelete, onOpenCommunity }: { post: Post; index: number; vote: (id: number, d: 1 | -1) => void; votePending: boolean; save: (id: number) => void; openComments: (id: number) => void; notify: (s: string) => void; currentUserId?: string; onEdit?: (post: Post) => void; onDelete?: (post: Post) => void; onOpenCommunity?: (communityIdentifier: string) => void }) {
+function PostCard({ post, index, vote, votePending, save, openComments, notify, currentUserId, onEdit, onDelete, onOpenCommunity, onPollVote }: { post: Post; index: number; vote: (id: number, d: 1 | -1) => void; votePending: boolean; save: (id: number) => void; openComments: (id: number) => void; notify: (s: string) => void; currentUserId?: string; onEdit?: (post: Post) => void; onDelete?: (post: Post) => void; onOpenCommunity?: (communityIdentifier: string) => void; onPollVote?: (postId: number, optionIndex: number) => void }) {
   const allAttachments = post.images?.length ? post.images : post.image ? [post.image] : [];
   const postImages = allAttachments.filter(isImageAttachment);
   const postFiles = allAttachments.filter((url) => !isImageAttachment(url));
@@ -1036,7 +1093,31 @@ function PostCard({ post, index, vote, votePending, save, openComments, notify, 
         })}
       </div>
     )}
-    {post.poll && <div className="poll">{post.poll.map(item => <button key={item.label} onClick={() => notify(`Voted for ${item.label}`)}><i style={{ width: `${item.percent}%` }} /><span>{item.label}</span><b>{item.percent}%</b></button>)}<small>642 votes · 2 days left</small></div>}
+    {post.poll && (
+      <div className="poll">
+        {post.poll.map((item, idx) => {
+          const isVoted = post.pollVotedIndex === idx;
+          return (
+            <button
+              key={`${item.label}-${idx}`}
+              type="button"
+              className={isVoted ? "voted" : ""}
+              onClick={() => onPollVote ? onPollVote(post.id, idx) : notify(`Voted for ${item.label}`)}
+            >
+              <i style={{ width: `${item.percent}%` }} />
+              <span>
+                {isVoted && <Check size={14} className="poll-checked-icon" />}
+                {item.label}
+              </span>
+              <b>{item.percent}%</b>
+            </button>
+          );
+        })}
+        <small>
+          {post.pollTotalVotes ?? post.poll.reduce((acc, cur) => acc + (cur.votes || 0), 0)} {(post.pollTotalVotes ?? 1) === 1 ? "vote" : "votes"} · {formatPollRemaining(post.pollEndsAt)}
+        </small>
+      </div>
+    )}
     <div className="post-actions">
       <div className="vote-control"><button disabled={votePending} className={post.voted === 1 ? "up active" : "up"} onClick={() => vote(post.id, 1)} aria-label="Upvote">↑</button><b>{formatNumber(post.votes)}</b><button disabled={votePending} className={post.voted === -1 ? "down active" : "down"} onClick={() => vote(post.id, -1)} aria-label="Downvote">↓</button></div>
       <button onClick={() => openComments(post.id)} aria-label={`Open ${post.comments} comments`}><MessageCircle size={18} />{post.comments} <span>comments</span></button>
@@ -1055,7 +1136,7 @@ function PostCard({ post, index, vote, votePending, save, openComments, notify, 
   </article>;
 }
 
-function CommentThread({ post, user, close, onUpdated, notify, onActivity, onOpenCommunity }: { post: Post; user: SessionUser; close: () => void; onUpdated: (post: Post) => void; notify: (message: string) => void; onActivity: () => void; onOpenCommunity?: (communityIdentifier: string) => void }) {
+function CommentThread({ post, user, close, onUpdated, notify, onActivity, onOpenCommunity, onPollVote }: { post: Post; user: SessionUser; close: () => void; onUpdated: (post: Post) => void; notify: (message: string) => void; onActivity: () => void; onOpenCommunity?: (communityIdentifier: string) => void; onPollVote?: (postId: number, optionIndex: number) => void }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -1169,6 +1250,31 @@ function CommentThread({ post, user, close, onUpdated, notify, onActivity, onOpe
               })}
             </div>
           )}
+          {post.poll && (
+            <div className="poll" style={{ marginTop: 14 }}>
+              {post.poll.map((item, idx) => {
+                const isVoted = post.pollVotedIndex === idx;
+                return (
+                  <button
+                    key={`comment-poll-${item.label}-${idx}`}
+                    type="button"
+                    className={isVoted ? "voted" : ""}
+                    onClick={() => onPollVote ? onPollVote(post.id, idx) : notify(`Voted for ${item.label}`)}
+                  >
+                    <i style={{ width: `${item.percent}%` }} />
+                    <span>
+                      {isVoted && <Check size={14} className="poll-checked-icon" />}
+                      {item.label}
+                    </span>
+                    <b>{item.percent}%</b>
+                  </button>
+                );
+              })}
+              <small>
+                {post.pollTotalVotes ?? post.poll.reduce((acc, cur) => acc + (cur.votes || 0), 0)} {(post.pollTotalVotes ?? 1) === 1 ? "vote" : "votes"} · {formatPollRemaining(post.pollEndsAt)}
+              </small>
+            </div>
+          )}
         </article>
         <div className="comment-heading"><span><MessageCircle size={17} /><b>{post.comments}</b> {post.comments === 1 ? "reply" : "replies"}</span><small>Newest campus replies appear here</small></div>
         <div className="comment-list">
@@ -1221,7 +1327,7 @@ function CommunityCard({ item, index, communities, onOpen, onMembership }: { ite
   </article>;
 }
 
-function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending, notify, onMembership, onEvents, openComments, openComposer, initialCommunityId, targetCommunityId, onEditPost, onDeletePost }: { user: SessionUser; items: Community[]; setItems: React.Dispatch<React.SetStateAction<Community[]>>; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; notify: (s: string) => void; onMembership: (community: Community) => Promise<void>; onEvents: () => void; openComments: (id: number) => void; openComposer: (community?: string) => void; initialCommunityId: string; targetCommunityId?: string; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void }) {
+function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending, notify, onMembership, onEvents, openComments, openComposer, initialCommunityId, targetCommunityId, onEditPost, onDeletePost, onPollVote }: { user: SessionUser; items: Community[]; setItems: React.Dispatch<React.SetStateAction<Community[]>>; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; notify: (s: string) => void; onMembership: (community: Community) => Promise<void>; onEvents: () => void; openComments: (id: number) => void; openComposer: (community?: string) => void; initialCommunityId: string; targetCommunityId?: string; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void; onPollVote?: (postId: number, optionIndex: number) => void }) {
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(targetCommunityId || initialCommunityId || null);
@@ -1237,7 +1343,7 @@ function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending
     return !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery) || item.type.toLowerCase().includes(normalizedQuery) || parent?.name.toLowerCase().includes(normalizedQuery);
   });
   const selectedCommunity = items.find(item => item.id === selectedId);
-  if (selectedCommunity) return <CommunityDetail key={selectedCommunity.id} user={user} communities={items} posts={posts} setPosts={setPosts} vote={vote} votePending={votePending} community={selectedCommunity} notify={notify} openComments={openComments} openComposer={() => openComposer(selectedCommunity.name)} goBack={() => setSelectedId(null)} onOpenCommunity={setSelectedId} onMembership={onMembership} toggleMembership={() => void onMembership(selectedCommunity)} onUpdated={(updated) => setItems((current) => current.map((item) => item.id === updated.id ? updated : item))} onCommunityCreated={(created) => setItems((current) => [created, ...current])} onEditPost={onEditPost} onDeletePost={onDeletePost} />;
+  if (selectedCommunity) return <CommunityDetail key={selectedCommunity.id} user={user} communities={items} posts={posts} setPosts={setPosts} vote={vote} votePending={votePending} community={selectedCommunity} notify={notify} openComments={openComments} openComposer={() => openComposer(selectedCommunity.name)} goBack={() => setSelectedId(null)} onOpenCommunity={setSelectedId} onMembership={onMembership} toggleMembership={() => void onMembership(selectedCommunity)} onUpdated={(updated) => setItems((current) => current.map((item) => item.id === updated.id ? updated : item))} onCommunityCreated={(created) => setItems((current) => [created, ...current])} onEditPost={onEditPost} onDeletePost={onDeletePost} onPollVote={onPollVote} />;
   return <div className="content-page">
     <section className="page-hero explore-hero"><div><span className="eyebrow lime">FIND YOUR PEOPLE</span><h1>Campus is better together.</h1><p>Clubs, obsessions, niche questions and the people who get it.</p></div><span className="hero-sticker">COME<br />HANG<br />OUT <i>→</i></span></section>
     <div className="explore-toolbar"><label><Search size={20} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search communities" /></label><div className="toolbar-actions"><button className="outline-button" onClick={onEvents}><CalendarDays size={19} /> Browse events</button><button className="primary-action" onClick={() => setCreating(true)}><Plus size={19} /> Create community</button></div></div>
@@ -1247,7 +1353,7 @@ function ExploreView({ user, items, setItems, posts, setPosts, vote, votePending
   </div>;
 }
 
-function CommunityDetail({ user, community, communities, posts, setPosts, vote, votePending, goBack, onOpenCommunity, onMembership, toggleMembership, notify, openComments, openComposer, onUpdated, onCommunityCreated, onEditPost, onDeletePost }: { user: SessionUser; community: Community; communities: Community[]; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; goBack: () => void; onOpenCommunity: (id: string) => void; onMembership: (community: Community) => Promise<void>; toggleMembership: () => void; notify: (message: string) => void; openComments: (id: number) => void; openComposer: () => void; onUpdated: (community: Community) => void; onCommunityCreated: (community: Community) => void; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void }) {
+function CommunityDetail({ user, community, communities, posts, setPosts, vote, votePending, goBack, onOpenCommunity, onMembership, toggleMembership, notify, openComments, openComposer, onUpdated, onCommunityCreated, onEditPost, onDeletePost, onPollVote }: { user: SessionUser; community: Community; communities: Community[]; posts: Post[]; setPosts: React.Dispatch<React.SetStateAction<Post[]>>; vote: (id: number, direction: 1 | -1) => void; votePending: Set<number>; goBack: () => void; onOpenCommunity: (id: string) => void; onMembership: (community: Community) => Promise<void>; toggleMembership: () => void; notify: (message: string) => void; openComments: (id: number) => void; openComposer: () => void; onUpdated: (community: Community) => void; onCommunityCreated: (community: Community) => void; onEditPost: (post: Post) => void; onDeletePost: (post: Post) => void; onPollVote?: (postId: number, optionIndex: number) => void }) {
   const [sort, setSort] = useState("Hot");
   const [activeTab, setActiveTab] = useState<"feed" | "children" | "members">("feed");
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -1384,7 +1490,7 @@ function CommunityDetail({ user, community, communities, posts, setPosts, vote, 
       community.privacy === "private" && !community.joined ? (
         <div className="community-feed-layout"><section><div className="community-empty" style={{ padding: "64px 24px", textAlign: "center" }}><span style={{ fontSize: 44, display: "block", marginBottom: 16 }}>🔒</span><h3>Private Community</h3><p style={{ maxWidth: 420, margin: "8px auto 0", color: "var(--muted)" }}>This community is private and invite-only. Only approved members can view posts and participate.</p></div></section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>Private</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div>
       ) : (
-        <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} currentUserId={user.id} onEdit={onEditPost} onDelete={onDeletePost} onOpenCommunity={onOpenCommunity} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div>
+        <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} currentUserId={user.id} onEdit={onEditPost} onDelete={onDeletePost} onOpenCommunity={onOpenCommunity} onPollVote={onPollVote} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div>
       )
     ) : <section className="subcommunity-section"><header><div><span className="eyebrow violet">SUB-COMMUNITIES</span><h2>Spaces inside {community.name}</h2><p>Focused communities managed under this parent.</p></div>{canCreateChildren && <button className="primary-action" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</header>{children.length ? <div className="community-grid">{children.map((child, index) => <CommunityCard key={child.id} item={child} index={index} communities={communities} onOpen={onOpenCommunity} onMembership={onMembership} />)}</div> : <div className="community-empty"><span>🪆</span><h3>No sub-communities yet.</h3><p>Create a focused space inside {community.name}.</p>{canCreateChildren && <button onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</div>}</section>}
     {brandingOpen && <CommunityBrandingModal community={community} close={() => setBrandingOpen(false)} onUpdated={onUpdated} notify={notify} />}
@@ -2123,6 +2229,18 @@ function Notifications({ close, items, loading, onRead, onReadAll }: { close: ()
   return <><button className="drawer-scrim" onClick={close} aria-label="Close notifications" /><aside className="notification-drawer" aria-label="Notifications"><header><div><span className="eyebrow pink">WHAT&apos;S NEW</span><h2>Notifications</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><div className="notification-actions"><button disabled={!unreadCount} onClick={() => void onReadAll()}><Check size={15} /> Mark all read</button><span>{unreadCount} unread</span></div>{loading && !items.length ? <div className="notification-state"><LoaderCircle className="spin" size={22} /> Loading notifications…</div> : items.length ? items.map((item, index) => <button className={item.isRead ? "read" : ""} key={item.id} onClick={() => void onRead(item)}><Avatar text={marker[item.type]} color={index % 2 ? "#22D3EE" : "#6C3BFF"} /><span><b>{item.content}</b><small>{item.type.replace("_", " ").toLowerCase()}</small><em>{relativeTime(item.createdAt)}</em></span>{!item.isRead && <i />}</button>) : <div className="notification-state"><Bell size={26} /><b>You&apos;re all caught up</b><small>New community activity will appear here.</small></div>}</aside></>;
 }
 
+const POLL_DURATION_PRESETS = [
+  { label: "15 minutes", ms: 15 * 60 * 1000 },
+  { label: "30 minutes", ms: 30 * 60 * 1000 },
+  { label: "1 hour", ms: 60 * 60 * 1000 },
+  { label: "6 hours", ms: 6 * 60 * 60 * 1000 },
+  { label: "12 hours", ms: 12 * 60 * 60 * 1000 },
+  { label: "1 day", ms: 24 * 60 * 60 * 1000 },
+  { label: "3 days", ms: 3 * 24 * 60 * 60 * 1000 },
+  { label: "7 days", ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: "14 days", ms: 14 * 24 * 60 * 60 * 1000 },
+];
+
 function Composer({ author, close, onCreate, communities, initialCommunity }: { author: string; close: () => void; onCreate: (post: Post) => void; communities: Community[]; initialCommunity: string }) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -2130,9 +2248,17 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
   const [community, setCommunity] = useState(initialCommunity);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [durationDropdownOpen, setDurationDropdownOpen] = useState(false);
+  const durationDropdownRef = useRef<HTMLDivElement>(null);
   const [uploads, setUploads] = useState<{ name: string; url: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [pollOptions, setPollOptions] = useState<string[]>(["", ""]);
+  const [pollDurationMs, setPollDurationMs] = useState<number>(3 * 24 * 60 * 60 * 1000);
+  const [durationDisplayLabel, setDurationDisplayLabel] = useState<string>("3 days");
+  const [customValue, setCustomValue] = useState<number>(12);
+  const [customUnit, setCustomUnit] = useState<"minutes" | "hours" | "days">("hours");
+  const [isCustom, setIsCustom] = useState<boolean>(false);
   const [error, setError] = useState("");
   const [draftSaved, setDraftSaved] = useState(false);
   const activeCommunity = communities.find((item) => item.name === community || item.id === community)?.name || communities[0]?.name || community;
@@ -2143,12 +2269,33 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setDropdownOpen(false);
       }
+      if (durationDropdownRef.current && !durationDropdownRef.current.contains(e.target as Node)) {
+        setDurationDropdownOpen(false);
+      }
     }
-    if (dropdownOpen) {
+    if (dropdownOpen || durationDropdownOpen) {
       document.addEventListener("mousedown", handleClickOutside);
       return () => document.removeEventListener("mousedown", handleClickOutside);
     }
-  }, [dropdownOpen]);
+  }, [dropdownOpen, durationDropdownOpen]);
+
+  function handlePollOptionChange(index: number, value: string) {
+    setPollOptions((prev) => prev.map((opt, i) => (i === index ? value : opt)));
+    setError("");
+    setDraftSaved(false);
+  }
+
+  function addPollOption() {
+    if (pollOptions.length < 6) {
+      setPollOptions((prev) => [...prev, ""]);
+    }
+  }
+
+  function removePollOption(index: number) {
+    if (pollOptions.length > 2) {
+      setPollOptions((prev) => prev.filter((_, i) => i !== index));
+    }
+  }
 
   async function addFiles(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files || []);
@@ -2160,16 +2307,18 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
     if (uploads.length + files.length > 6) return setError("You can attach up to 6 files to one post.");
     setUploading(true);
     try {
-      const added = await Promise.all(files.map(async file => {
+      const added: { name: string; url: string }[] = [];
+      for (const file of files) {
         const form = new FormData();
         form.append("file", file);
         const result = await requestJson<{ imageUrl: string }>("/api/posts/images", { method: "POST", body: form });
-        if (!result?.imageUrl) throw new Error("The upload server did not return a URL.");
-        return { name: file.name, url: result.imageUrl };
-      }));
+        if (!result?.imageUrl) throw new Error(`Failed to upload ${file.name}.`);
+        added.push({ name: file.name, url: result.imageUrl });
+      }
       setUploads(current => [...current, ...added]);
-    } catch {
-      setError("We couldn’t upload that file. Please try another file.");
+    } catch (uploadError) {
+      console.error("Image upload error:", uploadError);
+      setError(uploadError instanceof Error ? uploadError.message : "We couldn’t upload that file. Please try another file.");
     } finally {
       setUploading(false);
     }
@@ -2177,11 +2326,24 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!title.trim()) return setError("Add a title before publishing.");
+    if (!title.trim()) return setError(type === "Poll" ? "Ask a question for your poll before publishing." : "Add a title before publishing.");
     const isMedia = type === "Media / Files" || type === "Image";
     if (isMedia && !uploads.length) return setError("Choose at least one file or image to attach.");
     const selectedCommunity = communities.find(item => item.name === activeCommunity || item.id === activeCommunity);
     if (!selectedCommunity) return setError("Choose a community before publishing.");
+
+    let pollPayload: { label: string; percent: number; votes: number }[] | undefined;
+    let pollEndsAt: number | undefined;
+
+    if (type === "Poll") {
+      const trimmed = pollOptions.map((opt) => opt.trim()).filter(Boolean);
+      if (trimmed.length < 2) return setError("Please provide at least 2 poll options.");
+      const unique = new Set(trimmed.map((opt) => opt.toLowerCase()));
+      if (unique.size !== trimmed.length) return setError("Poll options must be unique.");
+      pollPayload = trimmed.map((label) => ({ label, percent: 0, votes: 0 }));
+      pollEndsAt = Date.now() + pollDurationMs;
+    }
+
     const flair = isMedia ? (uploads.every(u => isImageAttachment(u.url)) ? "Photo dump" : "Resource") : type;
     onCreate({
       id: Date.now(),
@@ -2195,6 +2357,10 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
       title: title.trim(),
       body: body.replace(/^\s+|\s+$/g, "") || undefined,
       images: uploads.map(upload => upload.url),
+      poll: pollPayload,
+      pollEndsAt,
+      pollTotalVotes: 0,
+      pollVotedIndex: undefined,
       votes: 0,
       comments: 0
     });
@@ -2202,7 +2368,7 @@ function Composer({ author, close, onCreate, communities, initialCommunity }: { 
 
   const isMedia = type === "Media / Files" || type === "Image";
 
-  return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}><form className="composer" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Create a post"><header><div><span className="eyebrow violet">SAY SOMETHING</span><h2>Create a post</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><div className="community-select"><span>Post to</span><div className="custom-community-dropdown" ref={dropdownRef} style={{ border: "none", background: "transparent", padding: 0 }}><button type="button" className="custom-community-trigger" onClick={() => setDropdownOpen(prev => !prev)} aria-haspopup="listbox" aria-expanded={dropdownOpen}><Avatar text={currentComm?.name ? currentComm.name.replace(/^[a-z]+\//i, "").slice(0, 2).toUpperCase() : "SC"} color={currentComm?.color || "#6C3BFF"} size={26} /><span className="community-trigger-text">{activeCommunity}</span><ChevronDown size={16} className={`dropdown-chevron ${dropdownOpen ? "open" : ""}`} /></button>{dropdownOpen && (<div className="custom-community-menu" role="listbox">{communities.map(item => { const isSelected = item.name === activeCommunity || item.id === activeCommunity; return (<button key={item.id} type="button" role="option" aria-selected={isSelected} className={`custom-community-item ${isSelected ? "selected" : ""}`} onClick={() => { setCommunity(item.name); setDropdownOpen(false); }}><Avatar text={item.name ? item.name.replace(/^[a-z]+\//i, "").slice(0, 2).toUpperCase() : "SC"} color={item.color || "#6C3BFF"} size={24} /><span className="community-item-name">{item.name}</span>{isSelected && <Check size={16} className="community-item-check" />}</button>); })}</div>)}</div></div><div className="composer-types">{["Text", "Media / Files", "Poll", "Link"].map(item => <button type="button" className={(type === item || (item === "Media / Files" && type === "Image")) ? "active" : ""} onClick={() => { setType(item); setError(""); }} key={item}>{item}</button>)}</div><input autoFocus value={title} onChange={event => { setTitle(event.target.value); setError(""); setDraftSaved(false); }} maxLength={160} placeholder="An interesting title" /><textarea value={body} onChange={event => { setBody(event.target.value); setDraftSaved(false); }} rows={isMedia ? 4 : 7} placeholder={type === "Poll" ? "Ask your question..." : type === "Link" ? "Paste a link and add some context..." : "What do you want to share? Markdown is supported."} />{isMedia && <><label className={`upload-zone ${uploads.length > 0 ? "compact" : ""}`}><input className="file-input" type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.txt,.csv" multiple onChange={addFiles} /><ImagePlus size={uploads.length > 0 ? 22 : 28} /><b>{uploading ? "Uploading…" : uploads.length ? "Add more files or photos" : "Choose photos or files to upload"}</b><small>Up to 6 files (Images, PDFs, Docs, Sheets, Zips) · 10 MB each</small></label>{uploads.length > 0 && <div className="composer-attached-container"><div className="composer-attached-header"><b>Attached files & media ({uploads.length}/6)</b><small>Scroll to see all</small></div><div className="composer-attached-scroll">{uploads.map((upload, index) => { const isImg = isImageAttachment(upload.url); const ext = upload.name.split(".").pop()?.toUpperCase() || "FILE"; return (<div key={`${upload.name}-${index}`} className="composer-attached-item">{isImg ? (<div className="attached-img-thumb" onClick={() => setPreviewIndex(index)} title="Click to view full image"><Image src={upload.url} alt={`Preview of ${upload.name}`} fill sizes="80px" unoptimized /><span className="thumb-zoom-badge"><Maximize2 size={10} /></span></div>) : (<div className="attached-doc-icon"><FileText size={18} /><span className="doc-ext-badge">{ext}</span></div>)}<div className="attached-item-info"><b title={upload.name}>{upload.name}</b><small>{isImg ? "Image file" : `${ext} Document`}</small></div><button type="button" className="attached-remove-btn" onClick={() => setUploads(current => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${upload.name}`} title="Remove attachment"><X size={15} /></button></div>); })}</div></div>}</>}{error && <p className="form-error" role="alert">{error}</p>}<footer><span>{draftSaved ? "Draft saved" : `${title.length}/160`}</span><button type="button" className="draft-button" onClick={() => { localStorage.setItem("sc-post-draft", JSON.stringify({ title, body, type, community: activeCommunity })); setDraftSaved(true); }}>Save draft</button><button type="submit" className="post-button" disabled={!title.trim() || !communities.length || uploading}>Post <ArrowRight size={17} /></button></footer></form>{previewIndex !== null && <ImageLightbox images={uploads.filter(u => isImageAttachment(u.url)).map(u => u.url)} initialIndex={previewIndex} title={title || "Image Upload Preview"} subtitle={uploads[previewIndex]?.name} onClose={() => setPreviewIndex(null)} />}</div>;
+  return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && close()}><form className="composer" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Create a post"><header><div><span className="eyebrow violet">SAY SOMETHING</span><h2>Create a post</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><div className="community-select"><span>Post to</span><div className="custom-community-dropdown" ref={dropdownRef} style={{ border: "none", background: "transparent", padding: 0 }}><button type="button" className="custom-community-trigger" onClick={() => setDropdownOpen(prev => !prev)} aria-haspopup="listbox" aria-expanded={dropdownOpen}><Avatar text={currentComm?.name ? currentComm.name.replace(/^[a-z]+\//i, "").slice(0, 2).toUpperCase() : "SC"} color={currentComm?.color || "#6C3BFF"} size={26} /><span className="community-trigger-text">{activeCommunity}</span><ChevronDown size={16} className={`dropdown-chevron ${dropdownOpen ? "open" : ""}`} /></button>{dropdownOpen && (<div className="custom-community-menu" role="listbox">{communities.map(item => { const isSelected = item.name === activeCommunity || item.id === activeCommunity; return (<button key={item.id} type="button" role="option" aria-selected={isSelected} className={`custom-community-item ${isSelected ? "selected" : ""}`} onClick={() => { setCommunity(item.name); setDropdownOpen(false); }}><Avatar text={item.name ? item.name.replace(/^[a-z]+\//i, "").slice(0, 2).toUpperCase() : "SC"} color={item.color || "#6C3BFF"} size={24} /><span className="community-item-name">{item.name}</span>{isSelected && <Check size={16} className="community-item-check" />}</button>); })}</div>)}</div></div><div className="composer-types">{["Text", "Media / Files", "Poll", "Link"].map(item => <button type="button" className={(type === item || (item === "Media / Files" && type === "Image")) ? "active" : ""} onClick={() => { setType(item); setError(""); }} key={item}>{item}</button>)}</div><input autoFocus value={title} onChange={event => { setTitle(event.target.value); setError(""); setDraftSaved(false); }} maxLength={160} placeholder={type === "Poll" ? "Ask a question..." : "An interesting title"} /><textarea value={body} onChange={event => { setBody(event.target.value); setDraftSaved(false); }} rows={type === "Poll" ? 3 : isMedia ? 4 : 7} placeholder={type === "Poll" ? "Add context or details (optional)..." : type === "Link" ? "Paste a link and add some context..." : "What do you want to share? Markdown is supported."} />{type === "Poll" && (<div className="composer-poll-builder"><div className="composer-poll-header"><span className="composer-poll-title"><BarChart2 size={16} /><b>Poll options</b></span><span className="composer-poll-count">{pollOptions.length}/6 options</span></div><div className="composer-poll-options">{pollOptions.map((opt, idx) => (<div key={idx} className="composer-poll-option-row"><span className="poll-opt-index">{idx + 1}</span><input type="text" className="composer-poll-input" value={opt} onChange={(e) => handlePollOptionChange(idx, e.target.value)} placeholder={`Option ${idx + 1}${idx === 0 ? " (e.g. Yes)" : idx === 1 ? " (e.g. No)" : ""}`} maxLength={100} />{pollOptions.length > 2 && (<button type="button" className="poll-remove-opt-btn" onClick={() => removePollOption(idx)} aria-label={`Remove option ${idx + 1}`} title="Remove option"><X size={15} /></button>)}</div>))}</div><div className="composer-poll-controls">{pollOptions.length < 6 ? (<button type="button" className="composer-add-poll-opt-btn" onClick={addPollOption}><Plus size={15} /> Add option</button>) : <span />}<div className="composer-poll-duration-wrap" ref={durationDropdownRef}><span className="composer-poll-duration-label">Duration:</span><button type="button" className="custom-duration-trigger" onClick={() => setDurationDropdownOpen((prev) => !prev)} aria-haspopup="listbox" aria-expanded={durationDropdownOpen}><Clock3 size={13} /><span>{durationDisplayLabel}</span><ChevronDown size={14} className={`dropdown-chevron ${durationDropdownOpen ? "open" : ""}`} /></button>{durationDropdownOpen && (<div className="custom-duration-menu" role="listbox"><div className="custom-duration-header">Select duration</div><div className="custom-duration-presets-list">{POLL_DURATION_PRESETS.map((preset) => { const isSelected = !isCustom && pollDurationMs === preset.ms; return (<button key={preset.label} type="button" role="option" aria-selected={isSelected} className={`custom-duration-item ${isSelected ? "selected" : ""}`} onClick={() => { setIsCustom(false); setPollDurationMs(preset.ms); setDurationDisplayLabel(preset.label); setDurationDropdownOpen(false); }}><span>{preset.label}</span>{isSelected && <Check size={14} className="duration-item-check" />}</button>); })}</div><div className="custom-duration-divider" /><div className="custom-duration-custom-section"><span className="custom-duration-custom-label">Custom duration</span><div className="custom-duration-input-row"><input type="number" min={1} max={999} value={customValue} onChange={(e) => { const val = parseInt(e.target.value, 10); setCustomValue(isNaN(val) ? 1 : Math.max(1, Math.min(999, val))); }} className="custom-duration-input" aria-label="Custom duration amount" /><div className="custom-duration-unit-buttons">{(["minutes", "hours", "days"] as const).map((unit) => (<button key={unit} type="button" className={`custom-duration-unit-btn ${customUnit === unit ? "active" : ""}`} onClick={() => setCustomUnit(unit)}>{unit === "minutes" ? "Mins" : unit === "hours" ? "Hours" : "Days"}</button>))}</div></div><button type="button" className="custom-duration-apply-btn" onClick={() => { setIsCustom(true); const ms = customUnit === "minutes" ? customValue * 60 * 1000 : customUnit === "hours" ? customValue * 60 * 60 * 1000 : customValue * 24 * 60 * 60 * 1000; setPollDurationMs(ms); const unitName = customValue === 1 ? (customUnit === "minutes" ? "min" : customUnit === "hours" ? "hr" : "day") : (customUnit === "minutes" ? "mins" : customUnit === "hours" ? "hrs" : "days"); setDurationDisplayLabel(`${customValue} ${unitName}`); setDurationDropdownOpen(false); }}>Set custom ({customValue} {customUnit === "minutes" ? (customValue === 1 ? "min" : "mins") : customUnit === "hours" ? (customValue === 1 ? "hr" : "hrs") : (customValue === 1 ? "day" : "days")})</button></div></div>)}</div></div></div>)}{isMedia && <><label className={`upload-zone ${uploads.length > 0 ? "compact" : ""}`}><input className="file-input" type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.txt,.csv" multiple onChange={addFiles} /><ImagePlus size={uploads.length > 0 ? 22 : 28} /><b>{uploading ? "Uploading…" : uploads.length ? "Add more files or photos" : "Choose photos or files to upload"}</b><small>Up to 6 files (Images, PDFs, Docs, Sheets, Zips) · 10 MB each</small></label>{uploads.length > 0 && <div className="composer-attached-container"><div className="composer-attached-header"><b>Attached files & media ({uploads.length}/6)</b><small>Scroll to see all</small></div><div className="composer-attached-scroll">{uploads.map((upload, index) => { const isImg = isImageAttachment(upload.url); const ext = upload.name.split(".").pop()?.toUpperCase() || "FILE"; return (<div key={`${upload.name}-${index}`} className="composer-attached-item">{isImg ? (<div className="attached-img-thumb" onClick={() => setPreviewIndex(index)} title="Click to view full image"><Image src={upload.url} alt={`Preview of ${upload.name}`} fill sizes="80px" unoptimized /><span className="thumb-zoom-badge"><Maximize2 size={10} /></span></div>) : (<div className="attached-doc-icon"><FileText size={18} /><span className="doc-ext-badge">{ext}</span></div>)}<div className="attached-item-info"><b title={upload.name}>{upload.name}</b><small>{isImg ? "Image file" : `${ext} Document`}</small></div><button type="button" className="attached-remove-btn" onClick={() => setUploads(current => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${upload.name}`} title="Remove attachment"><X size={15} /></button></div>); })}</div></div>}</>}{error && <p className="form-error" role="alert">{error}</p>}<footer><span>{draftSaved ? "Draft saved" : `${title.length}/160`}</span><button type="button" className="draft-button" onClick={() => { localStorage.setItem("sc-post-draft", JSON.stringify({ title, body, type, community: activeCommunity })); setDraftSaved(true); }}>Save draft</button><button type="submit" className="post-button" disabled={!title.trim() || !communities.length || uploading}>Post <ArrowRight size={17} /></button></footer></form>{previewIndex !== null && <ImageLightbox images={uploads.filter(u => isImageAttachment(u.url)).map(u => u.url)} initialIndex={previewIndex} title={title || "Image Upload Preview"} subtitle={uploads[previewIndex]?.name} onClose={() => setPreviewIndex(null)} />}</div>;
 }
 
 function EditPostModal({ post, close, onSave }: { post: Post; communities: Community[]; close: () => void; onSave: (postId: number, updates: { title: string; body: string; images: string[] }) => Promise<void> }) {

@@ -17,6 +17,11 @@ export function isSameOrigin(request: NextRequest) {
     const requestHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim()
       || request.headers.get("host")
       || request.nextUrl.host;
+    if (process.env.NODE_ENV !== "production") {
+      if (originUrl.hostname === "localhost" || originUrl.hostname === "127.0.0.1") return true;
+    }
+    if (originUrl.host === requestHost) return true;
+    if (originUrl.hostname === requestHost.split(":")[0]) return true;
     const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().replace(/:$/, "");
     const requestProtocol = forwardedProtocol ? `${forwardedProtocol}:` : request.nextUrl.protocol;
     return originUrl.host === requestHost && originUrl.protocol === requestProtocol;
