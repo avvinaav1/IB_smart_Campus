@@ -26,6 +26,11 @@ export async function POST(request: NextRequest) {
   if (body.images !== undefined && (!Array.isArray(body.images) || !body.images.every((image) => typeof image === "string"))) {
     return noStoreJson({ error: "Post images are invalid." }, { status: 400 });
   }
+
+  const rawPoll = Array.isArray(body.poll)
+    ? body.poll.filter((item): item is { label: string } => Boolean(item && typeof item === "object" && typeof (item as { label?: unknown }).label === "string"))
+    : undefined;
+
   const input: NewPostInput = {
     clientRequestId: typeof body.clientRequestId === "string" ? body.clientRequestId : "",
     communityId: typeof body.communityId === "string" ? body.communityId : "",
@@ -33,6 +38,8 @@ export async function POST(request: NextRequest) {
     title: typeof body.title === "string" ? body.title : "",
     body: typeof body.body === "string" ? body.body : undefined,
     images: Array.isArray(body.images) && body.images.every((image) => typeof image === "string") ? body.images : undefined,
+    poll: rawPoll && rawPoll.length > 0 ? rawPoll.map((item) => ({ label: String(item.label).trim(), percent: 0, votes: 0 })) : undefined,
+    pollEndsAt: typeof body.pollEndsAt === "number" && Number.isFinite(body.pollEndsAt) ? body.pollEndsAt : undefined,
   };
   const validationError = validatePostInput(input);
   if (validationError) return noStoreJson({ error: validationError }, { status: 400 });

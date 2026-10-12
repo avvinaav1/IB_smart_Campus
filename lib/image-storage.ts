@@ -29,15 +29,29 @@ export async function putImage(objectPath: string, bytes: Buffer | Uint8Array, c
   // Replace any previous chunks for this id before writing the new ones.
   await deleteImage(objectPath);
 
-  const batch = db.batch();
+  const chunkDocs: { id: string; data: string }[] = [];
   let chunkCount = 0;
   for (let offset = 0; offset < source.length; offset += CHUNK_BYTES) {
     const slice = source.subarray(offset, offset + CHUNK_BYTES);
-    batch.set(ref.collection("chunks").doc(String(chunkCount).padStart(4, "0")), { data: slice.toString("base64") });
+    chunkDocs.push({
+      id: String(chunkCount).padStart(4, "0"),
+      data: slice.toString("base64"),
+    });
     chunkCount += 1;
   }
-  batch.set(ref, { contentType, size: source.length, chunkCount, path: objectPath, updatedAt: Date.now() });
-  await batch.commit();
+
+  // Commit chunks in batches of 3 to guarantee we stay safely below Firestore's 10 MiB batch request limit
+  const BATCH_CHUNK_LIMIT = 3;
+  for (let i = 0; i < chunkDocs.length; i += BATCH_CHUNK_LIMIT) {
+    const batch = db.batch();
+    const group = chunkDocs.slice(i, i + BATCH_CHUNK_LIMIT);
+    for (const chunk of group) {
+      batch.set(ref.collection("chunks").doc(chunk.id), { data: chunk.data });
+    }
+    await batch.commit();
+  }
+
+  await ref.set({ contentType, size: source.length, chunkCount, path: objectPath, updatedAt: Date.now() });
   imageCache.delete(objectPath);
 }
 
@@ -81,6 +95,10 @@ export function contentTypeForFilename(filename: string) {
   if (lower.endsWith(".webp")) return "image/webp";
   if (lower.endsWith(".gif")) return "image/gif";
   if (lower.endsWith(".svg")) return "image/svg+xml";
+  if (lower.endsWith(".avif")) return "image/avif";
+  if (lower.endsWith(".heic")) return "image/heic";
+  if (lower.endsWith(".heif")) return "image/heif";
+  if (lower.endsWith(".bmp")) return "image/bmp";
   if (lower.endsWith(".pdf")) return "application/pdf";
   if (lower.endsWith(".txt")) return "text/plain";
   if (lower.endsWith(".json")) return "application/json";

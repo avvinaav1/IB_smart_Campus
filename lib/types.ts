@@ -127,7 +127,10 @@ export type Post = {
   commentItems?: PostComment[];
   voted?: 1 | -1;
   saved?: boolean;
-  poll?: { label: string; percent: number }[];
+  poll?: { label: string; percent: number; votes?: number }[];
+  pollTotalVotes?: number;
+  pollVotedIndex?: number;
+  pollEndsAt?: number;
 };
 
 export type UserDashboard = {

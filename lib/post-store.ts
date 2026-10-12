@@ -12,6 +12,7 @@ type StoredPost = Post & {
   voteBase?: number;
   votesByUser?: Record<string, 1 | -1>;
   editedAt?: number;
+  pollVotesByUser?: Record<string, number>;
 };
 
 type PostDatabase = {
@@ -26,6 +27,8 @@ export type NewPostInput = {
   title: string;
   body?: string;
   images?: string[];
+  poll?: { label: string; percent?: number; votes?: number }[];
+  pollEndsAt?: number;
 };
 
 export type UpdatePostInput = {
@@ -62,9 +65,35 @@ function voteTotal(post: StoredPost) {
 }
 
 function publicPost(post: StoredPost, viewerId: string): Post {
-  const { voteBase, votesByUser, ...visible } = post;
+  const { voteBase, votesByUser, pollVotesByUser, ...visible } = post;
+  let poll = post.poll;
+  let pollTotalVotes = post.pollTotalVotes || 0;
+  const pollVotedIndex = viewerId && pollVotesByUser ? pollVotesByUser[viewerId] : undefined;
+
+  if (poll && poll.length > 0) {
+    if (pollVotesByUser && Object.keys(pollVotesByUser).length > 0) {
+      const counts = poll.map(() => 0);
+      let total = 0;
+      for (const optIdx of Object.values(pollVotesByUser)) {
+        if (typeof optIdx === "number" && optIdx >= 0 && optIdx < counts.length) {
+          counts[optIdx]++;
+          total++;
+        }
+      }
+      pollTotalVotes = total;
+      poll = poll.map((item, idx) => ({
+        label: item.label,
+        votes: counts[idx],
+        percent: total > 0 ? Math.round((counts[idx] / total) * 100) : 0,
+      }));
+    }
+  }
+
   return {
     ...visible,
+    poll,
+    pollTotalVotes,
+    pollVotedIndex,
     votes: voteBase === undefined ? voteTotal(post) : voteBase + voteDelta(post),
     voted: votesByUser?.[viewerId],
   };
@@ -120,6 +149,14 @@ export function validatePostInput(input: NewPostInput) {
   if ((input.images || []).length > 6) return "You can attach up to 6 images.";
   const invalidImage = (input.images || []).some((image) => !/^\/api\/posts\/images\/[0-9a-f-]{36}\.[a-z0-9]{2,6}$/i.test(image));
   if (invalidImage) return "Attach files with the uploader before posting.";
+  if (input.poll !== undefined) {
+    if (!Array.isArray(input.poll) || input.poll.length < 2 || input.poll.length > 6) {
+      return "Polls must have between 2 and 6 options.";
+    }
+    if (input.poll.some((opt) => !opt || typeof opt.label !== "string" || !opt.label.trim() || opt.label.trim().length > 100)) {
+      return "Poll options must be between 1 and 100 characters.";
+    }
+  }
   return "";
 }
 
@@ -200,6 +237,10 @@ export async function createPost(userId: string, author: string, input: NewPostI
       title: input.title.trim(),
       body,
       images: input.images?.length ? input.images : undefined,
+      poll: input.poll?.length ? input.poll.map((opt) => ({ label: opt.label.trim(), percent: 0, votes: 0 })) : undefined,
+      pollEndsAt: input.pollEndsAt,
+      pollTotalVotes: 0,
+      pollVotesByUser: {},
       votes: 0,
       comments: 0,
       voteBase: 0,
@@ -276,6 +317,26 @@ export async function setPostVote(postId: number, userId: string, vote: 1 | -1 |
     else post.votesByUser[userId] = vote;
     post.votes = post.voteBase + voteDelta(post);
     return { post: publicPost(post, userId), previousVote } as const;
+  });
+}
+
+export async function votePostPoll(postId: number, userId: string, optionIndex: number) {
+  const database = await loadDatabase();
+  const target = database.posts.find((candidate) => candidate.id === postId);
+  if (!target) return { error: "That post no longer exists.", status: 404 } as const;
+  const allowed = await canAccessCommunity(target.communityId, userId);
+  if (!allowed) return { error: "You cannot vote on polls in this private community.", status: 403 } as const;
+
+  return mutate((database) => {
+    const post = database.posts.find((candidate) => candidate.id === postId);
+    if (!post) return { error: "That post no longer exists.", status: 404 } as const;
+    if (!post.poll || post.poll.length === 0) return { error: "This post does not have a poll.", status: 400 } as const;
+    if (optionIndex < 0 || optionIndex >= post.poll.length) return { error: "Invalid poll option selected.", status: 400 } as const;
+    if (post.pollEndsAt && Date.now() > post.pollEndsAt) return { error: "This poll has ended.", status: 400 } as const;
+
+    post.pollVotesByUser ??= {};
+    post.pollVotesByUser[userId] = optionIndex;
+    return { post: publicPost(post, userId) } as const;
   });
 }
 
