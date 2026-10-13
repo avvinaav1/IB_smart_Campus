@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  canViewSubcommunity,
   communityHierarchyDeletionOrder,
   effectiveCommunityMemberCount,
   effectiveCommunityMemberRecords,
@@ -14,8 +15,8 @@ import {
   type HierarchyMember,
 } from "../lib/community-hierarchy.ts";
 
-function community(id: string, creatorId: string, parentId: string | null = null, memberCount = 1): HierarchyCommunity {
-  return { id, name: `c/${id}`, creatorId, parentId, memberCount, createdAt: 1 };
+function community(id: string, creatorId: string, parentId: string | null = null, memberCount = 1, privacy: HierarchyCommunity["privacy"] = "public"): HierarchyCommunity {
+  return { id, name: `c/${id}`, creatorId, parentId, memberCount, privacy, createdAt: 1 };
 }
 
 function member(id: string, communityId: string, userId: string, role: HierarchyMember["role"]): HierarchyMember {
@@ -89,4 +90,40 @@ test("community deletion order is descendant-first and child deletion leaves its
   assert.deepEqual(new Set(parentOrder.slice(0, -1)), new Set(["child-a", "child-b"]));
   assert.deepEqual(communityHierarchyDeletionOrder(snapshot.communities, "child-a"), ["child-a"]);
   assert.deepEqual(communityHierarchyDeletionOrder(snapshot.communities, "missing"), []);
+});
+
+test("private and restricted sub-community visibility restricts non-members and isolates sub-community members", () => {
+  const parent = community("parent", "owner", null, 3, "private");
+  const tech = community("tech", "owner", "parent", 1, "private");
+  const legal = community("legal", "owner", "parent", 1, "private");
+  const snapshot = database([parent, tech, legal], [
+    member("m-owner", "parent", "owner", "COMMUNITY_ADMIN"),
+    member("m-admin", "parent", "admin-user", "COMMUNITY_ADMIN"),
+    member("m-parent-member", "parent", "parent-only-user", "MEMBER"),
+    member("m-tech-user", "tech", "tech-user", "MEMBER"),
+  ]);
+
+  // Super admin / global admin can see all
+  assert.equal(canViewSubcommunity(snapshot, tech, "outsider", true), true);
+  assert.equal(canViewSubcommunity(snapshot, legal, "outsider", true), true);
+
+  // Parent owner can see all
+  assert.equal(canViewSubcommunity(snapshot, tech, "owner"), true);
+  assert.equal(canViewSubcommunity(snapshot, legal, "owner"), true);
+
+  // Parent admin can see all
+  assert.equal(canViewSubcommunity(snapshot, tech, "admin-user"), true);
+  assert.equal(canViewSubcommunity(snapshot, legal, "admin-user"), true);
+
+  // Outsider cannot see any sub-community of private/restricted parent
+  assert.equal(canViewSubcommunity(snapshot, tech, "outsider"), false);
+  assert.equal(canViewSubcommunity(snapshot, legal, "outsider"), false);
+
+  // Parent-only member (not admin, not in sub-community) cannot see private sub-communities
+  assert.equal(canViewSubcommunity(snapshot, tech, "parent-only-user"), false);
+  assert.equal(canViewSubcommunity(snapshot, legal, "parent-only-user"), false);
+
+  // User who is only a member in tech can see tech, but NOT legal (locked)
+  assert.equal(canViewSubcommunity(snapshot, tech, "tech-user"), true);
+  assert.equal(canViewSubcommunity(snapshot, legal, "tech-user"), false);
 });

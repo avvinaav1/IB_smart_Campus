@@ -1,13 +1,13 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { communities as initialCommunities } from "@/lib/data";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
-import { communityHierarchyDeletionOrder, effectiveCommunityMemberCount, effectiveCommunityMemberRecords, isCommunityType, normalizeCommunityType, parentCommunityAdminMemberships, resolveCommunityHierarchyAccess, validateCommunityParent } from "@/lib/community-hierarchy";
+import { canViewSubcommunity, communityHierarchyDeletionOrder, effectiveCommunityMemberCount, effectiveCommunityMemberRecords, isCommunityType, normalizeCommunityType, parentCommunityAdminMemberships, resolveCommunityHierarchyAccess, validateCommunityParent } from "@/lib/community-hierarchy";
 import type { Community, CommunityJoinRequest, CommunityRole, CommunityType, InstituteRole } from "@/lib/types";
-import { normalizeCommunityRole } from "@/lib/moderation-policy";
+import { isGlobalModerator, normalizeCommunityRole } from "@/lib/moderation-policy";
 import { getInstitute, getInstituteMembership } from "@/lib/institute-store";
 import type { CommunityStatus } from "@/lib/types";
 import { instituteCommunityIdentity } from "@/lib/institute-community-naming";
-import { getDirectoryUsers } from "@/lib/auth-store";
+import { getDirectoryUsers, getUserAppRole } from "@/lib/auth-store";
 
 export type { CommunityRole } from "@/lib/types";
 export type CommunityPrivacy = "public" | "restricted" | "private";
@@ -273,8 +273,16 @@ export function validateCommunityInput(input: NewCommunityInput) {
 export async function listCommunities(viewerId: string) {
   await writeQueue;
   const database = await loadDatabase();
+  const isSuper = viewerId ? isGlobalModerator(await getUserAppRole(viewerId)) : false;
+
   const items = Object.values(database.communities)
-    .filter(community => community.status === "APPROVED" || community.creatorId === viewerId || resolveCommunityHierarchyAccess(database, community, viewerId).role === "COMMUNITY_ADMIN")
+    .filter((community) => {
+      const access = resolveCommunityHierarchyAccess(database, community, viewerId);
+      const isApprovedOrAdmin = community.status === "APPROVED" || community.creatorId === viewerId || access.role === "COMMUNITY_ADMIN" || isSuper;
+      if (!isApprovedOrAdmin) return false;
+
+      return canViewSubcommunity(database, community, viewerId, isSuper);
+    })
     .sort((a, b) => b.createdAt - a.createdAt || a.name.localeCompare(b.name))
     .map((community) => publicCommunity(database, community, viewerId));
   return withInstituteRoles(items, viewerId);
@@ -365,7 +373,10 @@ export async function setCommunityMembership(communityId: string, userId: string
     }
     // A valid admin-issued invite (link, email or QR) counts as approval, so it also skips restricted-community review.
     const invited = Boolean(inviteToken && community.inviteToken && inviteToken === community.inviteToken);
-    if (joined && !access.joined && community.privacy === "private" && !invited) {
+    const parent = community.parentId ? database.communities[community.parentId] : null;
+    const parentAccess = parent ? resolveCommunityHierarchyAccess(database, parent, userId) : { joined: false, role: undefined };
+    const isParentProtected = Boolean(parent && (parent.privacy === "private" || parent.privacy === "restricted"));
+    if (joined && !access.joined && (community.privacy === "private" || (isParentProtected && !parentAccess.joined)) && !invited) {
       return { error: "This community is invite-only. Ask a community admin for an invite link.", status: 403 } as const;
     }
     if (!joined && access.role === "COMMUNITY_ADMIN") {
@@ -585,6 +596,13 @@ export async function resolveCommunityForPost(communityId: string, userId: strin
   const database = await loadDatabase();
   const community = database.communities[communityId];
   if (!community) return { error: "Choose a community that still exists." } as const;
+
+  const isSuper = userId ? isGlobalModerator(await getUserAppRole(userId)) : false;
+
+  if (!canViewSubcommunity(database, community, userId, isSuper)) {
+    return { error: "You do not have access to post in this space." } as const;
+  }
+
   if (community.privacy !== "public" && !resolveCommunityHierarchyAccess(database, community, userId).joined) return { error: "Join this community before posting." } as const;
   return { community } as const;
 }
@@ -635,13 +653,19 @@ export async function ensureCommunityForLegacyPost(name: string, color: string, 
 export async function visibleCommunityIds(viewerId?: string) {
   await writeQueue;
   const database = await loadDatabase();
+  const isSuper = viewerId ? isGlobalModerator(await getUserAppRole(viewerId)) : false;
+
   return new Set(
     Object.values(database.communities)
       .filter((community) => {
         if (community.status !== "APPROVED") {
           if (!viewerId) return false;
+          if (isSuper) return true;
           const access = resolveCommunityHierarchyAccess(database, community, viewerId);
           return access.role === "COMMUNITY_ADMIN" || community.creatorId === viewerId;
+        }
+        if (!canViewSubcommunity(database, community, viewerId, isSuper)) {
+          return false;
         }
         if (community.privacy === "private") {
           if (!viewerId) return false;
@@ -658,9 +682,16 @@ export async function canAccessCommunity(communityId: string, userId: string) {
   const database = await loadDatabase();
   const community = database.communities[communityId];
   if (!community) return false;
+
+  const isSuper = userId ? isGlobalModerator(await getUserAppRole(userId)) : false;
+  if (isSuper) return true;
+
   if (community.status !== "APPROVED") {
     const access = resolveCommunityHierarchyAccess(database, community, userId);
     return access.role === "COMMUNITY_ADMIN" || community.creatorId === userId;
+  }
+  if (!canViewSubcommunity(database, community, userId, isSuper)) {
+    return false;
   }
   if (community.privacy === "private") {
     return resolveCommunityHierarchyAccess(database, community, userId).joined;

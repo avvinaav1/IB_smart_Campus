@@ -3,6 +3,7 @@ export type HierarchyCommunity = {
   name: string;
   creatorId: string;
   parentId: string | null;
+  privacy?: "public" | "restricted" | "private";
   memberCount: number;
   createdAt: number;
 };
@@ -150,4 +151,35 @@ export function communityHierarchyDeletionOrder(communities: Record<string, Hier
   }
   visit(communityId);
   return order;
+}
+
+export function canViewSubcommunity(
+  database: HierarchyDatabase,
+  child: HierarchyCommunity,
+  userId?: string,
+  isGlobalAdmin = false
+): boolean {
+  if (!child.parentId) return true;
+  const parent = database.communities[child.parentId];
+  if (!parent) return true;
+
+  if (isGlobalAdmin) return true;
+
+  if (userId) {
+    if (parent.creatorId === userId) return true;
+    const parentAccess = resolveCommunityHierarchyAccess(database, parent, userId);
+    if (parentAccess.role === "COMMUNITY_ADMIN" || parentAccess.role === "COMMUNITY_MODERATOR") return true;
+    if (child.creatorId === userId) return true;
+  }
+
+  const isParentProtected = parent.privacy === "private" || parent.privacy === "restricted";
+  const isChildProtected = child.privacy === "private" || child.privacy === "restricted";
+
+  if (isParentProtected || isChildProtected) {
+    if (!userId) return false;
+    const childAccess = resolveCommunityHierarchyAccess(database, child, userId);
+    return childAccess.joined;
+  }
+
+  return true;
 }

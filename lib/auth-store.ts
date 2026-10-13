@@ -552,6 +552,13 @@ export async function getAdminUser(userId: string) {
   return user ? adminUser(user) : null;
 }
 
+export async function getUserAppRole(userId: string): Promise<AppRole> {
+  await mutationQueue;
+  const state = await loadState();
+  const user = state.users[userId];
+  return user ? effectiveAppRole(user) : "USER";
+}
+
 export async function deleteAuthUser(userId: string) {
   return mutate((state) => {
     const user = state.users[userId];
