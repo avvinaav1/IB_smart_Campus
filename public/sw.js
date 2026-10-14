@@ -9,7 +9,7 @@ self.addEventListener("push", (event) => {
   const title = data.title || "IB Smart Campus";
   event.waitUntil(self.registration.showNotification(title, {
     body: data.body || "You have a new notification.",
-    icon: "/web-app-manifest-192x192.png",
+    icon: "/web-app-manifest-192x192.png?v=2",
     badge: "/favicon-96x96.png",
     tag: data.tag || undefined,
     data: { url: data.url || "/" },
