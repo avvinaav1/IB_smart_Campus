@@ -8,6 +8,7 @@ import { deletePostsForCommunity, deletePostRecord, deleteUserPostData } from "@
 import { deleteUserSocialData } from "@/lib/social-store";
 import { detachDeletedEventFromCertificates, detachDeletedUserFromCertificates } from "@/lib/certificates/moderation";
 import { deleteUserNotifications } from "@/lib/notification-store";
+import { deleteUserPushSubscriptions } from "@/lib/push-store";
 
 function imageObjectPath(url: string) {
   const match = url.match(/^\/api\/(profile\/avatar|posts\/images|events\/images|communities\/images)\/([0-9a-f-]{36}\.(?:jpg|png|webp))$/i);
@@ -70,6 +71,7 @@ export async function cascadeDeleteUser(userId: string) {
     removeUserCommunityMemberships(userId),
     deleteUserSocialData(userId),
     deleteUserNotifications(userId),
+    deleteUserPushSubscriptions(userId),
   ]);
   await detachDeletedUserFromCertificates(userId);
   const auth = await deleteAuthUser(userId);

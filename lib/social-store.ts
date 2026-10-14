@@ -219,6 +219,14 @@ export async function listUserConversations(userId: string) {
     });
 }
 
+/** Member ids of a conversation, or null when it does not exist or `userId` is not in it. */
+export async function getConversationMemberIds(conversationId: string, userId: string) {
+  await writeQueue;
+  const database = await loadDatabase();
+  if (!database.conversations[conversationId] || !database.conversationMembers[`${conversationId}:${userId}`]) return null;
+  return Object.values(database.conversationMembers).filter((member) => member.conversationId === conversationId).map((member) => member.userId);
+}
+
 export async function sendConversationMessage(conversationId: string, senderId: string, body: string) {
   return mutate((database) => {
     const conversation = database.conversations[conversationId];

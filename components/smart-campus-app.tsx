@@ -6,15 +6,17 @@ import { CertificateGallery, CertificateInbox } from "@/components/certificates/
 import {
   Award, ArrowRight, Bell, Bookmark, CalendarDays, Check, CheckCheck, ChevronDown, CircleUserRound,
   Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Link2, LoaderCircle, LockKeyhole, MapPin,
-  LogOut, Menu, MessageCircle, MessageSquare, Moon, Plus, Search, Send, Settings, Share2,
+  LogOut, MessageCircle, MessageSquare, Moon, Plus, Search, Send, Settings, Share2,
   Download, ExternalLink, ShieldCheck, Star, Sun, TicketCheck, TrendingUp, Trophy, UserCheck, UserPlus, Users, X, XCircle,
-  Pencil, Trash2, Video, Maximize2, FileText, Paperclip,
+  ChevronLeft, Pencil, Phone, Trash2, Video, Maximize2, FileText, Paperclip,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { AuthLoading, AuthScreen } from "@/components/auth-screen";
 import { CampusPicker } from "@/components/campus-picker";
 import { defaultCoverFor, EventCoverField } from "@/components/event-cover-field";
 import { EventRegistrationDetail } from "@/components/event-registration-detail";
+import { parseCallMessage } from "@/lib/chat-call";
+import { PushPromptBanner, unlinkPushDevice, WebAppBootstrap, WebAppOnboarding, WebAppPreferences } from "@/components/web-app";
 import { ProfileEditor } from "@/components/profile-editor";
 import { ProfileSetup } from "@/components/profile-setup";
 import { CommunityMembersList, InviteMembersModal } from "@/components/community-invite";
@@ -83,6 +85,7 @@ function parseChatMessage(body: string) {
 
 function formatChatMessagePreview(body?: string): string {
   if (!body) return "Conversation started";
+  if (parseCallMessage(body)) return "Video call";
   const { text, media } = parseChatMessage(body);
   if (text && media.length > 0) {
     return text.replace(/\r?\n+/g, " ");
@@ -541,6 +544,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
 
   async function logout() {
     try {
+      await unlinkPushDevice();
       const response = await fetch("/api/auth/logout", { method: "POST" });
       if (!response.ok) throw new Error();
       resetUserState();
@@ -669,7 +673,9 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
         return;
       }
     }
-    window.location.assign(notification.link);
+    // Calls link straight to the meeting room, which opens beside the app instead of replacing it.
+    if (/^https?:\/\//.test(notification.link) && new URL(notification.link).origin !== window.location.origin) window.open(notification.link, "_blank", "noopener,noreferrer");
+    else window.location.assign(notification.link);
   }
 
   async function readAllNotifications() {
@@ -773,7 +779,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
           {view === "events" && <EventsView events={events} communities={communities} defaultCampus={authUser.campus || ""} onEvent={setEventOpen} onCreated={(event) => { setEvents((current) => [event, ...current.filter((item) => item.id !== event.id)]); setEventOpen(event); }} notify={setToast} />}
           {view === "rewards" && <RewardsView user={authUser} notify={setToast} />}
           {view === "chat" && <ChatView user={authUser} notify={setToast} onDiscover={() => setSearchOpen(true)} initialRequests={initialChatRequests} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
-          {view === "profile" && <ProfileView user={authUser} dashboard={dashboard} events={events} onEvent={setEventOpen} theme={theme} toggleTheme={toggleTheme} privacyPending={privacyPending} onPrivacyChange={changePrivacy} onRewards={() => go("rewards")} onEdit={() => setProfileEditorOpen(true)} onLogout={logout} />}
+          {view === "profile" && <ProfileView user={authUser} dashboard={dashboard} events={events} onEvent={setEventOpen} theme={theme} toggleTheme={toggleTheme} privacyPending={privacyPending} onPrivacyChange={changePrivacy} onRewards={() => go("rewards")} onEdit={() => setProfileEditorOpen(true)} onLogout={logout} notify={setToast} />}
           {view === "profile" && <CertificateGallery userId={authUser.id} preview={previewMode} canManage={authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN"} onBuild={() => go("certificates")} />}
           {view === "admin" && (authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN") && <GlobalAdminDashboard user={authUser} notify={setToast} />}
           {view === "institute" && <InstituteDashboard user={authUser} communities={communities} notify={setToast} onCreateCommunity={setInstituteCommunityTarget} onCreateEvent={setInstituteEventTarget} onCommunityChanged={(community) => setCommunities((current) => [community, ...current.filter((item) => item.id !== community.id)])} />}
@@ -805,7 +811,9 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
       </nav>
 
       {searchOpen && <SearchPanel close={() => setSearchOpen(false)} notify={setToast} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
-      {notificationsOpen && <Notifications close={() => setNotificationsOpen(false)} items={notifications} loading={notificationsLoading} onRead={readNotification} onReadAll={readAllNotifications} />}
+      <WebAppBootstrap userId={previewMode ? "" : authUser?.id || ""} />
+      {!previewMode && authUser?.profileSetupComplete && <WebAppOnboarding notify={setToast} />}
+      {notificationsOpen && <Notifications notify={setToast} close={() => setNotificationsOpen(false)} items={notifications} loading={notificationsLoading} onRead={readNotification} onReadAll={readAllNotifications} />}
       {composerOpen && <Composer author={authUser.username} communities={communities} initialCommunity={composerCommunity} close={() => setComposerOpen(false)} onCreate={persistPost} />}
       {editingPost && <EditPostModal post={editingPost} communities={communities} close={() => setEditingPost(null)} onSave={savePostEdit} />}
       {eventOpen && <EventRegistrationDetail event={eventOpen} close={() => setEventOpen(null)} notify={setToast} onEdit={() => setEditingEvent(eventOpen)} onChange={(event) => { setEventOpen(event); setEvents((current) => current.map((item) => item.id === event.id ? event : item)); }} />}
@@ -1817,6 +1825,38 @@ function RewardsView({ user, notify }: { user: SessionUser; notify: (s: string) 
   </div>;
 }
 
+const CHAT_GROUP_GAP_MS = 5 * 60_000;
+const CHAT_URL_PATTERN = /(https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"])/g;
+
+function chatDayLabel(createdAt: number) {
+  const day = new Date(createdAt), today = new Date();
+  const startOf = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const diff = Math.round((startOf(today) - startOf(day)) / 86_400_000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  return day.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", ...(day.getFullYear() !== today.getFullYear() ? { year: "numeric" } : {}) });
+}
+
+function chatClockTime(createdAt: number) {
+  return new Date(createdAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+/** Message text with web links made clickable. */
+function LinkifiedText({ text }: { text: string }) {
+  return <>{text.split(CHAT_URL_PATTERN).map((part, index) => index % 2 ? <a key={index} href={part} target="_blank" rel="noopener noreferrer">{part}</a> : part)}</>;
+}
+
+type ChatSeenMap = Record<string, number>;
+const chatSeenKey = (userId: string) => `smart-campus:chat-seen:${userId}`;
+
+function loadChatSeen(userId: string): ChatSeenMap | null {
+  try { return JSON.parse(window.localStorage.getItem(chatSeenKey(userId)) || "null") as ChatSeenMap | null; } catch { return null; }
+}
+
+function saveChatSeen(userId: string, seen: ChatSeenMap) {
+  try { window.localStorage.setItem(chatSeenKey(userId), JSON.stringify(seen)); } catch { /* storage unavailable */ }
+}
+
 function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { user: SessionUser; notify: (s: string) => void; onDiscover: () => void; initialRequests: boolean; onActivity: () => void }) {
   const [mode, setMode] = useState<"chats" | "requests" | "certificates">(initialRequests ? "requests" : "chats");
   const [inbox, setInbox] = useState<DirectConversation[]>([]);
@@ -1829,8 +1869,17 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
   const [busyIds, setBusyIds] = useState<Set<string>>(() => new Set());
   const [attachment, setAttachment] = useState<{ url: string; name: string } | null>(null);
   const [attachmentUploading, setAttachmentUploading] = useState(false);
+  const [calling, setCalling] = useState(false);
+  // Phones show either the chat list or one open thread; desktop shows both side by side.
+  const [mobileThreadOpen, setMobileThreadOpen] = useState(false);
+  // When each conversation was last read on this device, to mark chats with new messages.
+  const [seen, setSeen] = useState<ChatSeenMap>({});
+  const [lightbox, setLightbox] = useState<{ images: string[]; index: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const nearBottom = useRef(true);
+  const openIdRef = useRef("");
 
   const refreshInbox = useCallback(async () => {
     if (user.id === "local-preview") { setLoading(false); return; }
@@ -1842,6 +1891,14 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
       ]);
       const nextInbox = conversationData?.conversations || [];
       setInbox(nextInbox);
+      setSeen((current) => {
+        // First visit on this device: treat existing history as read instead of lighting up every chat.
+        const base = Object.keys(current).length ? current : loadChatSeen(user.id) || Object.fromEntries(nextInbox.map((item) => [item.id, item.updatedAt]));
+        const open = nextInbox.find((item) => item.id === openIdRef.current);
+        const next = open && (base[open.id] || 0) < open.updatedAt ? { ...base, [open.id]: open.updatedAt } : base;
+        if (next !== current) saveChatSeen(user.id, next);
+        return next;
+      });
       setChatRequests(chatData?.requests || []);
       setFollowRequests(followData?.requests || []);
       setSelectedId((current) => nextInbox.some((item) => item.id === current) ? current : nextInbox[0]?.id || "");
@@ -1854,11 +1911,41 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
 
   useEffect(() => {
     const timer = window.setTimeout(() => void refreshInbox(), 0);
-    return () => window.clearTimeout(timer);
+    // New messages and calls show up without reopening the chat.
+    const stopPolling = pollWhileVisible(() => void refreshInbox(), 4_000);
+    return () => { window.clearTimeout(timer); stopPolling(); };
   }, [refreshInbox]);
 
   const selected = inbox.find((item) => item.id === selectedId);
   const visibleInbox = inbox.filter((item) => item.otherUser.username.toLowerCase().includes(filter.trim().toLowerCase()));
+  const isUnread = (item: DirectConversation) => { const last = item.messages.at(-1); return Boolean(last && last.senderId !== user.id && last.createdAt > (seen[item.id] || 0)); };
+  const lastMessageId = selected?.messages.at(-1)?.id;
+
+  useEffect(() => {
+    openIdRef.current = mode === "chats" && selected ? selected.id : "";
+  });
+  // Jump to the newest message when a thread opens…
+  useEffect(() => {
+    nearBottom.current = true;
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [selectedId, mobileThreadOpen, mode]);
+  // …and follow new ones only if the reader is already at the bottom, so scrolling back through history isn't interrupted.
+  useEffect(() => {
+    if (nearBottom.current) endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, [lastMessageId]);
+
+  function openConversation(item: DirectConversation) {
+    setSelectedId(item.id);
+    setMobileThreadOpen(true);
+    setSeen((current) => { const next = { ...current, [item.id]: item.updatedAt }; saveChatSeen(user.id, next); return next; });
+  }
+
+  function resizeComposer() {
+    const field = textareaRef.current;
+    if (!field) return;
+    field.style.height = "auto";
+    field.style.height = `${Math.min(field.scrollHeight, 120)}px`;
+  }
   const requestCount = chatRequests.length + followRequests.length;
 
   async function handleChatAttachment(event: React.ChangeEvent<HTMLInputElement>) {
@@ -1899,12 +1986,35 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
       setInbox((current) => current.map((conversation) => conversation.id === selected.id ? { ...conversation, messages: [...conversation.messages, data.message], updatedAt: data.message.createdAt } : conversation));
       setDraft("");
       setAttachment(null);
+      if (textareaRef.current) textareaRef.current.style.height = "auto";
+      nearBottom.current = true;
       onActivity();
       window.setTimeout(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), 30);
     } catch (sendError) {
       notify(sendError instanceof Error ? sendError.message : "Could not send your message.");
     } finally {
       setBusyIds((current) => { const next = new Set(current); next.delete(selected.id); return next; });
+    }
+  }
+
+  async function startCall() {
+    if (!selected || calling) return;
+    // Open the tab inside the click so popup blockers allow it, then point it at the room once it exists.
+    const tab = window.open("", "_blank");
+    setCalling(true);
+    try {
+      const data = await requestJson<{ meetingLink: string; message: DirectConversation["messages"][number] }>(`/api/conversations/${selected.id}/call`, { method: "POST" });
+      if (!data?.meetingLink || !data.message) throw new Error("The call could not be started.");
+      setInbox((current) => current.map((conversation) => conversation.id === selected.id ? { ...conversation, messages: [...conversation.messages, data.message], updatedAt: data.message.createdAt } : conversation));
+      if (tab) { tab.opener = null; tab.location.href = data.meetingLink; }
+      else window.open(data.meetingLink, "_blank", "noopener,noreferrer");
+      onActivity();
+      window.setTimeout(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), 30);
+    } catch (callError) {
+      tab?.close();
+      notify(callError instanceof Error ? callError.message : "Could not start the call.");
+    } finally {
+      setCalling(false);
     }
   }
 
@@ -1924,7 +2034,7 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
     }
   }
 
-  return <div className={`chat-page ${mode === "requests" ? "requests-mode" : ""}`}>
+  return <div className={`chat-page chat-mode-${mode} ${mode === "requests" ? "requests-mode" : ""} ${mode === "chats" && mobileThreadOpen && selected ? "mobile-thread-open" : ""}`}>
     <nav className="mobile-inbox-tabs" aria-label="Mobile message inbox">
       <button className={mode === "chats" ? "active" : ""} onClick={() => setMode("chats")}><MessageCircle size={16} />Chats</button>
       <button className={mode === "certificates" ? "active" : ""} onClick={() => setMode("certificates")}><Award size={16} />Certificates</button>
@@ -1933,7 +2043,7 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
     <aside className="conversation-list">
       <div className="chat-list-head"><div><span className="eyebrow cyan">STAY CLOSE</span><h1>Messages</h1></div><IconButton label="Find people" onClick={onDiscover}><UserPlus size={21} /></IconButton></div>
       <nav className="inbox-tabs" aria-label="Message inbox"><button className={mode === "certificates" ? "active" : ""} onClick={() => setMode("certificates")}><Award size={15} /> Certificates</button><button className={mode === "chats" ? "active" : ""} onClick={() => setMode("chats")}><MessageCircle size={15} /> Chats</button><button className={mode === "requests" ? "active" : ""} onClick={() => setMode("requests")}><Inbox size={15} /> Requests {requestCount > 0 && <i>{requestCount}</i>}</button></nav>
-      {mode === "chats" && <><label><Search size={18} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search messages" /></label>{visibleInbox.map((item) => { const last = item.messages.at(-1); return <button className={selectedId === item.id ? "active" : ""} onClick={() => setSelectedId(item.id)} key={item.id}><Avatar text={item.otherUser.username} image={item.otherUser.avatarUrl} color="#6C3BFF" size={45} /><span><b>{item.otherUser.username}</b><small>{formatChatMessagePreview(last?.body)}</small></span><em>{relativeTime(item.updatedAt)}</em></button>; })}{!loading && !visibleInbox.length && <div className="conversation-empty"><MessageCircle size={24} /><b>No conversations yet</b><small>Find someone and send one thoughtful request.</small></div>}</>}
+      {mode === "chats" && <><label><Search size={18} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search chats" aria-label="Search chats" /></label>{loading && !inbox.length && <div className="conversation-skeleton" aria-hidden="true">{[0, 1, 2, 3].map((row) => <span key={row}><i /><span><i /><i /></span></span>)}</div>}{visibleInbox.map((item) => { const last = item.messages.at(-1); const unread = isUnread(item); return <button className={`${selectedId === item.id ? "active" : ""} ${unread ? "unread" : ""}`} onClick={() => openConversation(item)} key={item.id} aria-label={`${item.otherUser.username}${unread ? ", new message" : ""}`}><Avatar text={item.otherUser.username} image={item.otherUser.avatarUrl} color="#6C3BFF" size={45} /><span><b>{item.otherUser.username}</b><small>{last && last.senderId === user.id ? "You: " : ""}{formatChatMessagePreview(last?.body)}</small></span><em>{relativeTime(item.updatedAt)}</em>{unread && <strong aria-hidden="true" />}</button>; })}{!loading && !visibleInbox.length && (inbox.length ? <div className="conversation-empty"><Search size={22} /><b>No chats match “{filter.trim()}”</b></div> : <div className="conversation-empty"><MessageCircle size={24} /><b>No conversations yet</b><small>Find someone and send one thoughtful request.</small><button type="button" className="primary-action" onClick={onDiscover}><UserPlus size={16} /> Find people</button></div>)}</>}
       {mode === "requests" && <div className="request-sidebar-summary"><Inbox size={26} /><b>{requestCount} pending</b><small>Review requests in the main panel.</small></div>}
     </aside>
 
@@ -1944,19 +2054,42 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
       <div className="request-section-heading follow-heading"><div><span className="eyebrow cyan">FOLLOW REQUESTS</span><h2>Private profile requests</h2></div><b>{followRequests.length}</b></div>
       {followRequests.map((request) => <article className="request-card follow-request-card" key={request.id}><Avatar text={request.sender.username} image={request.sender.avatarUrl} color="#22D3EE" size={48} /><div><header><b>{request.sender.username}</b></header><p>Wants to follow your private profile.</p><small>{relativeTime(request.createdAt)}</small></div><footer><button disabled={busyIds.has(request.id)} onClick={() => resolveRequest("follow", request.id, "rejected")}>Reject</button><button disabled={busyIds.has(request.id)} onClick={() => resolveRequest("follow", request.id, "accepted")}><UserCheck size={15} /> Accept</button></footer></article>)}
       {!loading && !followRequests.length && <div className="request-empty compact"><UserPlus size={25} /><b>No follow requests</b></div>}
-    </div></section> : selected ? <section className="thread"><header><Avatar text={selected.otherUser.username} image={selected.otherUser.avatarUrl} color="#6C3BFF" size={42} /><div><b>{selected.otherUser.username}</b><small>{selected.otherUser.isPrivate ? "Private profile" : "Connected on Smart Campus"}</small></div><button className="thread-request-button" onClick={() => setMode("requests")}><Inbox size={17} />{requestCount > 0 && <i>{requestCount}</i>}</button><IconButton label="Conversation details"><Menu size={20} /></IconButton></header><div className="message-scroll"><div className="day-marker"><span>Conversation</span></div><div className="thread-start"><Avatar text={selected.otherUser.username} image={selected.otherUser.avatarUrl} color="#6C3BFF" size={58} /><h2>{selected.otherUser.username}</h2><p>You accepted a connection request. You can now message each other.</p></div>{selected.messages.map((message) => {
+    </div></section> : selected ? <section className="thread"><header><button type="button" className="thread-back-button" onClick={() => setMobileThreadOpen(false)} aria-label="Back to chats"><ChevronLeft size={20} /></button><a className="thread-identity" href={`/members/${encodeURIComponent(selected.otherUser.id)}`}><Avatar text={selected.otherUser.username} image={selected.otherUser.avatarUrl} color="#6C3BFF" size={40} /><span><b>{selected.otherUser.username}</b><small>{selected.otherUser.isPrivate ? "Private profile" : "Connected on Smart Campus"}</small></span></a><button type="button" className="thread-call-button" onClick={() => void startCall()} disabled={calling} aria-label={`Start a video call with ${selected.otherUser.username}`} title="Start a video call">{calling ? <LoaderCircle className="spin" size={17} /> : <Phone size={17} />}<span>Call</span></button><button className="thread-request-button" onClick={() => setMode("requests")} aria-label="Requests"><Inbox size={17} />{requestCount > 0 && <i>{requestCount}</i>}</button></header><div className="message-scroll" onScroll={(event) => { const box = event.currentTarget; nearBottom.current = box.scrollHeight - box.scrollTop - box.clientHeight < 120; }}><div className="thread-start"><Avatar text={selected.otherUser.username} image={selected.otherUser.avatarUrl} color="#6C3BFF" size={58} /><h2>{selected.otherUser.username}</h2><p>You&apos;re connected. Say hi, share a file, or start a video call.</p></div>{selected.messages.map((message, index) => {
+      const previous = selected.messages[index - 1], next = selected.messages[index + 1];
+      const mine = message.senderId === user.id;
+      const newDay = !previous || chatDayLabel(previous.createdAt) !== chatDayLabel(message.createdAt);
+      // Consecutive messages from one person within a few minutes form a group: one avatar and one timestamp.
+      const joinsPrevious = !newDay && previous?.senderId === message.senderId && message.createdAt - previous.createdAt < CHAT_GROUP_GAP_MS;
+      const endsGroup = !next || next.senderId !== message.senderId || next.createdAt - message.createdAt >= CHAT_GROUP_GAP_MS || chatDayLabel(next.createdAt) !== chatDayLabel(message.createdAt);
+      const rowClass = `bubble-row ${mine ? "mine" : ""} ${joinsPrevious ? "grouped" : ""} ${endsGroup ? "group-end" : ""}`;
+      const avatar = !mine && (endsGroup ? <Avatar text={selected.otherUser.username} image={selected.otherUser.avatarUrl} color="#6C3BFF" size={29} /> : <span className="bubble-avatar-gap" />);
+      const stamp = endsGroup && <time dateTime={new Date(message.createdAt).toISOString()} title={new Date(message.createdAt).toLocaleString()}>{chatClockTime(message.createdAt)}</time>;
+      const divider = newDay && <div className="day-marker"><span>{chatDayLabel(message.createdAt)}</span></div>;
+      const callLink = parseCallMessage(message.body);
+      if (callLink) return (
+        <Fragment key={message.id}>{divider}<div className={rowClass}>
+          {avatar}
+          <div className="message-bubble call-bubble">
+            <span className="call-bubble-icon"><Video size={18} /></span>
+            <span><b>Video call</b><small>{message.senderId === user.id ? "You started a call" : `${selected.otherUser.username} started a call`}</small></span>
+            <a href={callLink} target="_blank" rel="noopener noreferrer"><Phone size={14} /> Join</a>
+          </div>
+          {stamp}
+        </div></Fragment>
+      );
       const { text, media } = parseChatMessage(message.body);
+      const images = media.filter((item) => item.isImage).map((item) => item.url);
       return (
-        <div className={`bubble-row ${message.senderId === user.id ? "mine" : ""}`} key={message.id}>
-          {message.senderId !== user.id && <Avatar text={selected.otherUser.username} image={selected.otherUser.avatarUrl} color="#6C3BFF" size={29} />}
-          <div className="message-bubble">
-            {text && <div style={{ whiteSpace: "pre-wrap" }}>{text}</div>}
+        <Fragment key={message.id}>{divider}<div className={rowClass}>
+          {avatar}
+          <div className={`message-bubble ${!text && media.length ? "media-only" : ""}`}>
+            {text && <div className="message-text"><LinkifiedText text={text} /></div>}
             {media.map((item, i) => {
               if (item.isImage) {
                 return (
-                  <a key={i} href={item.url} target="_blank" rel="noopener noreferrer">
-                    <img src={item.url} alt={item.name} className="message-attachment-image" />
-                  </a>
+                  <button type="button" key={i} className="message-attachment-image-button" onClick={() => setLightbox({ images, index: images.indexOf(item.url) })} aria-label={`Open ${item.name}`}>
+                    <img src={item.url} alt={item.name} className="message-attachment-image" loading="lazy" />
+                  </button>
                 );
               }
               return (
@@ -1968,8 +2101,8 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
               );
             })}
           </div>
-          <time>{relativeTime(message.createdAt)}</time>
-        </div>
+          {stamp}
+        </div></Fragment>
       );
     })}<div ref={endRef} /></div><footer>
       <input
@@ -1997,10 +2130,12 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
         </IconButton>
         <label>
           <textarea
+            ref={textareaRef}
             rows={1}
             maxLength={1000}
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            aria-label={`Message ${selected.otherUser.username}`}
+            onChange={(event) => { setDraft(event.target.value); resizeComposer(); }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -2009,9 +2144,11 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
             }}
             placeholder={`Message ${selected.otherUser.username}`}
           />
+          {draft.length > 800 && <span className={`chat-char-count ${draft.length >= 1000 ? "full" : ""}`}>{1000 - draft.length}</span>}
         </label>
         <button
           className="send-button"
+          aria-label="Send message"
           disabled={(!draft.trim() && !attachment) || busyIds.has(selected.id) || attachmentUploading}
           onClick={() => void send()}
         >
@@ -2019,10 +2156,11 @@ function ChatView({ user, notify, onDiscover, initialRequests, onActivity }: { u
         </button>
       </div>
     </footer></section> : <section className="thread empty-thread"><button className="thread-request-button empty-request-button" onClick={() => setMode("requests")}><Inbox size={18} /> Requests {requestCount > 0 && <i>{requestCount}</i>}</button><MessageCircle size={46} /><h2>Your conversations live here</h2><p>Search for a campus user and send one initial message to connect.</p><button className="primary-action" onClick={onDiscover}><UserPlus size={17} /> Find people</button></section>}
+    {lightbox && <ImageLightbox images={lightbox.images} initialIndex={lightbox.index} title={selected?.otherUser.username} onClose={() => setLightbox(null)} />}
   </div>;
 }
 
-function ProfileView({ user, dashboard, events, onEvent, theme, toggleTheme, privacyPending, onPrivacyChange, onRewards, onEdit, onLogout }: { user: SessionUser; dashboard: UserDashboard | null; events: CampusEvent[]; onEvent: (event: CampusEvent) => void; theme: string; toggleTheme: () => void; privacyPending: boolean; onPrivacyChange: (isPrivate: boolean) => void; onRewards: () => void; onEdit: () => void; onLogout: () => void }) {
+function ProfileView({ user, dashboard, events, onEvent, theme, toggleTheme, privacyPending, onPrivacyChange, onRewards, onEdit, onLogout, notify }: { notify: (message: string) => void; user: SessionUser; dashboard: UserDashboard | null; events: CampusEvent[]; onEvent: (event: CampusEvent) => void; theme: string; toggleTheme: () => void; privacyPending: boolean; onPrivacyChange: (isPrivate: boolean) => void; onRewards: () => void; onEdit: () => void; onLogout: () => void }) {
   const metric = (value?: number) => value === undefined ? "—" : value.toLocaleString();
   const [now] = useState(() => Date.now());
   const startOf = (event: CampusEvent) => new Date(event.startsAt).getTime();
@@ -2040,7 +2178,7 @@ function ProfileView({ user, dashboard, events, onEvent, theme, toggleTheme, pri
   return <div className="content-page profile-page">
     <section className="profile-banner"><div className="profile-pattern">✦ &nbsp; 〰 &nbsp; ★ &nbsp; 〰 &nbsp; ✦</div><div className="profile-identity"><Avatar text={user.username} image={user.avatarUrl} color="#FF5C8A" size={92} /><div><span className="eyebrow lime">CAMPUS CONNECTOR</span><h1>{user.username} <ShieldCheck size={24} fill="#22D3EE" /></h1><p>{user.email} · {user.campus || `ID ${user.id.slice(0, 8)}`}</p></div><button onClick={onEdit}><Settings size={18} /> Edit profile</button></div></section>
     <div className="profile-stats"><div><b>{metric(dashboard?.karma)}</b><small>Karma</small></div><div><b>{metric(dashboard?.postCount)}</b><small>Posts</small></div><div><b>{metric(dashboard?.followers)}</b><small>Followers</small></div><div><b>{metric(dashboard?.streak ?? user.streakCount)}</b><small>24-hour streak</small></div></div>
-    <div className="profile-content"><section><span className="eyebrow violet">ABOUT ME</span><h2>{user.about || "Your campus story starts here. Add a few lines about yourself from Edit profile."}</h2><div className="profile-tags"><span>🎨 Design</span><span>📸 Photography</span><span>☕ Chai</span><span>🎧 Indie music</span></div><div className="profile-own-posts"><span className="eyebrow pink">YOUR POSTS</span>{dashboard?.posts.length ? dashboard.posts.slice(0, 3).map((post) => <article key={post.id}><div><b>{post.title}</b><small>{post.community} · {formatPostTimestamp(post)}</small></div><span>{post.votes.toLocaleString()} karma</span></article>) : <p>You haven&apos;t posted anything yet.</p>}</div><div className="profile-own-posts profile-registered-events"><span className="eyebrow lime">REGISTERED EVENTS</span>{registeredEvents.length ? registeredEvents.map(({ event, ended }) => <button type="button" className={ended ? "ended" : ""} key={event.id} onClick={() => onEvent(event)}><span className="profile-event-date"><b>{event.day}</b><small>{event.month}</small></span><div><b>{event.title}</b><small>{eventWhen(event)} · {event.venueName}</small></div><span className={`profile-event-status ${event.viewerCheckInStatus === "CHECKED_IN" ? "attended" : ended ? "completed" : event.viewerRsvpStatus || "pending"}`}>{registrationLabel(event, ended)}</span></button>) : <p>You haven&apos;t registered for any events yet.</p>}</div></section><aside><span className="eyebrow cyan">PREFERENCES</span><button onClick={onRewards}><Gift size={20} /><span><b>Rewards & Premium</b><small>{user.points} points · {Math.max(0, 60 - user.points)} to your next reward</small></span><ArrowRight size={18} /></button><button onClick={toggleTheme}>{theme === "light" ? <Moon size={20} /> : <Sun size={20} />}<span><b>{theme === "light" ? "Dark mode" : "Light mode"}</b><small>Change your campus vibe</small></span><i /></button><button onClick={onEdit}><KeyRound size={20} /><span><b>Password & email</b><small>{user.hasPassword ? "Password login enabled" : "Add an alternative login method"}</small></span><ArrowRight size={18} /></button><button className="privacy-row" role="switch" aria-checked={user.isPrivate} disabled={privacyPending} onClick={() => onPrivacyChange(!user.isPrivate)}>{user.isPrivate ? <LockKeyhole size={20} /> : <Globe2 size={20} />}<span><b>Private profile</b><small>{user.isPrivate ? "Follow requests require your approval" : "Anyone can follow you instantly"}</small></span><i className={user.isPrivate ? "on" : ""} /></button><button className="logout-row" onClick={onLogout}><LogOut size={20} /><span><b>Log out</b><small>End this session on every layer</small></span><ArrowRight size={18} /></button></aside></div>
+    <div className="profile-content"><section><span className="eyebrow violet">ABOUT ME</span><h2>{user.about || "Your campus story starts here. Add a few lines about yourself from Edit profile."}</h2><div className="profile-tags"><span>🎨 Design</span><span>📸 Photography</span><span>☕ Chai</span><span>🎧 Indie music</span></div><div className="profile-own-posts"><span className="eyebrow pink">YOUR POSTS</span>{dashboard?.posts.length ? dashboard.posts.slice(0, 3).map((post) => <article key={post.id}><div><b>{post.title}</b><small>{post.community} · {formatPostTimestamp(post)}</small></div><span>{post.votes.toLocaleString()} karma</span></article>) : <p>You haven&apos;t posted anything yet.</p>}</div><div className="profile-own-posts profile-registered-events"><span className="eyebrow lime">REGISTERED EVENTS</span>{registeredEvents.length ? registeredEvents.map(({ event, ended }) => <button type="button" className={ended ? "ended" : ""} key={event.id} onClick={() => onEvent(event)}><span className="profile-event-date"><b>{event.day}</b><small>{event.month}</small></span><div><b>{event.title}</b><small>{eventWhen(event)} · {event.venueName}</small></div><span className={`profile-event-status ${event.viewerCheckInStatus === "CHECKED_IN" ? "attended" : ended ? "completed" : event.viewerRsvpStatus || "pending"}`}>{registrationLabel(event, ended)}</span></button>) : <p>You haven&apos;t registered for any events yet.</p>}</div></section><aside><span className="eyebrow cyan">PREFERENCES</span><button onClick={onRewards}><Gift size={20} /><span><b>Rewards & Premium</b><small>{user.points} points · {Math.max(0, 60 - user.points)} to your next reward</small></span><ArrowRight size={18} /></button><button onClick={toggleTheme}>{theme === "light" ? <Moon size={20} /> : <Sun size={20} />}<span><b>{theme === "light" ? "Dark mode" : "Light mode"}</b><small>Change your campus vibe</small></span><i /></button><button onClick={onEdit}><KeyRound size={20} /><span><b>Password & email</b><small>{user.hasPassword ? "Password login enabled" : "Add an alternative login method"}</small></span><ArrowRight size={18} /></button><button className="privacy-row" role="switch" aria-checked={user.isPrivate} disabled={privacyPending} onClick={() => onPrivacyChange(!user.isPrivate)}>{user.isPrivate ? <LockKeyhole size={20} /> : <Globe2 size={20} />}<span><b>Private profile</b><small>{user.isPrivate ? "Follow requests require your approval" : "Anyone can follow you instantly"}</small></span><i className={user.isPrivate ? "on" : ""} /></button><WebAppPreferences notify={notify} /><button className="logout-row" onClick={onLogout}><LogOut size={20} /><span><b>Log out</b><small>End this session on every layer</small></span><ArrowRight size={18} /></button></aside></div>
   </div>;
 }
 
@@ -2117,10 +2255,10 @@ function ChatRequestModal({ target, close, sent }: { target: UserSearchResult; c
   return <div className="overlay chat-request-overlay" onMouseDown={(event) => event.target === event.currentTarget && close()}><form className="chat-request-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="chat-request-title"><header><Avatar text={target.username} image={target.avatarUrl} color="#6C3BFF" size={48} /><div><span className="eyebrow cyan">ONE MESSAGE</span><h2 id="chat-request-title">Message {target.username}</h2></div><IconButton label="Close" onClick={close}><X size={19} /></IconButton></header><p>Introduce yourself with one message. You cannot send another unless {target.username} accepts.</p><label><span>Initial message</span><textarea autoFocus required rows={5} maxLength={1000} value={message} onChange={(event) => { setMessage(event.target.value); setError(""); }} placeholder="Hey! I saw we’re both into…" /><small>{message.length} / 1000</small></label>{error && <p className="form-error" role="alert">{error}</p>}<footer><button type="button" onClick={close}>Cancel</button><button disabled={busy || !message.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />} Send request</button></footer></form></div>;
 }
 
-function Notifications({ close, items, loading, onRead, onReadAll }: { close: () => void; items: UserNotification[]; loading: boolean; onRead: (notification: UserNotification) => Promise<void>; onReadAll: () => Promise<void> }) {
+function Notifications({ close, items, loading, onRead, onReadAll, notify }: { notify: (message: string) => void; close: () => void; items: UserNotification[]; loading: boolean; onRead: (notification: UserNotification) => Promise<void>; onReadAll: () => Promise<void> }) {
   const unreadCount = items.filter((item) => !item.isRead).length;
   const marker: Record<UserNotification["type"], string> = { EVENT: "EV", COMMUNITY: "CO", POST: "PO", MESSAGE: "MS", FOLLOW_REQUEST: "FR", COMMUNITY_JOIN_REQUEST: "JR" };
-  return <><button className="drawer-scrim" onClick={close} aria-label="Close notifications" /><aside className="notification-drawer" aria-label="Notifications"><header><div><span className="eyebrow pink">WHAT&apos;S NEW</span><h2>Notifications</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><div className="notification-actions"><button disabled={!unreadCount} onClick={() => void onReadAll()}><Check size={15} /> Mark all read</button><span>{unreadCount} unread</span></div>{loading && !items.length ? <div className="notification-state"><LoaderCircle className="spin" size={22} /> Loading notifications…</div> : items.length ? items.map((item, index) => <button className={item.isRead ? "read" : ""} key={item.id} onClick={() => void onRead(item)}><Avatar text={marker[item.type]} color={index % 2 ? "#22D3EE" : "#6C3BFF"} /><span><b>{item.content}</b><small>{item.type.replace("_", " ").toLowerCase()}</small><em>{relativeTime(item.createdAt)}</em></span>{!item.isRead && <i />}</button>) : <div className="notification-state"><Bell size={26} /><b>You&apos;re all caught up</b><small>New community activity will appear here.</small></div>}</aside></>;
+  return <><button className="drawer-scrim" onClick={close} aria-label="Close notifications" /><aside className="notification-drawer" aria-label="Notifications"><header><div><span className="eyebrow pink">WHAT&apos;S NEW</span><h2>Notifications</h2></div><IconButton label="Close" onClick={close}><X size={20} /></IconButton></header><div className="notification-actions"><button disabled={!unreadCount} onClick={() => void onReadAll()}><Check size={15} /> Mark all read</button><span>{unreadCount} unread</span></div><PushPromptBanner notify={notify} />{loading && !items.length ? <div className="notification-state"><LoaderCircle className="spin" size={22} /> Loading notifications…</div> : items.length ? items.map((item, index) => <button className={item.isRead ? "read" : ""} key={item.id} onClick={() => void onRead(item)}><Avatar text={marker[item.type]} color={index % 2 ? "#22D3EE" : "#6C3BFF"} /><span><b>{item.content}</b><small>{item.type.replace("_", " ").toLowerCase()}</small><em>{relativeTime(item.createdAt)}</em></span>{!item.isRead && <i />}</button>) : <div className="notification-state"><Bell size={26} /><b>You&apos;re all caught up</b><small>New community activity will appear here.</small></div>}</aside></>;
 }
 
 function Composer({ author, close, onCreate, communities, initialCommunity }: { author: string; close: () => void; onCreate: (post: Post) => void; communities: Community[]; initialCommunity: string }) {
