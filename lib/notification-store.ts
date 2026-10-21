@@ -2,6 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
+import { pushNotifications } from "@/lib/push-store";
 import type { NotificationType, UserNotification } from "@/lib/types";
 
 type NotificationDatabase = {
@@ -54,7 +55,7 @@ function pruneRecipient(database: NotificationDatabase, recipientId: string) {
 
 export async function createNotifications(input: NewNotification | NewNotification[]) {
   const inputs = Array.isArray(input) ? input : [input];
-  return mutate((database) => {
+  const created = await mutate((database) => {
     const created: UserNotification[] = [];
     const now = Date.now();
     for (const candidate of inputs) {
@@ -77,6 +78,9 @@ export async function createNotifications(input: NewNotification | NewNotificati
     for (const recipientId of new Set(inputs.map((item) => item.recipientId).filter(Boolean))) pruneRecipient(database, recipientId);
     return created;
   });
+  // Awaited (not fire-and-forget) so serverless hosts don't freeze the request before pushes go out.
+  await pushNotifications(created);
+  return created;
 }
 
 export async function createNotification(input: NewNotification) {
