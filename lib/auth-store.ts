@@ -541,8 +541,9 @@ export async function setUserAppRole(actorId: string, userId: string, appRole: A
     if (!user) return { error: "Account not found.", status: 404 } as const;
     if (userId === actorId) return { error: "You can't change your own app role.", status: 403 } as const;
     if (isProtectedSuperAdminUsername(user.username)) return { error: "The permanent Super Admin role cannot be changed.", status: 403 } as const;
+    const previousRole = effectiveAppRole(user);
     user.appRole = appRole;
-    return { user: adminUser(user) } as const;
+    return { user: adminUser(user), previousRole } as const;
   });
 }
 
