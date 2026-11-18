@@ -14,9 +14,13 @@ import {
 test("auth v6 roles migrate to the v7 protected-account invariant", () => {
   assert.equal(normalizeAppRole("KavinAV75", "USER"), "SUPER_ADMIN");
   assert.equal(normalizeAppRole(" kavinav75 ", undefined), "SUPER_ADMIN");
-  assert.equal(normalizeAppRole("another-user", "SUPER_ADMIN"), "USER");
+  assert.equal(normalizeAppRole("another-user", "SUPER_ADMIN"), "SUPER_ADMIN");
+  assert.equal(normalizeAppRole("another-user", "BOGUS"), "USER");
   assert.equal(normalizeAppRole("moderator", "APP_MODERATOR"), "APP_MODERATOR");
   assert.equal(isProtectedSuperAdminUsername("KAVINAV75"), true);
+  assert.equal(normalizeAppRole("PJ0964", "USER"), "SUPER_ADMIN");
+  assert.equal(isProtectedSuperAdminUsername(" pj0964 "), true);
+  assert.equal(isProtectedSuperAdminUsername("pj09644"), false);
 });
 
 test("community v2 roles migrate to v3 roles", () => {

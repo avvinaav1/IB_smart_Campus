@@ -950,6 +950,10 @@ html[data-theme="dark"] .post-body .post-link {
   color: #b39dff;
 }
 
+/* Pinned community posts */
+.post-card.is-pinned { border-color: color-mix(in srgb, var(--violet) 45%, transparent); }
+.post-pinned-label { display: inline-flex; align-items: center; gap: 5px; margin-bottom: 8px; color: var(--violet); font-size: 10px; font-weight: 850; letter-spacing: .03em; text-transform: uppercase; }
+
 /* Post owner menu */
 .post-owner-menu { position: relative; margin-left: auto; }
 .post-owner-dropdown {

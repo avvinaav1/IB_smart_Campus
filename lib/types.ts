@@ -127,6 +127,8 @@ export type Post = {
   commentItems?: PostComment[];
   voted?: 1 | -1;
   saved?: boolean;
+  /** Set when a community moderator pinned the post to the top of its community feed. */
+  pinnedAt?: number;
   poll?: { label: string; percent: number }[];
 };
 

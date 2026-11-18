@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { isKnownIndianCampus } from "@/lib/campus-store";
 import { mutateDocument, readDocument } from "@/lib/firebase-admin";
 import type { AppRole, SessionUser } from "@/lib/types";
-import { normalizeAppRole, SUPER_ADMIN_USERNAME } from "@/lib/moderation-policy";
+import { isProtectedSuperAdminUsername, normalizeAppRole, SUPER_ADMIN_USERNAMES } from "@/lib/moderation-policy";
 import { applyStreakActivity, visibleStreakCount, type StreakAction } from "@/lib/streak-policy";
 
 export type AuthIntent = "register" | "login";
@@ -50,7 +50,7 @@ const PASSWORD_RATE_LIMIT = 10;
 const MAX_VERIFY_ATTEMPTS = 5;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const STORE_DOC = process.env.AUTH_STORE_DOC || "auth";
-export { SUPER_ADMIN_USERNAME } from "@/lib/moderation-policy";
+export { SUPER_ADMIN_USERNAME, SUPER_ADMIN_USERNAMES } from "@/lib/moderation-policy";
 const scrypt = promisify(scryptCallback);
 const emptyState = (): AuthState => ({ version: 8, users: {}, emailIndex: {}, referralIndex: {}, otps: {}, emailChanges: {}, sessions: {}, rateLimits: {} });
 
@@ -123,7 +123,7 @@ function normalizeState(value: LegacyState | null): AuthState {
 
   const state = emptyState();
   const emailToId = new Map<string, string>();
-  const usedNames = new Set<string>([SUPER_ADMIN_USERNAME]);
+  const usedNames = new Set<string>(SUPER_ADMIN_USERNAMES);
   const usedCodes = new Set<string>();
   for (const legacyUser of Object.values(value?.users || {})) {
     const email = normalizeEmail(legacyUser.email);
@@ -279,7 +279,7 @@ export async function verifyOtp(email: string, intent: AuthIntent, code: string)
     if (intent === "register") {
       if (userId) return { error: "An account already exists for this email." } as const;
       userId = randomUUID();
-      const used = new Set([SUPER_ADMIN_USERNAME, ...Object.values(state.users).map((user) => user.username.toLowerCase())]);
+      const used = new Set([...SUPER_ADMIN_USERNAMES, ...Object.values(state.users).map((user) => user.username.toLowerCase())]);
       const usedCodes = new Set(Object.keys(state.referralIndex));
       const referralCode = createReferralCode(usedCodes);
       const user: StoredUser = { id: userId, email, username: defaultUsername(email, used), about: "", campus: "", avatarUrl: "", isPrivate: false, hasPassword: false, points: 0, streakCount: 0, streakLastActivityAt: null, streakLastAwardAt: null, streakActionKeys: {}, referralCode, profileSetupComplete: false, createdAt: Date.now(), appRole: "USER" };
@@ -433,8 +433,8 @@ export async function updateProfile(userId: string, username: string, about: str
   return mutate((state) => {
     const user = state.users[userId];
     if (!user) return { error: "Account not found." } as const;
-    const currentProtected = user.username.toLowerCase() === SUPER_ADMIN_USERNAME;
-    const requestedProtected = username.toLowerCase() === SUPER_ADMIN_USERNAME;
+    const currentProtected = isProtectedSuperAdminUsername(user.username);
+    const requestedProtected = isProtectedSuperAdminUsername(username);
     if (currentProtected && user.username.toLowerCase() !== username.toLowerCase()) return { error: "The permanent Super Admin username cannot be changed." } as const;
     if (!currentProtected && requestedProtected) return { error: "That username is reserved." } as const;
     const usernameError = validateUsername(username);
@@ -454,7 +454,7 @@ export async function updateProfile(userId: string, username: string, about: str
 export type AdminUser = Pick<SessionUser, "id" | "username" | "email" | "campus" | "createdAt" | "appRole"> & { protected: boolean };
 
 function adminUser(user: StoredUser): AdminUser {
-  return { id: user.id, username: user.username, email: user.email, campus: user.campus || "", createdAt: user.createdAt, appRole: effectiveAppRole(user), protected: user.username.toLowerCase() === SUPER_ADMIN_USERNAME };
+  return { id: user.id, username: user.username, email: user.email, campus: user.campus || "", createdAt: user.createdAt, appRole: effectiveAppRole(user), protected: isProtectedSuperAdminUsername(user.username) };
 }
 
 export async function listAdminUsers(query = "") {
@@ -535,11 +535,12 @@ export async function getUserStats(now = Date.now()): Promise<UserStats> {
   };
 }
 
-export async function setUserAppRole(userId: string, appRole: Exclude<AppRole, "SUPER_ADMIN">) {
+export async function setUserAppRole(actorId: string, userId: string, appRole: AppRole) {
   return mutate((state) => {
     const user = state.users[userId];
     if (!user) return { error: "Account not found.", status: 404 } as const;
-    if (user.username.toLowerCase() === SUPER_ADMIN_USERNAME) return { error: "The permanent Super Admin role cannot be changed.", status: 403 } as const;
+    if (userId === actorId) return { error: "You can't change your own app role.", status: 403 } as const;
+    if (isProtectedSuperAdminUsername(user.username)) return { error: "The permanent Super Admin role cannot be changed.", status: 403 } as const;
     user.appRole = appRole;
     return { user: adminUser(user) } as const;
   });
@@ -556,7 +557,7 @@ export async function deleteAuthUser(userId: string) {
   return mutate((state) => {
     const user = state.users[userId];
     if (!user) return { deleted: false } as const;
-    if (user.username.toLowerCase() === SUPER_ADMIN_USERNAME) return { error: "The permanent Super Admin account cannot be deleted.", status: 403 } as const;
+    if (isProtectedSuperAdminUsername(user.username)) return { error: "The permanent Super Admin account cannot be deleted.", status: 403 } as const;
     delete state.users[userId];
     delete state.emailIndex[user.email];
     delete state.referralIndex[user.referralCode];

@@ -8,7 +8,7 @@ import {
   Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Link2, LoaderCircle, LockKeyhole, MapPin,
   LogOut, MessageCircle, MessageSquare, Moon, Plus, Search, Send, Settings, Share2,
   Download, ExternalLink, ShieldCheck, Star, Sun, TicketCheck, TrendingUp, Trophy, UserCheck, UserPlus, Users, X, XCircle,
-  ChevronLeft, Pencil, Phone, Trash2, Video, Maximize2, FileText, Paperclip,
+  ChevronLeft, Pencil, Phone, Pin, PinOff, Trash2, Video, Maximize2, FileText, Paperclip,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { AuthLoading, AuthScreen } from "@/components/auth-screen";
@@ -946,7 +946,7 @@ function HomeView({ user, posts, events, communities, joinRequests, resolveJoinR
   </div>;
 }
 
-function PostCard({ post, index, vote, votePending, save, openComments, notify, currentUserId, onEdit, onDelete, onOpenCommunity }: { post: Post; index: number; vote: (id: number, d: 1 | -1) => void; votePending: boolean; save: (id: number) => void; openComments: (id: number) => void; notify: (s: string) => void; currentUserId?: string; onEdit?: (post: Post) => void; onDelete?: (post: Post) => void; onOpenCommunity?: (communityIdentifier: string) => void }) {
+function PostCard({ post, index, vote, votePending, save, openComments, notify, currentUserId, onEdit, onDelete, onOpenCommunity, showPinned, onTogglePin }: { post: Post; index: number; vote: (id: number, d: 1 | -1) => void; votePending: boolean; save: (id: number) => void; openComments: (id: number) => void; notify: (s: string) => void; currentUserId?: string; onEdit?: (post: Post) => void; onDelete?: (post: Post) => void; onOpenCommunity?: (communityIdentifier: string) => void; showPinned?: boolean; onTogglePin?: (post: Post) => void }) {
   const allAttachments = post.images?.length ? post.images : post.image ? [post.image] : [];
   const postImages = allAttachments.filter(isImageAttachment);
   const postFiles = allAttachments.filter((url) => !isImageAttachment(url));
@@ -964,7 +964,11 @@ function PostCard({ post, index, vote, votePending, save, openComments, notify, 
     return () => window.removeEventListener("mousedown", onClickOutside);
   }, [menuOpen]);
 
-  return <article className={`post-card post-${index + 1} ${post.id < 0 ? "is-pending" : ""}`}>
+  const isPinned = Boolean(showPinned && post.pinnedAt);
+  const canPin = Boolean(onTogglePin && post.id > 0);
+
+  return <article className={`post-card post-${index + 1} ${post.id < 0 ? "is-pending" : ""} ${isPinned ? "is-pinned" : ""}`}>
+    {isPinned && <div className="post-pinned-label"><Pin size={12} /> Pinned by moderators</div>}
     <div className="post-meta">
       <button
         type="button"
@@ -986,28 +990,39 @@ function PostCard({ post, index, vote, votePending, save, openComments, notify, 
         <span>posted by {post.author} · {formatPostTimestamp(post)}</span>
       </div>
       {post.flair && <em>{post.flair}</em>}
-      {isOwner && (
+      {(isOwner || canPin) && (
         <div className="post-owner-menu" ref={menuRef}>
           <IconButton label="Post options" onClick={() => setMenuOpen((v) => !v)} active={menuOpen}>
             <Ellipsis size={19} />
           </IconButton>
           {menuOpen && (
             <div className="post-owner-dropdown" role="menu">
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => { setMenuOpen(false); onEdit?.(post); }}
-              >
-                <Pencil size={14} /> Edit
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="danger"
-                onClick={() => { setMenuOpen(false); onDelete?.(post); }}
-              >
-                <Trash2 size={14} /> Delete
-              </button>
+              {canPin && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { setMenuOpen(false); onTogglePin?.(post); }}
+                >
+                  {post.pinnedAt ? <><PinOff size={14} /> Unpin</> : <><Pin size={14} /> Pin to community</>}
+                </button>
+              )}
+              {isOwner && <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { setMenuOpen(false); onEdit?.(post); }}
+                >
+                  <Pencil size={14} /> Edit
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="danger"
+                  onClick={() => { setMenuOpen(false); onDelete?.(post); }}
+                >
+                  <Trash2 size={14} /> Delete
+                </button>
+              </>}
             </div>
           )}
         </div>
@@ -1264,12 +1279,27 @@ function CommunityDetail({ user, community, communities, posts, setPosts, vote, 
   const [creatingChild, setCreatingChild] = useState(false);
   const [pendingRequests, setPendingRequests] = useState<CommunityJoinRequest[]>([]);
   const [requestActionId, setRequestActionId] = useState<string | null>(null);
-  const communityPosts = posts.filter(post => post.communityId === community.id);
+  // Pinned posts lead the feed (most recently pinned first); the rest keep their existing order.
+  const communityPosts = posts
+    .filter(post => post.communityId === community.id)
+    .map((post, order) => ({ post, order }))
+    .sort((a, b) => (b.post.pinnedAt ?? 0) - (a.post.pinnedAt ?? 0) || a.order - b.order)
+    .map(({ post }) => post);
   const parent = community.parentId ? communities.find((item) => item.id === community.parentId) : undefined;
   const children = communities.filter((item) => item.parentId === community.id);
   const canCreateChildren = !community.parentId && community.role === "COMMUNITY_ADMIN";
   const isGlobalModerator = user.appRole === "APP_MODERATOR" || user.appRole === "SUPER_ADMIN";
   const canModerate = community.role === "COMMUNITY_ADMIN" || community.role === "COMMUNITY_MODERATOR" || community.instituteRole === "INSTITUTE_ADMIN" || community.instituteRole === "INSTITUTE_MODERATOR" || isGlobalModerator;
+  async function togglePin(post: Post) {
+    const pinned = !post.pinnedAt;
+    try {
+      const data = await requestJson<{ post: Post }>(`/api/moderation/posts/${post.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pinned }) });
+      if (data?.post) setPosts((current) => current.map((item) => item.id === post.id ? { ...item, pinnedAt: data.post.pinnedAt } : item));
+      notify(pinned ? "Post pinned to the community" : "Post unpinned");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not update the pin.");
+    }
+  }
   const canInvite = community.status === "APPROVED" && (community.role === "COMMUNITY_ADMIN" || community.role === "COMMUNITY_MODERATOR");
   const canSeeMembers = community.privacy !== "private" || community.joined;
   const canApproveEvents = isGlobalModerator || community.role === "COMMUNITY_ADMIN" || (!community.instituteId && community.role === "COMMUNITY_MODERATOR") || community.instituteRole === "INSTITUTE_ADMIN" || community.instituteRole === "INSTITUTE_MODERATOR";
@@ -1392,7 +1422,7 @@ function CommunityDetail({ user, community, communities, posts, setPosts, vote, 
       community.privacy === "private" && !community.joined ? (
         <div className="community-feed-layout"><section><div className="community-empty" style={{ padding: "64px 24px", textAlign: "center" }}><span style={{ fontSize: 44, display: "block", marginBottom: 16 }}>🔒</span><h3>Private Community</h3><p style={{ maxWidth: 420, margin: "8px auto 0", color: "var(--muted)" }}>This community is private and invite-only. Only approved members can view posts and participate.</p></div></section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>Private</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div>
       ) : (
-        <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} currentUserId={user.id} onEdit={onEditPost} onDelete={onDeletePost} onOpenCommunity={onOpenCommunity} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div>
+        <div className="community-feed-layout"><section><div className="community-feed-head"><div><span className="eyebrow violet">COMMUNITY FEED</span><h2>Latest from {community.name}</h2></div><div className="category-chips">{["Hot", "New", "Top"].map(item => <button className={sort === item ? "active" : ""} onClick={() => setSort(item)} key={item}>{item}</button>)}</div></div>{communityPosts.length ? <div className="feed-list">{communityPosts.map((post, index) => <PostCard key={post.id} post={post} index={index} vote={vote} votePending={votePending.has(post.id)} save={save} openComments={openComments} notify={notify} currentUserId={user.id} onEdit={onEditPost} onDelete={onDeletePost} onOpenCommunity={onOpenCommunity} showPinned onTogglePin={canModerate ? (target) => void togglePin(target) : undefined} />)}</div> : <div className="community-empty"><span>{community.emoji}</span><h3>Be the first to post here.</h3><p>This community is fresh. Start the conversation and set the tone.</p><button onClick={openComposer}><Plus size={17} /> Create the first post</button></div>}</section><aside className="community-about"><span className="eyebrow cyan">ABOUT</span><h3>{community.name}</h3><p>{community.description}</p><div><b>Type</b><span>{communityTypeLabel(community.type)}</span></div>{parent && <div><b>Parent</b><span>{parent.name}</span></div>}<div><b>Created</b><span>{monthYear(community.createdAt)}</span></div><div><b>Visibility</b><span>{community.privacy || "Public"}</span></div><button><ShieldCheck size={17} /> Community rules</button></aside></div>
       )
     ) : <section className="subcommunity-section"><header><div><span className="eyebrow violet">SUB-COMMUNITIES</span><h2>Spaces inside {community.name}</h2><p>Focused communities managed under this parent.</p></div>{canCreateChildren && <button className="primary-action" onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</header>{children.length ? <div className="community-grid">{children.map((child, index) => <CommunityCard key={child.id} item={child} index={index} communities={communities} onOpen={onOpenCommunity} onMembership={onMembership} />)}</div> : <div className="community-empty"><span>🪆</span><h3>No sub-communities yet.</h3><p>Create a focused space inside {community.name}.</p>{canCreateChildren && <button onClick={() => setCreatingChild(true)}><Plus size={17} /> Create Sub-Community</button>}</div>}</section>}
     {brandingOpen && <CommunityBrandingModal community={community} close={() => setBrandingOpen(false)} onUpdated={onUpdated} notify={notify} />}

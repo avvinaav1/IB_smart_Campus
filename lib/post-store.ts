@@ -279,6 +279,24 @@ export async function setPostVote(postId: number, userId: string, vote: 1 | -1 |
   });
 }
 
+export const MAX_PINNED_POSTS_PER_COMMUNITY = 3;
+
+export async function setPostPinned(postId: number, pinned: boolean, expectedCommunityId: string, viewerId: string) {
+  return mutate((database) => {
+    const post = database.posts.find((candidate) => candidate.id === postId);
+    if (!post) return { error: "Post not found.", status: 404 } as const;
+    if (post.communityId !== expectedCommunityId) return { error: "The post changed communities. Refresh and try again.", status: 409 } as const;
+    if (pinned && !post.pinnedAt) {
+      const pinnedCount = database.posts.filter((candidate) => candidate.communityId === post.communityId && candidate.pinnedAt).length;
+      if (pinnedCount >= MAX_PINNED_POSTS_PER_COMMUNITY) return { error: `A community can have at most ${MAX_PINNED_POSTS_PER_COMMUNITY} pinned posts. Unpin one first.`, status: 409 } as const;
+      post.pinnedAt = Date.now();
+    } else if (!pinned) {
+      delete post.pinnedAt;
+    }
+    return { post: publicPost(post, viewerId) } as const;
+  });
+}
+
 export async function getPostModerationContext(postId: number) {
   await writeQueue;
   const database = await loadDatabase();

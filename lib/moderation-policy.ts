@@ -1,14 +1,17 @@
 import type { AppRole, CommunityRole, EventStatus, InstituteRole } from "@/lib/types";
 
-export const SUPER_ADMIN_USERNAME = "kavinav75";
+export const SUPER_ADMIN_USERNAMES: readonly string[] = ["kavinav75", "pj0964"];
+/** @deprecated Use SUPER_ADMIN_USERNAMES. Kept for backwards compatibility. */
+export const SUPER_ADMIN_USERNAME = SUPER_ADMIN_USERNAMES[0];
 
 export function isProtectedSuperAdminUsername(username: string) {
-  return username.trim().toLowerCase() === SUPER_ADMIN_USERNAME;
+  return SUPER_ADMIN_USERNAMES.includes(username.trim().toLowerCase());
 }
 
 export function normalizeAppRole(username: string, storedRole: unknown): AppRole {
   if (isProtectedSuperAdminUsername(username)) return "SUPER_ADMIN";
-  return storedRole === "APP_MODERATOR" ? "APP_MODERATOR" : "USER";
+  if (storedRole === "SUPER_ADMIN" || storedRole === "APP_MODERATOR") return storedRole;
+  return "USER";
 }
 
 export function normalizeCommunityRole(storedRole: unknown): CommunityRole {

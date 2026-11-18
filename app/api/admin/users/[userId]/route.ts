@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { setUserAppRole } from "@/lib/auth-store";
+import { getAdminUser, setUserAppRole } from "@/lib/auth-store";
 import { isSameOrigin, noStoreJson, readJson } from "@/lib/auth-http";
 import { cascadeDeleteUser } from "@/lib/moderation-cascade";
 import { requireGlobalModerator, requireSuperAdmin } from "@/lib/moderation-auth";
@@ -12,9 +12,9 @@ export async function PATCH(request: NextRequest, context: Context) {
   const auth = await requireSuperAdmin(request);
   if ("response" in auth) return auth.response;
   const body = await readJson(request);
-  if (body?.appRole !== "USER" && body?.appRole !== "APP_MODERATOR") return noStoreJson({ error: "Choose USER or APP_MODERATOR." }, { status: 400 });
+  if (body?.appRole !== "USER" && body?.appRole !== "APP_MODERATOR" && body?.appRole !== "SUPER_ADMIN") return noStoreJson({ error: "Choose USER, APP_MODERATOR or SUPER_ADMIN." }, { status: 400 });
   const { userId } = await context.params;
-  const result = await setUserAppRole(userId, body.appRole);
+  const result = await setUserAppRole(auth.user.id, userId, body.appRole);
   return "error" in result ? noStoreJson({ error: result.error }, { status: result.status }) : noStoreJson({ data: result });
 }
 
@@ -23,6 +23,8 @@ export async function DELETE(request: NextRequest, context: Context) {
   const auth = await requireGlobalModerator(request);
   if ("response" in auth) return auth.response;
   const { userId } = await context.params;
+  const target = await getAdminUser(userId);
+  if (target?.appRole === "SUPER_ADMIN" && auth.user.appRole !== "SUPER_ADMIN") return noStoreJson({ error: "Only a Super Admin can delete a Super Admin account." }, { status: 403 });
   try {
     const result = await cascadeDeleteUser(userId);
     if ("error" in result) return noStoreJson({ error: result.error }, { status: result.status });
