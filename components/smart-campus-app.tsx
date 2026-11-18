@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { CertificateGallery, CertificateInbox } from "@/components/certificates/certificate-gallery";
 import {
   Award, ArrowRight, Bell, Bookmark, CalendarDays, Check, CheckCheck, ChevronDown, CircleUserRound,
-  Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Link2, LoaderCircle, LockKeyhole, MapPin,
+  Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Landmark, Link2, LoaderCircle, LockKeyhole, MapPin,
   LogOut, MessageCircle, MessageSquare, Moon, Plus, Search, Send, Settings, Share2,
   Download, ExternalLink, ShieldCheck, Star, Sun, TicketCheck, TrendingUp, Trophy, UserCheck, UserPlus, Users, X, XCircle,
   ChevronLeft, Pencil, Phone, Pin, PinOff, Trash2, Video, Maximize2, FileText, Paperclip,
@@ -38,7 +38,7 @@ const nav = [
 ];
 
 const adminNav = { id: "admin" as View, label: "Admin", icon: ShieldCheck };
-const instituteNav = { id: "institute" as View, label: "Institute", icon: Users };
+const instituteNav = { id: "institute" as View, label: "Institute", icon: Landmark };
 
 const mobileNav = [
   { id: "home" as View, label: "Home", icon: Home },
@@ -732,6 +732,12 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   if (!authUser) return <AuthScreen onAuthenticated={completeAuthentication} prefillEmail={claimEmail} />;
   if (!authUser.profileSetupComplete) return <ProfileSetup user={authUser} onComplete={completeAuthentication} />;
   const activeCommentPost = commentPostId === null ? null : posts.find((post) => post.id === commentPostId) || null;
+  const mobileNavItems = [
+    ...mobileNav.slice(0, 5),
+    instituteNav,
+    ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : []),
+    mobileNav[5],
+  ];
 
   return (
     <div className="app-shell">
@@ -790,18 +796,10 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
         className="mobile-nav"
         aria-label="Mobile navigation"
         style={{
-          gridTemplateColumns: `repeat(${[
-            ...mobileNav.slice(0, 5),
-            ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : []),
-            mobileNav[5],
-          ].length}, 1fr)`,
+          gridTemplateColumns: `repeat(${mobileNavItems.length}, 1fr)`,
         }}
       >
-        {[
-          ...mobileNav.slice(0, 5),
-          ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : []),
-          mobileNav[5],
-        ].map(({ id, label, icon: Icon }) => id === "create" ? (
+        {mobileNavItems.map(({ id, label, icon: Icon }) => id === "create" ? (
           <button key={id} className="mobile-create" aria-label="Create post" onClick={() => { setComposerCommunity("c/campuslife"); setComposerOpen(true); }}><Icon size={25} strokeWidth={3} /></button>
         ) : (
           <button key={id} className={view === id ? "selected" : ""} onClick={() => go(id as View)}>
