@@ -5,10 +5,10 @@ import dynamic from "next/dynamic";
 import { CertificateGallery, CertificateInbox } from "@/components/certificates/certificate-gallery";
 import {
   Award, ArrowRight, Bell, Bookmark, CalendarDays, Check, CheckCheck, ChevronDown, CircleUserRound,
-  Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Link2, LoaderCircle, LockKeyhole, MapPin,
+  Clock3, Compass, Copy, Ellipsis, Gift, Globe2, Home, ImagePlus, Inbox, KeyRound, Landmark, Link2, LoaderCircle, LockKeyhole, MapPin,
   LogOut, MessageCircle, MessageSquare, Moon, Plus, Search, Send, Settings, Share2,
   Download, ExternalLink, ShieldCheck, Star, Sun, TicketCheck, TrendingUp, Trophy, UserCheck, UserPlus, Users, X, XCircle,
-  ChevronLeft, Pencil, Phone, Pin, PinOff, Trash2, Video, Maximize2, FileText, Paperclip,
+  ChevronLeft, ChevronRight, Pencil, Phone, Pin, PinOff, Trash2, Video, Maximize2, FileText, Paperclip,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { SITE_URL } from "@/lib/site";
@@ -39,15 +39,14 @@ const nav = [
 ];
 
 const adminNav = { id: "admin" as View, label: "Admin", icon: ShieldCheck };
-const instituteNav = { id: "institute" as View, label: "Institute", icon: Users };
+const instituteNav = { id: "institute" as View, label: "Institute", icon: Landmark };
 
-const mobileNav = [
+const mobileBarNav = [
   { id: "home" as View, label: "Home", icon: Home },
   { id: "explore" as View, label: "Explore", icon: Compass },
   { id: "create", label: "Create", icon: Plus },
   { id: "events" as View, label: "Events", icon: CalendarDays },
-  { id: "chat" as View, label: "Chat", icon: MessageSquare },
-  { id: "profile" as View, label: "Profile", icon: CircleUserRound },
+  { id: "more", label: "More", icon: Ellipsis },
 ];
 
 const formatNumber = (value: number) => value.toLocaleString();
@@ -294,6 +293,20 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   const [privacyPending, setPrivacyPending] = useState(false);
   const [votePending, setVotePending] = useState<Set<number>>(() => new Set());
   const [toast, setToast] = useState("");
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  useEffect(() => {
+    setMoreOpen(false);
+  }, [view]);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMoreOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [moreOpen]);
   const [dataRevision, setDataRevision] = useState(0);
   const voteRequests = useRef(new Set<number>());
   const unreadNotifications = notifications.filter((notification) => !notification.isRead).length;
@@ -733,6 +746,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   if (!authUser) return <AuthScreen onAuthenticated={completeAuthentication} prefillEmail={claimEmail} prefillInviteCode={referralCode} />;
   if (!authUser.profileSetupComplete) return <ProfileSetup user={authUser} onComplete={completeAuthentication} />;
   const activeCommentPost = commentPostId === null ? null : posts.find((post) => post.id === commentPostId) || null;
+  const isMoreView = ["chat", "institute", "profile", "rewards", "certificates", "admin"].includes(view);
 
   return (
     <div className="app-shell">
@@ -791,25 +805,109 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
         className="mobile-nav"
         aria-label="Mobile navigation"
         style={{
-          gridTemplateColumns: `repeat(${[
-            ...mobileNav.slice(0, 5),
-            ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : []),
-            mobileNav[5],
-          ].length}, 1fr)`,
+          gridTemplateColumns: "repeat(5, 1fr)",
         }}
       >
-        {[
-          ...mobileNav.slice(0, 5),
-          ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN" ? [adminNav] : []),
-          mobileNav[5],
-        ].map(({ id, label, icon: Icon }) => id === "create" ? (
-          <button key={id} className="mobile-create" aria-label="Create post" onClick={() => { setComposerCommunity("c/campuslife"); setComposerOpen(true); }}><Icon size={25} strokeWidth={3} /></button>
-        ) : (
-          <button key={id} className={view === id ? "selected" : ""} onClick={() => go(id as View)}>
-            <span><Icon size={21} /></span><small>{label}</small>
-          </button>
-        ))}
+        {mobileBarNav.map(({ id, label, icon: Icon }) => {
+          if (id === "create") {
+            return (
+              <button
+                key={id}
+                className="mobile-create"
+                aria-label="Create post"
+                onClick={() => {
+                  setComposerCommunity("c/campuslife");
+                  setComposerOpen(true);
+                  setMoreOpen(false);
+                }}
+              >
+                <Icon size={25} strokeWidth={3} />
+              </button>
+            );
+          }
+
+          const isSelected = id === "more" ? (moreOpen || isMoreView) : view === id;
+
+          return (
+            <button
+              key={id}
+              className={isSelected ? "selected" : ""}
+              aria-label={label}
+              onClick={() => {
+                if (id === "more") {
+                  setMoreOpen((prev) => !prev);
+                } else {
+                  setMoreOpen(false);
+                  go(id as View);
+                }
+              }}
+            >
+              <span><Icon size={21} /></span>
+              <small>{label}</small>
+            </button>
+          );
+        })}
       </nav>
+
+      {moreOpen && (
+        <div className="more-sheet-overlay" role="dialog" aria-modal="true" aria-label="More navigation options">
+          <div className="more-sheet-backdrop" onClick={() => setMoreOpen(false)} />
+          <section className="more-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="more-sheet-handle" />
+            <header className="more-sheet-header">
+              <div>
+                <span className="eyebrow violet">CAMPUS SHORTCUTS</span>
+                <h3>More options</h3>
+              </div>
+              <button type="button" className="more-sheet-close" onClick={() => setMoreOpen(false)} aria-label="Close menu">
+                <X size={18} />
+              </button>
+            </header>
+
+            <button
+              type="button"
+              className={`more-sheet-user ${view === "profile" ? "active" : ""}`}
+              onClick={() => { go("profile"); setMoreOpen(false); }}
+            >
+              <Avatar text={authUser.username} image={authUser.avatarUrl} color="#FF5C8A" size={42} />
+              <div className="more-sheet-user-copy">
+                <b>{authUser.username}</b>
+                <small>{authUser.campus || authUser.email || "View profile & settings"}</small>
+              </div>
+              <span className="more-sheet-user-badge">
+                <span>Profile</span>
+                <ChevronRight size={15} />
+              </span>
+            </button>
+
+            <div className="more-sheet-grid">
+              {[
+                { id: "chat" as View, label: "Chat", subtitle: "Direct messages", icon: MessageSquare },
+                { id: "institute" as View, label: "Institute", subtitle: "Campus portal", icon: Landmark },
+                { id: "rewards" as View, label: "Rewards", subtitle: "Streak & points", icon: Gift },
+                { id: "certificates" as View, label: "Certificates", subtitle: "Digital credentials", icon: Award },
+                ...(authUser.appRole === "APP_MODERATOR" || authUser.appRole === "SUPER_ADMIN"
+                  ? [{ id: "admin" as View, label: "Admin", subtitle: "Administration", icon: ShieldCheck }]
+                  : []),
+              ].map(({ id, label, subtitle, icon: Icon }) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={`more-sheet-tile ${view === id ? "active" : ""}`}
+                  onClick={() => { go(id); setMoreOpen(false); }}
+                >
+                  <span className="more-tile-icon"><Icon size={20} /></span>
+                  <div className="more-tile-text">
+                    <b>{label}</b>
+                    <small>{subtitle}</small>
+                  </div>
+                  {view === id && <span className="more-tile-active-dot" />}
+                </button>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
 
       {searchOpen && <SearchPanel close={() => setSearchOpen(false)} notify={setToast} onActivity={() => void requestUserDashboard().then(setDashboard).catch(() => undefined)} />}
       <WebAppBootstrap userId={previewMode ? "" : authUser?.id || ""} />
