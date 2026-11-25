@@ -8,7 +8,8 @@ A guide to what you can do on IB Smart Campus.
 - Make your account public or private
 - Change your email or password anytime
 - Earn points and build a daily streak
-- Invite others with your personal referral code
+- Registration is invite-only: new members need a member's invite code (or an emailed certificate) to sign up
+- Invite others with your personal invite code or a `/?ref=CODE` invite link
 
 ## Communities
 - Join communities for your college, company, or interest group
@@ -52,3 +53,4 @@ A guide to what you can do on IB Smart Campus.
 ## Moderation
 - Reports and content go through moderator review for communities, events, and posts
 - App-level moderators and admins keep the platform safe and organized
+- Admins can see how every member registered (invite code used, who referred them), filter by inviter, export the list as CSV, and disable or regenerate any member's invite code

@@ -36,16 +36,22 @@ async function postJson(url: string, body: object) {
 // silently burn the recipient's one-time code (and their OTP rate limit)
 // before they ever open the message. The person still presses "Email me a
 // code" themselves, same as any other sign-in.
-export function AuthScreen({ onAuthenticated, prefillEmail = "" }: { onAuthenticated: (user: SessionUser) => void; prefillEmail?: string }) {
+const cleanInviteCode = (value: string) => value.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 15);
+
+// Registration is invite-only: a member's invite code is required, except for
+// certificate recipients (prefillEmail), whose emailed certificate is the invite.
+export function AuthScreen({ onAuthenticated, prefillEmail = "", prefillInviteCode = "" }: { onAuthenticated: (user: SessionUser) => void; prefillEmail?: string; prefillInviteCode?: string }) {
   const normalizedPrefill = prefillEmail.trim().toLowerCase();
-  const [screen, setScreen] = useState<"welcome" | "form">(normalizedPrefill ? "form" : "welcome");
+  const linkedInviteCode = cleanInviteCode(prefillInviteCode);
+  const [screen, setScreen] = useState<"welcome" | "form">(normalizedPrefill || linkedInviteCode ? "form" : "welcome");
   const [intent, setIntent] = useState<AuthIntent>("register");
   const [loginMethod, setLoginMethod] = useState<"otp" | "password">("otp");
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState(normalizedPrefill);
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
-  const [referralCode, setReferralCode] = useState("");
+  const [referralCode, setReferralCode] = useState(linkedInviteCode);
+  const inviteCodeRequired = intent === "register" && !normalizedPrefill;
   const [devCode, setDevCode] = useState("");
   const [cooldown, setCooldown] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -63,7 +69,7 @@ export function AuthScreen({ onAuthenticated, prefillEmail = "" }: { onAuthentic
     setStep("email");
     setCode("");
     setPassword("");
-    setReferralCode("");
+    setReferralCode(linkedInviteCode);
     setDevCode("");
     setError("");
   }
@@ -176,12 +182,12 @@ export function AuthScreen({ onAuthenticated, prefillEmail = "" }: { onAuthentic
         {step === "email" ? <form onSubmit={intent === "login" && loginMethod === "password" ? logInWithPassword : requestCode}>
           <span className="auth-icon">{intent === "login" && loginMethod === "password" ? <KeyRound size={25} /> : <Mail size={25} />}</span>
           <h2>{intent === "register" ? "Join your campus" : "Welcome back"}</h2>
-          <p>{intent === "register" ? "Start with your email. We’ll send a one-time code to verify it’s really you." : loginMethod === "password" ? "Use the password you created in Profile settings, or switch back to a one-time email code." : "Enter the email linked to your account and we’ll send a fresh login code."}</p>
+          <p>{intent === "register" ? "Enter your email and the invite code you were given. We’ll send a one-time code to verify it’s really you." : loginMethod === "password" ? "Use the password you created in Profile settings, or switch back to a one-time email code." : "Enter the email linked to your account and we’ll send a fresh login code."}</p>
           <label className="auth-field"><span>Email address</span><div><Mail size={18} /><input required autoFocus type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@university.edu" /></div></label>
-          {intent === "register" && <label className="auth-field"><span>Referral code <small>(optional)</small></span><div><Gift size={18} /><input type="text" autoComplete="off" value={referralCode} onChange={(event) => setReferralCode(event.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 15))} placeholder="SC-XXXXXXXX" /></div></label>}
+          {intent === "register" && <label className="auth-field"><span>Invite code {inviteCodeRequired ? <small>(required)</small> : <small>(not needed to claim your certificate)</small>}</span><div><Gift size={18} /><input type="text" required={inviteCodeRequired} autoComplete="off" value={referralCode} onChange={(event) => setReferralCode(cleanInviteCode(event.target.value))} placeholder="SC-XXXXXXXX" /></div>{inviteCodeRequired && <small className="auth-field-hint">Smart Campus is invite-only. Ask a member for their invite code.</small>}</label>}
           {intent === "login" && loginMethod === "password" && <label className="auth-field"><span>Password</span><div><KeyRound size={18} /><input required type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Your password" /></div></label>}
           {error && <p className="auth-error" role="alert">{error}</p>}
-          <button className="auth-submit" disabled={busy || !email.trim() || (intent === "login" && loginMethod === "password" && !password)}>{busy ? <LoaderCircle className="spin" size={19} /> : intent === "login" && loginMethod === "password" ? <KeyRound size={18} /> : <Mail size={18} />}{busy ? loginMethod === "password" ? "Logging in…" : "Sending…" : intent === "login" && loginMethod === "password" ? "Log in with password" : "Email me a code"}<ArrowRight size={18} /></button>
+          <button className="auth-submit" disabled={busy || !email.trim() || (intent === "login" && loginMethod === "password" && !password) || (inviteCodeRequired && !referralCode.trim())}>{busy ? <LoaderCircle className="spin" size={19} /> : intent === "login" && loginMethod === "password" ? <KeyRound size={18} /> : <Mail size={18} />}{busy ? loginMethod === "password" ? "Logging in…" : "Sending…" : intent === "login" && loginMethod === "password" ? "Log in with password" : "Email me a code"}<ArrowRight size={18} /></button>
           {intent === "login" && <button className="auth-method-switch" type="button" onClick={() => { setLoginMethod((method) => method === "otp" ? "password" : "otp"); setPassword(""); setError(""); }}>{loginMethod === "otp" ? <KeyRound size={15} /> : <Mail size={15} />}{loginMethod === "otp" ? "Use a password instead" : "Use an email code instead"}</button>}
           <small className="auth-terms"><LockKeyhole size={13} /> By continuing, you agree to keep Smart Campus safe and respectful.</small>
         </form> : <form onSubmit={verifyCode}>

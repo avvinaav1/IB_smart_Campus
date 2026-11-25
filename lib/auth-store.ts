@@ -7,7 +7,12 @@ import { isProtectedSuperAdminUsername, normalizeAppRole, SUPER_ADMIN_USERNAMES 
 import { applyStreakActivity, visibleStreakCount, type StreakAction } from "@/lib/streak-policy";
 
 export type AuthIntent = "register" | "login";
-type StoredUser = Omit<SessionUser, "isPrivate" | "campus" | "profileSetupComplete" | "appRole" | "streakCount"> & {
+// How an account got past invite-only registration:
+// code — a member's invite code · certificate — an organizer emailed them a certificate
+// bootstrap — the very first account · open — ALLOW_PUBLIC_REGISTRATION was on
+// legacy — registered before invite tracking existed.
+export type InviteSource = "code" | "certificate" | "bootstrap" | "open" | "legacy";
+type StoredUser = Omit<SessionUser, "isPrivate" | "campus" | "profileSetupComplete" | "appRole" | "streakCount" | "invitesEnabled"> & {
   isPrivate?: boolean;
   campus?: string;
   profileSetupComplete?: boolean;
@@ -18,8 +23,13 @@ type StoredUser = Omit<SessionUser, "isPrivate" | "campus" | "profileSetupComple
   streakLastAwardAt: number | null;
   streakActionKeys: Record<string, true>;
   lastLoginAt?: number;
+  invitesDisabled?: boolean;
+  inviteSource?: InviteSource;
+  inviteCodeUsed?: string;
+  invitedBy?: string;
+  invitedByUsername?: string;
 };
-type OtpRecord = { digest: string; intent: AuthIntent; referralCode?: string; expiresAt: number; attempts: number };
+type OtpRecord = { digest: string; intent: AuthIntent; referralCode?: string; inviteSource?: InviteSource; invitedBy?: string; expiresAt: number; attempts: number };
 type EmailChangeRecord = { digest: string; userId: string; newEmail: string; expiresAt: number; attempts: number };
 type SessionRecord = { userId: string; expiresAt: number };
 type AuthState = {
@@ -84,6 +94,14 @@ function createReferralCode(used: Set<string>) {
   while (used.has(code));
   used.add(code);
   return code;
+}
+
+export function publicRegistrationOpen() { return process.env.ALLOW_PUBLIC_REGISTRATION === "true"; }
+
+// The inviter behind a code, if that code may currently be used to register.
+function activeInviter(state: AuthState, code: string) {
+  const inviter = code ? state.users[state.referralIndex[code]] : undefined;
+  return inviter && !inviter.invitesDisabled ? inviter : undefined;
 }
 
 export function effectiveAppRole(user: { username: string; appRole?: unknown }): AppRole {
@@ -200,7 +218,7 @@ export async function incrementUserStreak(userId: string, action: StreakAction, 
 }
 
 function publicUser(user: StoredUser): SessionUser {
-  return { id: user.id, email: user.email, username: user.username, about: user.about, campus: user.campus || "", avatarUrl: user.avatarUrl, isPrivate: Boolean(user.isPrivate), hasPassword: Boolean(user.passwordHash), points: user.points, streakCount: visibleStreakCount(user), referralCode: user.referralCode, profileSetupComplete: user.profileSetupComplete !== false, createdAt: user.createdAt, appRole: effectiveAppRole(user) };
+  return { id: user.id, email: user.email, username: user.username, about: user.about, campus: user.campus || "", avatarUrl: user.avatarUrl, isPrivate: Boolean(user.isPrivate), hasPassword: Boolean(user.passwordHash), points: user.points, streakCount: visibleStreakCount(user), referralCode: user.referralCode, invitesEnabled: !user.invitesDisabled, profileSetupComplete: user.profileSetupComplete !== false, createdAt: user.createdAt, appRole: effectiveAppRole(user) };
 }
 
 function createSession(state: AuthState, userId: string) {
@@ -241,17 +259,29 @@ export function validatePassword(password: string) {
   return "";
 }
 
-export async function issueOtp(email: string, intent: AuthIntent, clientId: string, submittedReferralCode = "") {
+// Registration is invite-only. `certificateIssuerId` is set by the caller when
+// the email has an unclaimed certificate waiting — an organizer already invited
+// that address, so it may register without a member's code.
+export async function issueOtp(email: string, intent: AuthIntent, clientId: string, submittedReferralCode = "", certificateIssuerId: string | null = null) {
   return mutate((state) => {
     const accountExists = Boolean(state.emailIndex[email]);
-    if (intent === "register" && accountExists) return { error: "An account already exists for this email. Log in instead." } as const;
-    if (intent === "login" && !accountExists) return { error: "No account exists for this email. Create one first." } as const;
+    if (intent === "register" && accountExists) return { error: "An account already exists for this email. Log in instead.", status: 409 } as const;
+    if (intent === "login" && !accountExists) return { error: "No account exists for this email. Create one first.", status: 409 } as const;
     const referralCode = normalizeReferralCode(submittedReferralCode);
-    if (intent === "register" && referralCode && !state.referralIndex[referralCode]) return { error: "That referral code is not valid." } as const;
+    let invite: Pick<OtpRecord, "referralCode" | "inviteSource" | "invitedBy"> = {};
+    if (intent === "register") {
+      const inviter = referralCode ? activeInviter(state, referralCode) : undefined;
+      if (referralCode && !inviter) return { error: "That invite code is not valid.", status: 400 } as const;
+      if (inviter) invite = { referralCode, inviteSource: "code", invitedBy: inviter.id };
+      else if (certificateIssuerId !== null) invite = { inviteSource: "certificate", ...(certificateIssuerId && state.users[certificateIssuerId] ? { invitedBy: certificateIssuerId } : {}) };
+      else if (!Object.keys(state.users).length) invite = { inviteSource: "bootstrap" };
+      else if (publicRegistrationOpen()) invite = { inviteSource: "open" };
+      else return { error: "Smart Campus is invite-only. Enter the invite code a member shared with you.", status: 403 } as const;
+    }
     const retryAfter = consumeRateLimit(state, `otp:${clientId}:${email}`, OTP_RATE_LIMIT);
     if (retryAfter) return { error: "Too many code requests. Please try again later.", retryAfter } as const;
     const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
-    state.otps[otpKey(email)] = { digest: digest(`code:${email}:${intent}:${code}`), intent, ...(intent === "register" && referralCode ? { referralCode } : {}), expiresAt: Date.now() + OTP_TTL_MS, attempts: 0 };
+    state.otps[otpKey(email)] = { digest: digest(`code:${email}:${intent}:${code}`), intent, ...invite, expiresAt: Date.now() + OTP_TTL_MS, attempts: 0 };
     return { code, expiresAt: Date.now() + OTP_TTL_MS } as const;
   });
 }
@@ -278,16 +308,28 @@ export async function verifyOtp(email: string, intent: AuthIntent, code: string)
     let userId = state.emailIndex[email];
     if (intent === "register") {
       if (userId) return { error: "An account already exists for this email." } as const;
+      // Re-check the invite: the code may have been disabled/regenerated, or the
+      // inviter deleted, while this OTP sat in the inbox. OTPs issued before
+      // invite tracking carry no source and are treated as uninvited.
+      const source = record.inviteSource;
+      const inviter = source === "code" && record.referralCode ? activeInviter(state, record.referralCode) : undefined;
+      if (source === "code" && !inviter) return { error: "That invite code is no longer valid. Ask for a new one." } as const;
+      if (!source || (source === "bootstrap" && Object.keys(state.users).length) || (source === "open" && !publicRegistrationOpen())) return { error: "Smart Campus is invite-only. Start again with an invite code." } as const;
+      const certificateInviter = source === "certificate" && record.invitedBy ? state.users[record.invitedBy] : undefined;
+      const invitedByUser = inviter || certificateInviter;
       userId = randomUUID();
       const used = new Set([...SUPER_ADMIN_USERNAMES, ...Object.values(state.users).map((user) => user.username.toLowerCase())]);
       const usedCodes = new Set(Object.keys(state.referralIndex));
       const referralCode = createReferralCode(usedCodes);
-      const user: StoredUser = { id: userId, email, username: defaultUsername(email, used), about: "", campus: "", avatarUrl: "", isPrivate: false, hasPassword: false, points: 0, streakCount: 0, streakLastActivityAt: null, streakLastAwardAt: null, streakActionKeys: {}, referralCode, profileSetupComplete: false, createdAt: Date.now(), appRole: "USER" };
+      const user: StoredUser = { id: userId, email, username: defaultUsername(email, used), about: "", campus: "", avatarUrl: "", isPrivate: false, hasPassword: false, points: 0, streakCount: 0, streakLastActivityAt: null, streakLastAwardAt: null, streakActionKeys: {}, referralCode, profileSetupComplete: false, createdAt: Date.now(), appRole: "USER",
+        inviteSource: source,
+        ...(inviter && record.referralCode ? { inviteCodeUsed: record.referralCode } : {}),
+        ...(invitedByUser ? { invitedBy: invitedByUser.id, invitedByUsername: invitedByUser.username } : {}),
+      };
       state.users[userId] = user;
       state.emailIndex[email] = userId;
       state.referralIndex[referralCode] = userId;
-      const referrer = record.referralCode ? state.users[state.referralIndex[record.referralCode]] : undefined;
-      if (referrer && referrer.id !== userId) referrer.points += 10;
+      if (inviter) inviter.points += 10;
     }
     const user = state.users[userId];
     if (!user) return { error: "Account not found. Create an account first." } as const;
@@ -451,20 +493,65 @@ export async function updateProfile(userId: string, username: string, about: str
   });
 }
 
-export type AdminUser = Pick<SessionUser, "id" | "username" | "email" | "campus" | "createdAt" | "appRole"> & { protected: boolean };
+export type AdminUser = Pick<SessionUser, "id" | "username" | "email" | "campus" | "createdAt" | "appRole" | "referralCode" | "invitesEnabled"> & {
+  protected: boolean;
+  inviteSource: InviteSource;
+  inviteCodeUsed: string;
+  // Who let this account in. `deleted` is true when that account no longer
+  // exists; `username` then holds the snapshot taken at registration.
+  invitedBy: { id: string; username: string; email: string; deleted: boolean } | null;
+  inviteCount: number;
+};
 
-function adminUser(user: StoredUser): AdminUser {
-  return { id: user.id, username: user.username, email: user.email, campus: user.campus || "", createdAt: user.createdAt, appRole: effectiveAppRole(user), protected: isProtectedSuperAdminUsername(user.username) };
+function inviteCounts(state: AuthState) {
+  const counts = new Map<string, number>();
+  for (const user of Object.values(state.users)) if (user.invitedBy) counts.set(user.invitedBy, (counts.get(user.invitedBy) || 0) + 1);
+  return counts;
 }
 
-export async function listAdminUsers(query = "") {
+function adminUser(user: StoredUser, state: AuthState, counts = inviteCounts(state)): AdminUser {
+  const inviter = user.invitedBy ? state.users[user.invitedBy] : undefined;
+  return {
+    id: user.id, username: user.username, email: user.email, campus: user.campus || "", createdAt: user.createdAt, appRole: effectiveAppRole(user), protected: isProtectedSuperAdminUsername(user.username),
+    referralCode: user.referralCode, invitesEnabled: !user.invitesDisabled,
+    inviteSource: user.inviteSource || "legacy",
+    inviteCodeUsed: user.inviteCodeUsed || "",
+    invitedBy: user.invitedBy ? { id: user.invitedBy, username: inviter?.username || user.invitedByUsername || "", email: inviter?.email || "", deleted: !inviter } : null,
+    inviteCount: counts.get(user.id) || 0,
+  };
+}
+
+export async function listAdminUsers(query = "", filter: { invitedBy?: string } = {}) {
   await mutationQueue;
   const state = await loadState({ fresh: true });
+  const counts = inviteCounts(state);
   const normalized = query.trim().toLowerCase();
+  const matches = (user: StoredUser) => {
+    if (!normalized) return true;
+    const inviterName = (user.invitedBy ? state.users[user.invitedBy]?.username || user.invitedByUsername : "") || "";
+    return [user.username, user.email, user.campus || "", user.referralCode, user.inviteCodeUsed || "", inviterName].some((value) => value.toLowerCase().includes(normalized));
+  };
   return Object.values(state.users)
-    .filter((user) => !normalized || user.username.toLowerCase().includes(normalized) || user.email.toLowerCase().includes(normalized) || (user.campus || "").toLowerCase().includes(normalized))
+    .filter((user) => (!filter.invitedBy || user.invitedBy === filter.invitedBy) && matches(user))
     .sort((a, b) => b.createdAt - a.createdAt || a.username.localeCompare(b.username))
-    .map(adminUser);
+    .map((user) => adminUser(user, state, counts));
+}
+
+// Disable/re-enable a member's invite code, or issue a fresh one (the old code
+// stops working; registrations already made with it keep their record).
+export async function updateUserInvites(actor: Pick<SessionUser, "id" | "appRole">, userId: string, change: { invitesEnabled?: boolean; regenerate?: boolean }) {
+  return mutate((state) => {
+    const user = state.users[userId];
+    if (!user) return { error: "Account not found.", status: 404 } as const;
+    if (effectiveAppRole(user) === "SUPER_ADMIN" && actor.appRole !== "SUPER_ADMIN" && actor.id !== userId) return { error: "Only a Super Admin can change a Super Admin's invite code.", status: 403 } as const;
+    if (typeof change.invitesEnabled === "boolean") user.invitesDisabled = !change.invitesEnabled;
+    if (change.regenerate) {
+      delete state.referralIndex[user.referralCode];
+      user.referralCode = createReferralCode(new Set(Object.keys(state.referralIndex)));
+      state.referralIndex[user.referralCode] = userId;
+    }
+    return { user: adminUser(user, state) } as const;
+  });
 }
 
 export type UserStats = {
@@ -478,6 +565,8 @@ export type UserStats = {
   daily: Array<{ day: string; signups: number; active: number }>;
   recentUsers: AdminUser[];
   topCampuses: Array<{ campus: string; users: number }>;
+  invites: { viaCode: number; viaCertificate: number; other: number; legacy: number; disabledCodes: number };
+  topInviters: Array<{ id: string; username: string; invites: number }>;
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -513,6 +602,8 @@ export async function getUserStats(now = Date.now()): Promise<UserStats> {
     if (activeDay) activeDay.active += 1;
     if (user.campus) campuses.set(user.campus, (campuses.get(user.campus) || 0) + 1);
   }
+  const counts = inviteCounts(state);
+  const sourceCount = (source: InviteSource) => users.filter((user) => (user.inviteSource || "legacy") === source).length;
   return {
     total: users.length,
     profileComplete: users.filter((user) => user.profileSetupComplete !== false).length,
@@ -530,8 +621,10 @@ export async function getUserStats(now = Date.now()): Promise<UserStats> {
       last30Days: users.filter((user) => lastActive(user) >= since(30)).length,
     },
     daily: [...daily.values()],
-    recentUsers: [...users].sort((a, b) => b.createdAt - a.createdAt).slice(0, 8).map(adminUser),
+    recentUsers: [...users].sort((a, b) => b.createdAt - a.createdAt).slice(0, 8).map((user) => adminUser(user, state, counts)),
     topCampuses: [...campuses].map(([campus, count]) => ({ campus, users: count })).sort((a, b) => b.users - a.users).slice(0, 6),
+    invites: { viaCode: sourceCount("code"), viaCertificate: sourceCount("certificate"), other: sourceCount("bootstrap") + sourceCount("open"), legacy: sourceCount("legacy"), disabledCodes: users.filter((user) => user.invitesDisabled).length },
+    topInviters: [...counts].filter(([id]) => state.users[id]).map(([id, invites]) => ({ id, username: state.users[id].username, invites })).sort((a, b) => b.invites - a.invites).slice(0, 6),
   };
 }
 
@@ -543,7 +636,7 @@ export async function setUserAppRole(actorId: string, userId: string, appRole: A
     if (isProtectedSuperAdminUsername(user.username)) return { error: "The permanent Super Admin role cannot be changed.", status: 403 } as const;
     const previousRole = effectiveAppRole(user);
     user.appRole = appRole;
-    return { user: adminUser(user), previousRole } as const;
+    return { user: adminUser(user, state), previousRole } as const;
   });
 }
 
@@ -551,7 +644,7 @@ export async function getAdminUser(userId: string) {
   await mutationQueue;
   const state = await loadState({ fresh: true });
   const user = state.users[userId];
-  return user ? adminUser(user) : null;
+  return user ? adminUser(user, state) : null;
 }
 
 export async function deleteAuthUser(userId: string) {

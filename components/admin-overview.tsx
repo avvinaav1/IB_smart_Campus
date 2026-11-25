@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Award, BellRing, CalendarDays, CheckCircle2, Clock, FileText, LoaderCircle, RefreshCw, Square, Users } from "lucide-react";
+import { Award, BellRing, CalendarDays, CheckCircle2, Clock, FileText, LoaderCircle, RefreshCw, Square, Ticket, Users } from "lucide-react";
 import type { AppRole } from "@/lib/types";
 
-type AdminUser = { id: string; username: string; email: string; campus: string; createdAt: number; appRole: AppRole; protected: boolean };
+type AdminUser = { id: string; username: string; email: string; campus: string; createdAt: number; appRole: AppRole; protected: boolean; inviteSource: string; inviteCodeUsed: string; invitedBy: { id: string; username: string; deleted: boolean } | null };
 type DailyPoint = { day: string; signups: number; active: number };
 type AdminStats = {
   generatedAt: number;
@@ -13,6 +13,8 @@ type AdminStats = {
     newUsers: { today: number; last7Days: number; last30Days: number };
     activeUsers: { last24Hours: number; last7Days: number; last30Days: number };
     daily: DailyPoint[]; recentUsers: AdminUser[]; topCampuses: Array<{ campus: string; users: number }>;
+    invites: { viaCode: number; viaCertificate: number; other: number; legacy: number; disabledCodes: number };
+    topInviters: Array<{ id: string; username: string; invites: number }>;
   };
   communities: { total: number; pending: number; newSince: number; memberships: number };
   events: { total: number; pending: number; approved: number; rejected: number; upcoming: number; newSince: number; registrations: number; checkedIn: number };
@@ -67,7 +69,7 @@ function DailyBars({ title, points, field }: { title: string; points: DailyPoint
   </figure>;
 }
 
-export function AdminOverview() {
+export function AdminOverview({ onShowInvitees }: { onShowInvitees?: (inviter: { id: string; username: string }) => void }) {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(true);
@@ -103,10 +105,20 @@ export function AdminOverview() {
         <DailyBars title="Users by last active day" points={users.daily} field="active" />
       </div>
       <div className="admin-two-col">
-        <div className="admin-card"><h3>Newest registrations</h3>{users.recentUsers.length ? users.recentUsers.map((user) => <p key={user.id}><b>{user.username}</b><small>{user.email} · {user.campus || "No campus"} · {when(user.createdAt)}</small></p>) : <small>No users yet.</small>}</div>
+        <div className="admin-card"><h3>Newest registrations</h3>{users.recentUsers.length ? users.recentUsers.map((user) => <p key={user.id}><b>{user.username}</b><small>{user.email} · {user.campus || "No campus"} · {when(user.createdAt)}</small>{user.invitedBy && <small>Invited by {user.invitedBy.username || "unknown"}{user.invitedBy.deleted ? " (deleted)" : ""}{user.inviteCodeUsed ? ` · ${user.inviteCodeUsed}` : ""}</small>}</p>) : <small>No users yet.</small>}</div>
         <div className="admin-card"><h3>Top campuses</h3>{users.topCampuses.length ? users.topCampuses.map((row) => <p key={row.campus} className="admin-row"><span>{row.campus}</span><b>{number.format(row.users)}</b></p>) : <small>No campuses set yet.</small>}
           <h3>Accounts</h3><p className="admin-row"><span>Password set</span><b>{number.format(users.withPassword)}</b></p><p className="admin-row"><span>Moderators &amp; admins</span><b>{number.format(users.moderators)}</b></p></div>
       </div>
+    </section>
+
+    <section className="admin-section"><h2><Ticket size={17} /> Invitations</h2>
+      <div className="admin-stat-grid">
+        <Stat label="Joined with an invite code" value={users.invites.viaCode} hint={percent(users.invites.viaCode, users.total) + " of users"} />
+        <Stat label="Joined via certificate email" value={users.invites.viaCertificate} />
+        <Stat label="Joined before invite-only" value={users.invites.legacy} hint={users.invites.other ? `${number.format(users.invites.other)} more via first-account / open sign-up` : undefined} />
+        <Stat label="Disabled invite codes" value={users.invites.disabledCodes} />
+      </div>
+      <div className="admin-card"><h3>Top inviters</h3>{users.topInviters.length ? users.topInviters.map((row) => <p key={row.id} className="admin-row"><span>{onShowInvitees ? <button className="link-button" onClick={() => onShowInvitees(row)}>{row.username}</button> : row.username}</span><b>{number.format(row.invites)}</b></p>) : <small>No one has registered with an invite code yet.</small>}</div>
     </section>
 
     <section className="admin-section"><h2><Award size={17} /> Certificates</h2>

@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { getAdminUser, setUserAppRole } from "@/lib/auth-store";
+import { getAdminUser, setUserAppRole, updateUserInvites } from "@/lib/auth-store";
 import { isSameOrigin, noStoreJson, readJson } from "@/lib/auth-http";
 import { cascadeDeleteUser } from "@/lib/moderation-cascade";
 import { sendRoleChangeEmail } from "@/lib/role-change-email";
@@ -10,9 +10,20 @@ type Context = { params: Promise<{ userId: string }> };
 
 export async function PATCH(request: NextRequest, context: Context) {
   if (!isSameOrigin(request)) return noStoreJson({ error: "Request origin was rejected." }, { status: 403 });
+  const body = await readJson(request);
+  // Invite-code management (enable/disable, regenerate) is open to every global
+  // moderator; app-role changes below stay Super Admin only.
+  if (body && !("appRole" in body) && ("invitesEnabled" in body || "regenerateInviteCode" in body)) {
+    const moderator = await requireGlobalModerator(request);
+    if ("response" in moderator) return moderator.response;
+    if ("invitesEnabled" in body && typeof body.invitesEnabled !== "boolean") return noStoreJson({ error: "invitesEnabled must be true or false." }, { status: 400 });
+    const { userId } = await context.params;
+    const result = await updateUserInvites(moderator.user, userId, { invitesEnabled: body.invitesEnabled as boolean | undefined, regenerate: body.regenerateInviteCode === true });
+    if ("error" in result) return noStoreJson({ error: result.error }, { status: result.status });
+    return noStoreJson({ data: { user: result.user } });
+  }
   const auth = await requireSuperAdmin(request);
   if ("response" in auth) return auth.response;
-  const body = await readJson(request);
   if (body?.appRole !== "USER" && body?.appRole !== "APP_MODERATOR" && body?.appRole !== "SUPER_ADMIN") return noStoreJson({ error: "Choose USER, APP_MODERATOR or SUPER_ADMIN." }, { status: 400 });
   const { userId } = await context.params;
   const result = await setUserAppRole(auth.user.id, userId, body.appRole);

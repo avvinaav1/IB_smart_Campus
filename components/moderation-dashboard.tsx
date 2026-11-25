@@ -1,13 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, ChevronDown, LoaderCircle, Plus, Search, ShieldCheck, Trash2, UserCog, X } from "lucide-react";
+import { Check, ChevronDown, Download, LoaderCircle, Plus, RefreshCw, Search, ShieldCheck, Trash2, UserCog, X } from "lucide-react";
 import type { AppRole, CampusEvent, Community, CommunityRole, EventAttendee, EventStatus, Institute, InstituteRole, InstituteSummary, Post, SessionUser, UserSearchResult } from "@/lib/types";
 import { announceDataChange, mutationSucceeded } from "@/lib/client-data-sync";
 import { AdminOverview, CertificateClaimsPanel } from "@/components/admin-overview";
 
 type Page<T> = { items: T[]; nextCursor: string | null };
-type AdminUser = { id: string; username: string; email: string; campus: string; createdAt: number; appRole: AppRole; protected: boolean };
+type InviteSource = "code" | "certificate" | "bootstrap" | "open" | "legacy";
+type AdminUser = {
+  id: string; username: string; email: string; campus: string; createdAt: number; appRole: AppRole; protected: boolean;
+  referralCode: string; invitesEnabled: boolean; inviteSource: InviteSource; inviteCodeUsed: string; inviteCount: number;
+  invitedBy: { id: string; username: string; email: string; deleted: boolean } | null;
+};
+const INVITE_SOURCE_LABELS: Record<InviteSource, string> = { code: "Invite code", certificate: "Certificate email", bootstrap: "First account", open: "Open registration", legacy: "Joined before invite tracking" };
+
+function registrationLabel(item: AdminUser) {
+  const inviter = item.invitedBy ? `${item.invitedBy.username || "unknown"}${item.invitedBy.deleted ? " (deleted)" : ""}` : "";
+  if (item.inviteSource === "code") return `Invited by ${inviter || "unknown"} with ${item.inviteCodeUsed || "a code"}`;
+  if (item.inviteSource === "certificate") return inviter ? `Certificate from ${inviter}` : INVITE_SOURCE_LABELS.certificate;
+  return INVITE_SOURCE_LABELS[item.inviteSource];
+}
 type AdminCommunity = { id: string; name: string; description: string; creatorId: string; privacy: string; type: string; parentId: string | null; members: number; createdAt: number };
 type CommunityMember = { id: string; userId: string; username: string; avatarUrl: string; role: CommunityRole; createdAt: number; inherited: boolean; readOnly: boolean; inheritedFromCommunityName: string | null };
 type InstituteMemberView = { userId: string; username: string; avatarUrl: string; role: InstituteRole };
@@ -52,6 +65,7 @@ export function GlobalAdminDashboard({ user, notify }: { user: SessionUser; noti
   const [action, setAction] = useState("");
   const [error, setError] = useState("");
   const [detail, setDetail] = useState<{ event: CampusEvent; attendees: Array<EventAttendee & { username: string; email: string }> } | null>(null);
+  const [invitedBy, setInvitedBy] = useState<{ id: string; username: string } | null>(null);
 
   const load = useCallback(async (append = false, next?: string | null) => {
     if (tab === "overview" || tab === "claims") return;
@@ -59,13 +73,14 @@ export function GlobalAdminDashboard({ user, notify }: { user: SessionUser; noti
     try {
       const params = new URLSearchParams({ query, limit: "25" });
       if (tab === "events" && status) params.set("status", status);
+      if (tab === "users" && invitedBy) params.set("invitedBy", invitedBy.id);
       if (next) params.set("cursor", next);
       const page = await api<Page<AdminUser | AdminCommunity | CampusEvent | Post>>(`/api/admin/${tab}?${params}`);
       setItems((current) => append ? [...current, ...page.items] : page.items);
       setCursor(page.nextCursor);
     } catch (loadError) { setError(loadError instanceof Error ? loadError.message : "Could not load moderation data."); }
     finally { setBusy(false); }
-  }, [query, status, tab]);
+  }, [invitedBy, query, status, tab]);
 
   useEffect(() => { const timer = window.setTimeout(() => void load(), 180); return () => window.clearTimeout(timer); }, [load]);
 
@@ -116,6 +131,21 @@ export function GlobalAdminDashboard({ user, notify }: { user: SessionUser; noti
     finally { setAction(""); }
   }
 
+  async function updateInvites(target: AdminUser, change: { invitesEnabled?: boolean; regenerateInviteCode?: boolean }) {
+    if (change.regenerateInviteCode && !window.confirm(`Issue ${target.username} a new invite code? ${target.referralCode} will stop working immediately.`)) return;
+    setAction(target.id);
+    try {
+      const result = await api<{ user: AdminUser }>(`/api/admin/users/${target.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
+      setItems((current) => current.map((item) => item.id === target.id ? result.user : item));
+      notify(change.regenerateInviteCode ? `New invite code: ${result.user.referralCode}` : result.user.invitesEnabled ? "Invite code enabled" : "Invite code disabled");
+    } catch (inviteError) { notify(inviteError instanceof Error ? inviteError.message : "Could not update the invite code."); }
+    finally { setAction(""); }
+  }
+
+  function showInvitees(inviter: { id: string; username: string }) {
+    setTab("users"); setQuery(""); setItems([]); setCursor(null); setInvitedBy(inviter);
+  }
+
   async function openEvent(eventId: string) {
     setAction(eventId);
     try { setDetail(await api(`/api/admin/events/${eventId}`)); }
@@ -125,14 +155,15 @@ export function GlobalAdminDashboard({ user, notify }: { user: SessionUser; noti
 
   return <div className="content-page moderation-page">
     <section className="page-hero moderation-hero"><div><span className="eyebrow lime">GLOBAL CONTROL</span><h1>Admin dashboard.</h1><p>Track growth and certificate claims, review hidden events, manage roles, and remove unsafe content across Smart Campus.</p></div><ShieldCheck size={58} /></section>
-    <nav className="moderation-tabs" aria-label="Admin resources">{(["overview", "claims", "users", "communities", "events", "posts"] as const).map((value) => <button key={value} className={tab === value ? "active" : ""} onClick={() => { setTab(value); setItems([]); setCursor(null); }}>{value}</button>)}</nav>
-    {tab === "overview" && <AdminOverview />}
+    <nav className="moderation-tabs" aria-label="Admin resources">{(["overview", "claims", "users", "communities", "events", "posts"] as const).map((value) => <button key={value} className={tab === value ? "active" : ""} onClick={() => { setTab(value); setItems([]); setCursor(null); setInvitedBy(null); }}>{value}</button>)}</nav>
+    {tab === "overview" && <AdminOverview onShowInvitees={showInvitees} />}
     {tab === "claims" && <CertificateClaimsPanel />}
     {tab !== "overview" && tab !== "claims" && <>
-    <div className="moderation-toolbar"><label><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${tab}`} /></label>{tab === "events" && <label><select value={status} onChange={(event) => setStatus(event.target.value as EventStatus | "")}><option value="">All statuses</option><option>PENDING</option><option>APPROVED</option><option>REJECTED</option></select><ChevronDown size={15} /></label>}</div>
+    <div className="moderation-toolbar"><label><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${tab}`} /></label>{tab === "events" && <label><select value={status} onChange={(event) => setStatus(event.target.value as EventStatus | "")}><option value="">All statuses</option><option>PENDING</option><option>APPROVED</option><option>REJECTED</option></select><ChevronDown size={15} /></label>}{tab === "users" && <a className="admin-export" href={`/api/admin/users/export?${new URLSearchParams({ query })}`} download><Download size={15} /> Export CSV</a>}</div>
+    {tab === "users" && invitedBy && <p className="admin-filter-chip">Members invited by <b>{invitedBy.username}</b><button aria-label="Clear inviter filter" onClick={() => { setInvitedBy(null); setItems([]); setCursor(null); }}><X size={13} /></button></p>}
     {error && <p className="form-error" role="alert">{error}</p>}
     {busy && !items.length ? <div className="moderation-loading"><LoaderCircle className="spin" /> Loading…</div> : <div className="moderation-list">
-      {tab === "users" && (items as AdminUser[]).map((item) => <article key={item.id}><div><b>{item.username}</b><small>{item.email} · {item.campus || "No campus"} · Joined {date(item.createdAt)}</small></div><StatusBadge value={item.appRole} />{user.appRole === "SUPER_ADMIN" && !item.protected && item.id !== user.id && <select aria-label={`Role for ${item.username}`} value={item.appRole} disabled={action === item.id} onChange={(event) => void role(item, event.target.value as AppRole)}><option value="USER">User</option><option value="APP_MODERATOR">Admin (app moderator)</option><option value="SUPER_ADMIN">Super Admin</option></select>}{!item.protected && item.id !== user.id && (item.appRole !== "SUPER_ADMIN" || user.appRole === "SUPER_ADMIN") && <button className="danger-action" disabled={action === item.id} onClick={() => void remove(`/api/admin/users/${item.id}`, item.id, item.username)}><Trash2 size={15} /> Delete</button>}</article>)}
+      {tab === "users" && (items as AdminUser[]).map((item) => <article key={item.id}><div><b>{item.username}</b><small>{item.email} · {item.campus || "No campus"} · Joined {date(item.createdAt)}</small><small>{registrationLabel(item)}</small><small className="admin-invite-meta">Own code <code>{item.referralCode}</code>{!item.invitesEnabled && <StatusBadge value="DISABLED" />}· {item.inviteCount ? <button className="link-button" onClick={() => showInvitees(item)}>{item.inviteCount} invited</button> : "0 invited"}</small></div><StatusBadge value={item.appRole} />{(item.appRole !== "SUPER_ADMIN" || user.appRole === "SUPER_ADMIN" || item.id === user.id) && <><button disabled={action === item.id} onClick={() => void updateInvites(item, { invitesEnabled: !item.invitesEnabled })}>{item.invitesEnabled ? "Disable code" : "Enable code"}</button><button disabled={action === item.id} onClick={() => void updateInvites(item, { regenerateInviteCode: true })}><RefreshCw size={14} /> New code</button></>}{user.appRole === "SUPER_ADMIN" && !item.protected && item.id !== user.id && <select aria-label={`Role for ${item.username}`} value={item.appRole} disabled={action === item.id} onChange={(event) => void role(item, event.target.value as AppRole)}><option value="USER">User</option><option value="APP_MODERATOR">Admin (app moderator)</option><option value="SUPER_ADMIN">Super Admin</option></select>}{!item.protected && item.id !== user.id && (item.appRole !== "SUPER_ADMIN" || user.appRole === "SUPER_ADMIN") && <button className="danger-action" disabled={action === item.id} onClick={() => void remove(`/api/admin/users/${item.id}`, item.id, item.username)}><Trash2 size={15} /> Delete</button>}</article>)}
       {tab === "communities" && (items as AdminCommunity[]).map((item) => <article key={item.id}><div><b>{item.name}</b><small>{item.members} members · {item.type.toLowerCase()} · {item.parentId ? "sub-community" : "top-level"} · {item.privacy} · {item.description}</small></div><button className="danger-action" disabled={action === item.id} onClick={() => void remove(`/api/admin/communities/${encodeURIComponent(item.id)}`, item.id, item.name)}><Trash2 size={15} /> Delete</button></article>)}
       {tab === "events" && (items as CampusEvent[]).map((item) => <article key={item.id}><div><b>{item.title}</b><small>{item.campus} · {date(item.createdAt)}{item.community ? ` · ${item.community}` : item.instituteId ? " · institute event" : " · standalone"}</small></div><StatusBadge value={item.status} /><button onClick={() => void openEvent(item.id)}>Details</button>{item.status === "PENDING" && (item.community || item.instituteId) && <><button className="approve-action" disabled={action === item.id} onClick={() => void review(item, "APPROVED")}><Check size={15} /> Approve</button><button disabled={action === item.id} onClick={() => void review(item, "REJECTED")}><X size={15} /> Reject</button></>}<button className="danger-action" disabled={action === item.id} onClick={() => void remove(`/api/moderation/events/${item.id}`, item.id, item.title)}><Trash2 size={15} /> Delete</button></article>)}
       {tab === "posts" && (items as Post[]).map((item) => <article className="moderation-post" key={item.id}><div><b>{item.title}</b><small>{item.author} · {item.community} · {item.comments} comments</small>{item.commentItems?.map((comment) => <span className="moderation-comment" key={comment.id}>{comment.author}: {comment.body}<button disabled={action === comment.id} aria-label={`Delete comment by ${comment.author}`} onClick={() => void removeComment(item.id, comment.id)}><Trash2 size={13} /></button></span>)}</div><button className="danger-action" disabled={action === String(item.id)} onClick={() => void remove(`/api/moderation/posts/${item.id}`, String(item.id), item.title)}><Trash2 size={15} /> Delete</button></article>)}

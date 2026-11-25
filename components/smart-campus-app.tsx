@@ -11,6 +11,7 @@ import {
   ChevronLeft, Pencil, Phone, Pin, PinOff, Trash2, Video, Maximize2, FileText, Paperclip,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { SITE_URL } from "@/lib/site";
 import { AuthLoading, AuthScreen } from "@/components/auth-screen";
 import { CampusPicker } from "@/components/campus-picker";
 import { defaultCoverFor, EventCoverField } from "@/components/event-cover-field";
@@ -256,7 +257,7 @@ function loadPendingInvite(): PendingInvite | null {
   return null;
 }
 
-export function SmartCampusApp({ previewUser, initialView = "home", initialCommunityId = "", initialInviteToken = "", initialEventId = "", initialChatRequests = false, initialVerificationCode = "", claimEmail = "" }: { previewUser?: SessionUser; initialView?: View; initialCommunityId?: string; initialInviteToken?: string; initialEventId?: string; initialChatRequests?: boolean; initialVerificationCode?: string; claimEmail?: string }) {
+export function SmartCampusApp({ previewUser, initialView = "home", initialCommunityId = "", initialInviteToken = "", initialEventId = "", initialChatRequests = false, initialVerificationCode = "", claimEmail = "", referralCode = "" }: { previewUser?: SessionUser; initialView?: View; initialCommunityId?: string; initialInviteToken?: string; initialEventId?: string; initialChatRequests?: boolean; initialVerificationCode?: string; claimEmail?: string; referralCode?: string }) {
   const [authUser, setAuthUser] = useState<SessionUser | null | undefined>(previewUser);
   const previewMode = Boolean(previewUser && authUser?.id === previewUser.id);
   const [view, setView] = useState<View>(initialView);
@@ -729,7 +730,7 @@ export function SmartCampusApp({ previewUser, initialView = "home", initialCommu
   }
 
   if (authUser === undefined) return <AuthLoading />;
-  if (!authUser) return <AuthScreen onAuthenticated={completeAuthentication} prefillEmail={claimEmail} />;
+  if (!authUser) return <AuthScreen onAuthenticated={completeAuthentication} prefillEmail={claimEmail} prefillInviteCode={referralCode} />;
   if (!authUser.profileSetupComplete) return <ProfileSetup user={authUser} onComplete={completeAuthentication} />;
   const activeCommentPost = commentPostId === null ? null : posts.find((post) => post.id === commentPostId) || null;
 
@@ -1845,11 +1846,11 @@ function RewardsView({ user, notify }: { user: SessionUser; notify: (s: string) 
   const referralCount = Math.floor(user.points / 10);
   const rewardProgress = Math.min(100, user.points / 60 * 100);
   return <div className="content-page rewards-page">
-    <section className="rewards-hero"><div><span className="eyebrow lime">REFER · EARN · REPEAT</span><h1>Good friends<br />bring rewards.</h1><p>You&apos;ve earned <b>{user.points} points</b> so far. {premiumRemaining ? `${invitesRemaining} more verified ${invitesRemaining === 1 ? "invite unlocks" : "invites unlock"} Smart Campus Premium.` : "You have unlocked the Premium reward milestone."}</p><button onClick={() => { navigator.clipboard?.writeText(user.referralCode); notify("Referral code copied"); }}><Copy size={18} /> Copy referral code</button><button onClick={() => { navigator.clipboard?.writeText(`Join me on IB Smart Campus with referral code ${user.referralCode}`); notify("Referral message copied"); }}><Share2 size={18} /> Copy message</button></div><div className="reward-burst"><span>{user.points}</span><small>POINTS</small><i>✦</i></div></section>
+    <section className="rewards-hero"><div><span className="eyebrow lime">REFER · EARN · REPEAT</span><h1>Good friends<br />bring rewards.</h1><p>You&apos;ve earned <b>{user.points} points</b> so far. {premiumRemaining ? `${invitesRemaining} more verified ${invitesRemaining === 1 ? "invite unlocks" : "invites unlock"} Smart Campus Premium.` : "You have unlocked the Premium reward milestone."}</p><button onClick={() => { navigator.clipboard?.writeText(user.referralCode); notify("Referral code copied"); }}><Copy size={18} /> Copy referral code</button><button onClick={() => { navigator.clipboard?.writeText(`Join me on IB Smart Campus — it's invite-only. Sign up with my invite code ${user.referralCode}: ${SITE_URL}/?ref=${encodeURIComponent(user.referralCode)}`); notify("Invite message copied"); }}><Share2 size={18} /> Copy message</button></div><div className="reward-burst"><span>{user.points}</span><small>POINTS</small><i>✦</i></div></section>
     <div className="rewards-grid">
       <section className="reward-card journey"><div className="section-heading"><div><span className="eyebrow violet">YOUR JOURNEY</span><h2>{premiumRemaining ? "Next stop: Premium" : "Premium milestone reached"}</h2></div><b>{user.points} / 60</b></div><div className="big-progress"><i style={{ width: `${rewardProgress}%` }} /><span style={{ left: `${rewardProgress}%` }}>YOU</span></div><div className="milestones"><span className={user.points >= 10 ? "done" : ""}><i>{user.points >= 10 ? <Check size={15} /> : null}</i><b>10</b><small>Early bird</small></span><span className={user.points >= 30 ? "done" : ""}><i>{user.points >= 30 ? <Check size={15} /> : null}</i><b>30</b><small>Connector</small></span><span className={user.points >= 60 ? "done" : ""}><i>{user.points >= 60 ? <Check size={15} /> : <Trophy size={16} />}</i><b>60</b><small>Premium</small></span><span className={user.points >= 100 ? "done" : ""}><i>{user.points >= 100 ? <Check size={15} /> : <Star size={16} />}</i><b>100</b><small>Legend</small></span></div></section>
       <section className="reward-card voucher"><span className="eyebrow pink">{user.points >= 60 ? "READY TO CLAIM" : "LOCKED FOR NOW"}</span><Gift size={38} /><h2>30 days Premium</h2><p>Custom profile flair, priority event access and a shiny badge.</p><button disabled={user.points < 60 || claimed} onClick={() => setClaimed(true)}>{claimed ? "Claimed" : user.points >= 60 ? "Claim reward" : "Unlock at 60 points"}</button></section>
-      <section className="reward-card invite-card"><span className="eyebrow cyan">YOUR UNIQUE CODE</span><div className="referral-code-display"><small>SHARE THIS REFERRAL CODE</small><strong>{user.referralCode}</strong></div><button onClick={() => { navigator.clipboard?.writeText(user.referralCode); notify("Referral code copied"); }}><Copy size={17} /> Copy code</button></section>
+      <section className="reward-card invite-card"><span className="eyebrow cyan">YOUR UNIQUE INVITE CODE</span>{user.invitesEnabled ? <><div className="referral-code-display"><small>SMART CAMPUS IS INVITE-ONLY · SHARE THIS CODE</small><strong>{user.referralCode}</strong></div><button onClick={() => { navigator.clipboard?.writeText(user.referralCode); notify("Invite code copied"); }}><Copy size={17} /> Copy code</button><button onClick={() => { navigator.clipboard?.writeText(`${SITE_URL}/?ref=${encodeURIComponent(user.referralCode)}`); notify("Invite link copied"); }}><Link2 size={17} /> Copy invite link</button></> : <div className="referral-code-display"><small>INVITES PAUSED</small><strong>—</strong><small>An admin has disabled your invite code. Contact the Smart Campus team to have it re-enabled.</small></div>}</section>
       <section className="reward-card activity"><div className="section-heading"><div><span className="eyebrow violet">REFERRAL ACTIVITY</span><h2>Your invites</h2></div></div><div><Avatar text="IB" color="#6C3BFF" /><span><b>{referralCount ? `${referralCount} verified ${referralCount === 1 ? "referral" : "referrals"}` : "No verified referrals yet"}</b><small>Each successful referral earns you 10 points.</small></span><strong>{user.points ? `+${user.points}` : "0"}</strong></div></section>
     </div>
   </div>;

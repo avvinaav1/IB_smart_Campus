@@ -21,6 +21,8 @@ export type SessionUser = {
   points: number;
   streakCount: number;
   referralCode: string;
+  // False when an admin has disabled this member's invite code.
+  invitesEnabled: boolean;
   profileSetupComplete: boolean;
   createdAt: number;
   appRole: AppRole;

@@ -28,6 +28,23 @@ export async function recordPendingClaim(job: Pick<JobRecord, "id" | "title" | "
   }, { merge: true });
 }
 
+// Registration is invite-only, but an address an organizer emailed a
+// certificate to counts as invited by that organizer. Returns the issuer of an
+// unclaimed certificate for this email, or null. Lookup failures return null
+// (the person can still register with a member's invite code).
+export async function pendingCertificateIssuer(email: string): Promise<string | null> {
+  const normalized = email.trim().toLowerCase();
+  if (localDataStoreEnabled() || !normalized) return null;
+  try {
+    const pending = await claims().where("email", "==", normalized).where("claimed", "==", false).limit(1).get();
+    const issuerId = pending.docs[0]?.get("issuerId");
+    return pending.empty ? null : typeof issuerId === "string" && issuerId ? issuerId : "";
+  } catch (error) {
+    console.error("Certificate invite lookup failed", { code: (error as NodeJS.ErrnoException).code || "unavailable" });
+    return null;
+  }
+}
+
 // Best-effort: called right after a session is created (registration or OTP
 // login). Never throws — a claim lookup failure must not block sign-in.
 export async function claimCertificatesBestEffort(userId: string, email: string) {

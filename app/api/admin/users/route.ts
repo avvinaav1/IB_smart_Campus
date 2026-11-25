@@ -10,5 +10,6 @@ export async function GET(request: NextRequest) {
   const auth = await requireGlobalModerator(request);
   if ("response" in auth) return auth.response;
   const list = listRequest(request.url);
-  return noStoreJson({ data: pageItems(await listAdminUsers(list.query), list.offset, list.limit) });
+  const invitedBy = (new URL(request.url).searchParams.get("invitedBy") || "").slice(0, 64);
+  return noStoreJson({ data: pageItems(await listAdminUsers(list.query, { invitedBy }), list.offset, list.limit) });
 }

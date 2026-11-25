@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { discardOtp, isValidEmail, issueOtp, normalizeEmail } from "@/lib/auth-store";
 import { getClientId, isAuthIntent, isSameOrigin, noStoreJson, readJson } from "@/lib/auth-http";
+import { pendingCertificateIssuer } from "@/lib/certificates/claims";
 import { sendOtpEmail } from "@/lib/otp-email";
 
 export const runtime = "nodejs";
@@ -10,14 +11,16 @@ export async function POST(request: NextRequest) {
   const body = await readJson(request);
   const email = normalizeEmail(typeof body?.email === "string" ? body.email : "");
   const intent = body?.intent;
-  const referralCode = typeof body?.referralCode === "string" ? body.referralCode : "";
+  const referralCode = typeof body?.referralCode === "string" ? body.referralCode.slice(0, 32) : "";
   if (!isValidEmail(email) || !isAuthIntent(intent)) return noStoreJson({ error: "Enter a valid email address." }, { status: 400 });
+  // Only needed when no invite code was given: a pending certificate counts as an invite.
+  const certificateIssuerId = intent === "register" && !referralCode.trim() ? await pendingCertificateIssuer(email) : null;
 
   let issued: Awaited<ReturnType<typeof issueOtp>>;
-  try { issued = await issueOtp(email, intent, getClientId(request), referralCode); }
+  try { issued = await issueOtp(email, intent, getClientId(request), referralCode, certificateIssuerId); }
   catch (error) { console.error("Authentication storage failed", { code: (error as NodeJS.ErrnoException).code || "unavailable" }); return noStoreJson({ error: "Account storage is unavailable. Check the server configuration." }, { status: 503 }); }
   if ("error" in issued) {
-    const status = "retryAfter" in issued ? 429 : 409;
+    const status = "retryAfter" in issued ? 429 : issued.status;
     const response = noStoreJson({ error: issued.error, retryAfter: "retryAfter" in issued ? issued.retryAfter : undefined }, { status });
     if ("retryAfter" in issued) response.headers.set("Retry-After", String(issued.retryAfter));
     return response;
